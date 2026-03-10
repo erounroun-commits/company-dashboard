@@ -6157,9 +6157,9 @@ function previewBulkUpload(input){
     reader.onload=e=>doProcess(e.target.result,'string');
     reader.readAsText(file,'UTF-8');
   } else {
-    // readAsBinaryString: 가장 호환성 높음
-    reader.onload=e=>doProcess(e.target.result,'binary');
-    reader.readAsBinaryString(file);
+    // XLSX 추천 방식: ArrayBuffer + type:'array'
+    reader.onload=e=>doProcess(e.target.result,'array');
+    reader.readAsArrayBuffer(file);
   }
 }
 
