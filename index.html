@@ -1302,7 +1302,6 @@ function getQtTypeList(c){
   ];
 }
 let QUOTE_TYPES=getQtTypeList(null);
-const sv=(k,v)=>localStorage.setItem('wv_'+k,JSON.stringify(v));
 const gid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const gcode=()=>{const c='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';return Array.from({length:6},()=>c[~~(Math.random()*c.length)]).join('');};
 
