@@ -1466,8 +1466,11 @@ window.addEventListener('hashchange',()=>{
 // ═══════════════════════════════════════════
 // CLIENT VIEW (업체 링크)
 // ═══════════════════════════════════════════
-function showClientView(code){
-  seed();
+async function showClientView(code){
+  // Firestore에서 최신 데이터 보장
+  if(typeof loadMainDataFromFirestore==='function'){
+    try{ await loadMainDataFromFirestore(); }catch(e){ console.error(e); }
+  }
   const d=ld(),c=d.clients.find(x=>x.code===code);
   hide('login-screen');hide('app');show('client-screen');
   if(!c){
@@ -6013,38 +6016,23 @@ function previewBulkUpload(input){
 
   const doProcess=(data,type)=>{
     try{
-      // ★ XLSX.read에는 raw 옵션 없음 — raw는 sheet_to_json 전용
       const wb = XLSX.read(data,{type:type, cellDates:false});
       const sheetName = wb.SheetNames[0];
       const ws = wb.Sheets[sheetName];
 
-      // raw:true → 숫자/날짜 원형 보존 (날짜 시리얼 직접 변환)
-      // raw:false → SheetJS가 포맷 적용한 텍스트 (이 파일에서 빈 배열 반환할 수 있음)
+      // 가장 단순하고 확실하게: 첫 행은 헤더, 그 아래는 전부 데이터로 간주
       const rawRows = XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
-      // 포맷 텍스트는 raw:true 결과를 후처리해서 만듦 (raw:false에 의존 안 함)
-
-      if(rawRows.length===0){ toast('엑셀이 비어 있습니다','error'); return; }
-
-      // ── 헤더 행 자동 감지 ────────────────────────────
-      // 첫 행의 B열(인덱스1) 값이 숫자면 헤더 없음(0행부터),
-      // 텍스트(NO, 번호, 프로젝트 등)면 1행부터 시작
-      let startRow=1;
-      const b0=String(rawRows[0][1]||'').trim();
-      if(!isNaN(b0)&&b0!=='') startRow=0; // B열이 숫자 → 헤더 없음
-
-      // ── 데이터 행 수집 ─────────────────────────────
-      // 완전히 빈 행(모든 셀 공백)만 제외 — NO만 있는 행도 포함
-      const allDataRows=[];
-      for(let i=startRow;i<rawRows.length;i++){
-        const rr=rawRows[i];
-        // 16개 컬럼 중 하나라도 값이 있으면 데이터 행으로 간주
-        const hasAny=[...Array(16)].some((_,ci)=>String(rr[ci]??'').trim()!=='');
-        if(!hasAny) continue;
-        allDataRows.push({rr,lineNo:i+1});
+      if(rawRows.length<=1){
+        toast('데이터가 없습니다. 헤더 아래에 데이터 행이 있는지 확인하세요.','error');
+        return;
       }
 
+      const allDataRows = rawRows.slice(1)
+        .map((rr,idx)=>({rr,lineNo:idx+2}))
+        .filter(({rr})=>[...Array(16)].some((_,ci)=>String(rr[ci]??'').trim()!==''));
+
       if(!allDataRows.length){
-        toast('데이터가 없습니다. 헤더 행 아래에 데이터가 있는지 확인하세요.','error');
+        toast('모든 행이 비어 있습니다. 엑셀 내용을 다시 확인하세요.','error');
         return;
       }
 
