@@ -6017,22 +6017,48 @@ function previewBulkUpload(input){
   const doProcess=(data,type)=>{
     try{
       const wb = XLSX.read(data,{type:type, cellDates:false});
-      const sheetName = wb.SheetNames[0];
-      const ws = wb.Sheets[sheetName];
 
-      // 가장 단순하고 확실하게: 첫 행은 헤더, 그 아래는 전부 데이터로 간주
-      const rawRows = XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
-      if(rawRows.length<=1){
-        toast('데이터가 없습니다. 헤더 아래에 데이터 행이 있는지 확인하세요.','error');
+      // 1) 여러 시트 중 "실제 데이터가 있는 첫 시트"를 자동으로 선택
+      let rawRows = [];
+      let headerRowIndex = 0;
+      let sheetNameUsed = '';
+
+      for(const name of wb.SheetNames){
+        const ws = wb.Sheets[name];
+        const rows = XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
+        if(!rows.length) continue;
+
+        // 현재 시트에서 "실제 데이터가 있는 첫 행" 찾기
+        let firstDataIdx = -1;
+        for(let i=0;i<rows.length;i++){
+          const hasAny=[...Array(16)].some((_,ci)=>String(rows[i][ci]??'').trim()!=='');
+          if(hasAny){ firstDataIdx=i; break; }
+        }
+        if(firstDataIdx===-1) continue;
+
+        // 첫 데이터 행이 0보다 크면 그 바로 위를 헤더로 보고 사용
+        headerRowIndex = Math.max(0, firstDataIdx-1);
+        rawRows = rows;
+        sheetNameUsed = name;
+        break;
+      }
+
+      if(!rawRows.length){
+        toast('엑셀에서 데이터를 찾지 못했습니다. 시트 내용과 범위를 확인하세요.','error');
         return;
       }
 
-      const allDataRows = rawRows.slice(1)
-        .map((rr,idx)=>({rr,lineNo:idx+2}))
-        .filter(({rr})=>[...Array(16)].some((_,ci)=>String(rr[ci]??'').trim()!==''));
+      // 2) 헤더 행 아래부터 끝까지를 데이터 행으로 간주
+      const allDataRows = [];
+      for(let i=headerRowIndex+1;i<rawRows.length;i++){
+        const rr = rawRows[i];
+        const hasAny=[...Array(16)].some((_,ci)=>String(rr[ci]??'').trim()!=='');
+        if(!hasAny) continue;
+        allDataRows.push({rr,lineNo:i+1});
+      }
 
       if(!allDataRows.length){
-        toast('모든 행이 비어 있습니다. 엑셀 내용을 다시 확인하세요.','error');
+        toast('데이터 행이 비어 있습니다. 헤더 아래에 실제 데이터가 있는지 확인하세요.','error');
         return;
       }
 
