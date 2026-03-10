@@ -1129,23 +1129,62 @@ function drawDonut(canvasId, segments, opts){
 // ═══════════════════════════════════════════
 // DATA / STORAGE
 // ═══════════════════════════════════════════
-// ── 사용자 관리 (wv_users) ──────────────────────────────
+// ── 사용자 관리 (wv_users → Firestore users 컬렉션) ──────────────────────────────
 // DEFAULT_USERS는 gid()보다 뒤에서 평가되도록 함수로 감쌈
 function getDefaultUsers(){
   return [
     {id:'usr_way_default',username:'박지혜',loginId:'way',pw:'qwasqwas12',role:'admin',createdAt:new Date().toISOString()},
   ];
 }
-function getUsers(){
-  const stored=localStorage.getItem('wv_users');
-  if(!stored){
-    const def=getDefaultUsers();
-    localStorage.setItem('wv_users',JSON.stringify(def));
-    return def;
+
+// Firestore에서 읽어온 사용자 캐시
+let USERS_CACHE = [];
+
+// Firestore users 컬렉션에서 사용자 목록 로드
+async function loadUsersFromFirestore(){
+  if(typeof db === 'undefined'){return;}
+  const snap = await db.collection('users').get();
+  if(snap.empty){
+    // 컬렉션이 비어 있으면 기본 사용자로 초기화
+    const def = getDefaultUsers();
+    const batch = db.batch();
+    def.forEach(u=>{
+      const ref = db.collection('users').doc(u.id);
+      batch.set(ref,u);
+    });
+    await batch.commit();
+    USERS_CACHE = def;
+  }else{
+    USERS_CACHE = snap.docs.map(doc=>({
+      id: doc.id,
+      ...doc.data()
+    }));
   }
-  return JSON.parse(stored);
 }
-function saveUsers(arr){localStorage.setItem('wv_users',JSON.stringify(arr));}
+
+// 현재 메모리에 올라와 있는 사용자 목록 반환
+function getUsers(){
+  return USERS_CACHE;
+}
+
+// Firestore users 컬렉션 전체를 현재 배열 상태로 동기화
+async function saveUsers(arr){
+  if(typeof db === 'undefined'){return;}
+  USERS_CACHE = arr.slice();
+  const colRef = db.collection('users');
+  const snap = await colRef.get();
+  const batch = db.batch();
+  // 기존 문서 삭제
+  snap.forEach(doc=>batch.delete(doc.ref));
+  // 새 상태로 전체 다시 기록
+  USERS_CACHE.forEach(u=>{
+    const id = u.id || db.collection('users').doc().id;
+    const data = {...u,id};
+    const ref = colRef.doc(id);
+    batch.set(ref,data);
+  });
+  await batch.commit();
+}
 // 하위호환 ADMINS (로그인 검증용)
 const ADMINS=null; // 더 이상 사용 안 함
 let CUR_ADMIN=null,CUR_CLIENT=null,SHEET_PROJ=null,SHEET_ROWS=[],SHEET_DIRTY=false,IMP_DATA=[],PEND_RECS=[];
@@ -1153,12 +1192,89 @@ let CUR_ADMIN=null,CUR_CLIENT=null,SHEET_PROJ=null,SHEET_ROWS=[],SHEET_DIRTY=fal
 let SEL_START=null,SEL_END=null,IS_SELECTING=false;
 let MOVE_MODE=false,MOVE_SRC=null,MOVE_TIMER=null;
 
+// 클라이언트/프로젝트/레코드/견적 캐시 (Firestore 연동)
+let CLIENTS_CACHE = [];
+let PROJECTS_CACHE = [];
+let RECORDS_CACHE = [];
+let QUOTES_CACHE = [];
+
 const ld=()=>({
-  clients:JSON.parse(localStorage.getItem('wv_cl')||'[]'),
-  projects:JSON.parse(localStorage.getItem('wv_pr')||'[]'),
-  records:JSON.parse(localStorage.getItem('wv_rc')||'[]'),
-  quotes:JSON.parse(localStorage.getItem('wv_qt')||'[]'),
+  clients: CLIENTS_CACHE,
+  projects: PROJECTS_CACHE,
+  records: RECORDS_CACHE,
+  quotes: QUOTES_CACHE,
 });
+
+// Firestore에서 클라이언트/프로젝트/레코드/견적 로드
+async function loadMainDataFromFirestore(){
+  if(typeof db === 'undefined'){return;}
+  // clients
+  const clSnap = await db.collection('clients').get();
+  CLIENTS_CACHE = clSnap.docs.map(d=>({id:d.id,...d.data()}));
+  // projects
+  const prSnap = await db.collection('projects').get();
+  PROJECTS_CACHE = prSnap.docs.map(d=>({id:d.id,...d.data()}));
+  // records
+  const rcSnap = await db.collection('records').get();
+  RECORDS_CACHE = rcSnap.docs.map(d=>({id:d.id,...d.data()}));
+  // quotes (기존 구조 유지, 나중에 필요 시 확장)
+  const qtSnap = await db.collection('quotes').get().catch(()=>null);
+  QUOTES_CACHE = qtSnap && !qtSnap.empty ? qtSnap.docs.map(d=>({id:d.id,...d.data()})) : [];
+}
+
+// Firestore에 개별 키별로 저장하던 helper 대체
+async function sv(key, value){
+  if(typeof db === 'undefined'){return;}
+  if(key==='cl'){
+    CLIENTS_CACHE = value.slice();
+    const col=db.collection('clients');
+    const snap=await col.get();
+    const batch=db.batch();
+    snap.forEach(doc=>batch.delete(doc.ref));
+    CLIENTS_CACHE.forEach(c=>{
+      const id=c.id||db.collection('clients').doc().id;
+      const data={...c,id};
+      batch.set(col.doc(id),data);
+    });
+    await batch.commit();
+  }else if(key==='pr'){
+    PROJECTS_CACHE = value.slice();
+    const col=db.collection('projects');
+    const snap=await col.get();
+    const batch=db.batch();
+    snap.forEach(doc=>batch.delete(doc.ref));
+    PROJECTS_CACHE.forEach(p=>{
+      const id=p.id||db.collection('projects').doc().id;
+      const data={...p,id};
+      batch.set(col.doc(id),data);
+    });
+    await batch.commit();
+  }else if(key==='rc'){
+    RECORDS_CACHE = value.slice();
+    const col=db.collection('records');
+    const snap=await col.get();
+    const batch=db.batch();
+    snap.forEach(doc=>batch.delete(doc.ref));
+    RECORDS_CACHE.forEach(r=>{
+      const id=r.id||db.collection('records').doc().id;
+      const data={...r,id};
+      batch.set(col.doc(id),data);
+    });
+    await batch.commit();
+  }else if(key==='qt'){
+    QUOTES_CACHE = value.slice();
+    const col=db.collection('quotes');
+    const snap=await col.get();
+    const batch=db.batch();
+    snap.forEach(doc=>batch.delete(doc.ref));
+    QUOTES_CACHE.forEach(q=>{
+      const id=q.id||db.collection('quotes').doc().id;
+      const data={...q,id};
+      batch.set(col.doc(id),data);
+    });
+    await batch.commit();
+  }
+}
 // 공급자 고정 정보 (웨이프로젝트)
 const WAVE_BIZ={
   bizNo:'251-13-02377',
@@ -1275,7 +1391,10 @@ function doModalLogin(){
     // 접속 시각 갱신
     const users=getUsers();
     const ui=users.findIndex(x=>x.loginId===u.loginId);
-    if(ui>=0){users[ui].lastLogin=new Date().toISOString();saveUsers(users);}
+    if(ui>=0){
+      users[ui].lastLogin=new Date().toISOString();
+      saveUsers(users);
+    }
     updateAdminUI();
     if(u.role==='admin') openAdminMenu();
     document.getElementById('modal-login-id').value='';
@@ -1301,7 +1420,10 @@ function doLogin(){
     // 마지막 접속 시각 저장
     const users=getUsers();
     const ui=users.findIndex(x=>x.loginId===u.loginId);
-    if(ui>=0){users[ui].lastLogin=new Date().toISOString();saveUsers(users);}
+    if(ui>=0){
+      users[ui].lastLogin=new Date().toISOString();
+      saveUsers(users);
+    }
     updateAdminUI();
     hide('login-screen');
     show('app');
@@ -7493,6 +7615,10 @@ function exportDsExcel(){
   const db = firebase.firestore();
 
   document.addEventListener('DOMContentLoaded', () => {
+    // Firestore에서 사용자 및 메인 데이터 미리 로드
+    loadUsersFromFirestore().catch(console.error);
+    loadMainDataFromFirestore().catch(console.error);
+
     const testBox = document.createElement('div');
     testBox.style.padding = '16px';
     testBox.style.border = '1px solid #ccc';
