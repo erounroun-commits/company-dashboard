@@ -944,7 +944,8 @@ tr:last-child td{border-bottom:none;}
     <div class="mt">📥 과거 데이터 업로드</div>
     <p style="font-size:12px;color:var(--text2);margin-bottom:14px;line-height:1.7">
       거래처 명단 데이터를 엑셀로 일괄 업로드합니다.<br>
-      거래처가 없으면 자동 생성되고, 있으면 프로젝트/명단이 추가됩니다.
+      거래처가 없으면 자동 생성되고, 있으면 프로젝트/명단이 추가됩니다.<br>
+      <b>A열에 프로젝트명을 다르게 넣으면 한 파일에서 여러 프로젝트로 자동 구분됩니다.</b>
     </p>
 
     <!-- 거래처 기본정보 수기 입력 -->
@@ -1943,8 +1944,8 @@ async function deleteClientCascadeFirestore(cid){
     await _deleteQueryDocs('records','projectId',pid);
   }
 
-  // client 삭제
-  await db.collection('clients').doc(cid).delete().catch(()=>{});
+  // client 문서 영구 삭제 (실패 시 예외 전파)
+  await db.collection('clients').doc(cid).delete();
 }
 
 // Firestore에 개별 키별로 저장하던 helper 대체
@@ -6377,26 +6378,26 @@ function delCurrentClient(){
 }
 async function deleteClientById(cid, cname){
   const name = cname || ld().clients.find(x=>x.id===cid)?.name || '거래처';
-  if(!confirm(`"${name}" 거래처를 삭제하시겠습니까?\n연결된 프로젝트·데이터·정산·일별정산 행이 모두 삭제됩니다.`))return;
-  // UI 정합을 위해 로컬 캐시도 즉시 정리(실제 원본은 Firestore 삭제가 담당)
+  if(!confirm(`"${name}" 거래처를 삭제하시겠습니까?\n연결된 프로젝트·데이터·정산·일별정산이 Firestore에서 영구 삭제되며, 다른 PC에서도 반영됩니다.`))return;
   try{
-    CLIENTS_CACHE = (CLIENTS_CACHE||[]).filter(c=>c.id!==cid);
-    const removedPids = new Set((PROJECTS_CACHE||[]).filter(p=>p.clientId===cid).map(p=>p.id));
-    PROJECTS_CACHE = (PROJECTS_CACHE||[]).filter(p=>p.clientId!==cid);
-    RECORDS_CACHE = (RECORDS_CACHE||[]).filter(r=>!removedPids.has(r.projectId));
-    QUOTES_CACHE = (QUOTES_CACHE||[]).filter(q=>q.clientId!==cid);
-    SETTLES_CACHE = (SETTLES_CACHE||[]).filter(s=>s.clientId!==cid);
-    DS_CACHE = (DS_CACHE||[]).filter(r=>r.clientId!==cid);
-    if(CUR_CLIENT===cid){ backToList(); }
-    scheduleRerender();
-  }catch(e){}
-  // Firestore에서 관련 문서 완전 삭제 (다른 PC에도 즉시 반영)
-  await deleteClientCascadeFirestore(cid);
-  // 일/월 정산 행 삭제
+    await deleteClientCascadeFirestore(cid);
+  }catch(e){
+    console.error('거래처 Firestore 삭제 실패',e);
+    toast('삭제 실패: '+e.message+'. 권한/네트워크를 확인하세요.','error');
+    return;
+  }
+  CLIENTS_CACHE = (CLIENTS_CACHE||[]).filter(c=>c.id!==cid);
+  const removedPids = new Set((PROJECTS_CACHE||[]).filter(p=>p.clientId===cid).map(p=>p.id));
+  PROJECTS_CACHE = (PROJECTS_CACHE||[]).filter(p=>p.clientId!==cid);
+  RECORDS_CACHE = (RECORDS_CACHE||[]).filter(r=>!removedPids.has(r.projectId));
+  QUOTES_CACHE = (QUOTES_CACHE||[]).filter(q=>q.clientId!==cid);
+  SETTLES_CACHE = (SETTLES_CACHE||[]).filter(s=>s.clientId!==cid);
+  DS_CACHE = (DS_CACHE||[]).filter(r=>r.clientId!==cid);
   dsSv(dsLd().filter(r=>r.clientId!==cid));
-  if(CUR_CLIENT===cid){backToList();}
+  if(CUR_CLIENT===cid) backToList();
+  scheduleRerender();
   renderClients();renderOverview();
-  toast(`"${name}" 삭제 완료`);
+  toast(`"${name}" 영구 삭제 완료`);
 }
 function showViewLinkCurrent(){if(CUR_CLIENT)showViewLink(CUR_CLIENT);}
 
@@ -7066,20 +7067,19 @@ function previewBulkUpload(input){
       let headerRowIndex = 0;
       let sheetNameUsed = '';
 
+      const COLS_TO_CHECK = 25;
       for(const name of wb.SheetNames){
         const ws = wb.Sheets[name];
         const rows = XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
         if(!rows.length) continue;
 
-        // 현재 시트에서 "실제 데이터가 있는 첫 행" 찾기
         let firstDataIdx = -1;
         for(let i=0;i<rows.length;i++){
-          const hasAny=[...Array(16)].some((_,ci)=>String(rows[i][ci]??'').trim()!=='');
+          const hasAny=[...Array(COLS_TO_CHECK)].some((_,ci)=>String(rows[i][ci]??'').trim()!=='');
           if(hasAny){ firstDataIdx=i; break; }
         }
         if(firstDataIdx===-1) continue;
 
-        // 첫 데이터 행이 0보다 크면 그 바로 위를 헤더로 보고 사용
         headerRowIndex = Math.max(0, firstDataIdx-1);
         rawRows = rows;
         sheetNameUsed = name;
@@ -7087,21 +7087,35 @@ function previewBulkUpload(input){
       }
 
       if(!rawRows.length){
+        sheetNameUsed = wb.SheetNames[0]||'';
+        const ws = wb.Sheets[sheetNameUsed];
+        if(ws){
+          rawRows = XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
+          headerRowIndex = 0;
+        }
+      }
+
+      if(!rawRows.length){
         toast('엑셀에서 데이터를 찾지 못했습니다. 시트 내용과 범위를 확인하세요.','error');
         return;
       }
 
-      // 2) 헤더 행 아래부터 끝까지를 데이터 행으로 간주
-      const allDataRows = [];
+      let allDataRows = [];
       for(let i=headerRowIndex+1;i<rawRows.length;i++){
         const rr = rawRows[i];
-        const hasAny=[...Array(16)].some((_,ci)=>String(rr[ci]??'').trim()!=='');
+        const hasAny=[...Array(COLS_TO_CHECK)].some((_,ci)=>String(rr[ci]??'').trim()!=='');
         if(!hasAny) continue;
         allDataRows.push({rr,lineNo:i+1});
       }
 
+      if(!allDataRows.length&&rawRows.length>1){
+        headerRowIndex = 0;
+        allDataRows = [];
+        for(let i=1;i<rawRows.length;i++) allDataRows.push({rr:rawRows[i],lineNo:i+1});
+      }
+
       if(!allDataRows.length){
-        toast('데이터 행이 비어 있습니다. 헤더 아래에 실제 데이터가 있는지 확인하세요.','error');
+        toast('데이터 행이 비어 있습니다. 2행부터 데이터가 있는지 확인하세요. (A=프로젝트명, B=NO, C=일자, D=구매날짜 …)','error');
         return;
       }
 
@@ -7196,12 +7210,12 @@ function previewBulkUpload(input){
   };
 
   const reader=new FileReader();
+  reader.onerror=()=>{ toast('파일 읽기 실패','error'); };
   if(ext==='csv'){
-    reader.onload=e=>doProcess(e.target.result,'string');
+    reader.onload=e=>{ try{ doProcess(e.target.result,'string'); }catch(err){ console.error(err); toast('CSV 파싱 오류: '+err.message,'error'); } };
     reader.readAsText(file,'UTF-8');
   } else {
-    // XLSX 추천 방식: ArrayBuffer + type:'array'
-    reader.onload=e=>doProcess(e.target.result,'array');
+    reader.onload=e=>{ try{ doProcess(e.target.result,'array'); }catch(err){ console.error(err); toast('엑셀 파싱 오류: '+err.message,'error'); } };
     reader.readAsArrayBuffer(file);
   }
 }
@@ -7209,6 +7223,7 @@ function previewBulkUpload(input){
 function confirmBulkUpload(){
   const clientName=document.getElementById('bu-client-name').value.trim();
   if(!clientName){toast('거래처명을 입력하세요','error');return;}
+  if(!BU_DATA||BU_DATA.length===0){toast('먼저 엑셀 파일을 선택해 미리보기가 나오면 업로드할 수 있습니다.','error');return;}
 
   const d=ld();
   // 거래처 찾기 또는 생성
