@@ -2157,6 +2157,11 @@ function handleDailyBtn(el){
   if(!mode||!dateStr)return;
   const wrap=document.getElementById('daily-wrap-'+mode);
   const clientId=(wrap&&wrap.dataset.cid)||CUR_CLIENT;
+  // 버튼 클릭 시 날짜 선택/직접입력에도 동일 날짜를 반영
+  const sel=document.getElementById('daily-sel-'+mode);
+  if(sel) sel.value=dateStr;
+  const custIn=document.getElementById('daily-custom-'+mode);
+  if(custIn) custIn.value=dateStr;
   selectDailyDate(mode,clientId,dateStr);
 }
 function handleDailySel(el){
@@ -5040,7 +5045,20 @@ function renderDetProjView(){
 
 function showProjDetailModal(projId){
   const d=ld(),p=d.projects.find(x=>x.id===projId);if(!p)return;
-  const rc=d.records.filter(r=>r.projectId===projId);
+  // 기본 정렬: no 오름차순
+  let rc=d.records.filter(r=>r.projectId===projId);
+  const sortModeSel=document.getElementById('pjd-sort');
+  const mode=(sortModeSel&&sortModeSel.value)||'no-asc';
+  const sorter=(a,b)=>{
+    const getNo=x=>Number(x.no)||0;
+    const getDate=x=>String(x.purchaseDate||'');
+    if(mode==='no-desc') return getNo(b)-getNo(a);
+    if(mode==='date-asc') return getDate(a).localeCompare(getDate(b));
+    if(mode==='date-desc') return getDate(b).localeCompare(getDate(a));
+    // default: no-asc
+    return getNo(a)-getNo(b);
+  };
+  rc=rc.slice().sort(sorter);
   const reqTotal=p.contractTotal||p.total||rc.length||0;
   const buyDone=rc.filter(r=>r.nickname||r.tracking).length; // 닉네임 있으면 구매완료
   const rvDone=rc.filter(r=>r.reviewUrl).length;
@@ -5054,10 +5072,20 @@ function showProjDetailModal(projId){
     ${sMini('리뷰 완료건수','#7c3aed',rvDone+'건')}
     ${sMini('미완료건수','var(--yellow)',notDone+'건')}
     ${sMini('진행율','var(--accent)',pp+'%')}`;
-  // COLS 기반 동적 테이블 (extra cols 포함, 순서 반영)
+  // 정렬 필터 + COLS 기반 동적 테이블 (extra cols 포함, 순서 반영)
   loadExtraCols();const cols=getCOLS();
   const colCount=cols.length+1; // +리뷰URL
-  document.getElementById('pjd-table').innerHTML='<table style="white-space:nowrap;user-select:text;min-width:max-content">'
+  document.getElementById('pjd-table').innerHTML=
+    '<div style="margin-bottom:8px;display:flex;justify-content:flex-end;align-items:center;gap:6px;font-size:11px;color:var(--text2)">'+
+    '<span>정렬:</span>'+
+    '<select id="pjd-sort" class="fs" style="font-size:11px;padding:3px 8px" onchange="showProjDetailModal(\''+projId+'\')">'+
+      '<option value="no-asc" selected>NO 오름차순</option>'+
+      '<option value="no-desc">NO 내림차순</option>'+
+      '<option value="date-asc">일자 오름차순</option>'+
+      '<option value="date-desc">일자 내림차순</option>'+
+    '</select>'+
+    '</div>'+
+    '<table style="white-space:nowrap;user-select:text;min-width:max-content">'
     +'<thead><tr>'
     +cols.map(col=>'<th>'+col.lb+'</th>').join('')
     +'<th>리뷰 URL</th>'
