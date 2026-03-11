@@ -619,10 +619,30 @@ tr:last-child td{border-bottom:none;}
       </div>
       <div id="settle-all-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px"></div>
       <div class="card">
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">
-          <input style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:8px;font-size:12px;font-family:var(--font);outline:none;width:200px;" placeholder="거래처명 검색..." id="settle-search" oninput="renderSettleAll()" />
-          <select style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:8px;font-size:12px;font-family:var(--font);outline:none;" id="settle-filter" onchange="renderSettleAll()">
-            <option value="">전체 상태</option>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+          <span style="font-size:11px;font-weight:700;color:var(--text2)">일자</span>
+          <input type="date" id="settle-filter-date-from" style="background:var(--bg2);border:1px solid var(--border);padding:5px 8px;border-radius:6px;font-size:12px" onchange="renderSettleAll()" title="시작일" />
+          <span style="color:var(--text3)">~</span>
+          <input type="date" id="settle-filter-date-to" style="background:var(--bg2);border:1px solid var(--border);padding:5px 8px;border-radius:6px;font-size:12px" onchange="renderSettleAll()" title="종료일" />
+          <span style="font-size:11px;font-weight:700;color:var(--text2);margin-left:8px">거래처</span>
+          <input style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:6px;font-size:12px;width:140px;" placeholder="검색..." id="settle-search" oninput="renderSettleAll()" />
+          <span style="font-size:11px;font-weight:700;color:var(--text2)">합계금액</span>
+          <select id="settle-filter-amt" style="background:var(--bg2);border:1px solid var(--border);padding:5px 8px;border-radius:6px;font-size:12px" onchange="renderSettleAll()">
+            <option value="">전체</option>
+            <option value="0">0원</option>
+            <option value="1-10">1~10만원</option>
+            <option value="10-50">10~50만원</option>
+            <option value="50-999">50만원+</option>
+          </select>
+          <span style="font-size:11px;font-weight:700;color:var(--text2)">세금계산서</span>
+          <select id="settle-filter-tax" style="background:var(--bg2);border:1px solid var(--border);padding:5px 8px;border-radius:6px;font-size:12px" onchange="renderSettleAll()">
+            <option value="">전체</option>
+            <option value="y">발행</option>
+            <option value="n">미발행</option>
+          </select>
+          <span style="font-size:11px;font-weight:700;color:var(--text2)">정산상태</span>
+          <select id="settle-filter" style="background:var(--bg2);border:1px solid var(--border);padding:5px 8px;border-radius:6px;font-size:12px" onchange="renderSettleAll()">
+            <option value="">전체</option>
             <option value="대기">대기중</option>
             <option value="완료">정산완료</option>
           </select>
@@ -1021,7 +1041,7 @@ tr:last-child td{border-bottom:none;}
 <div class="mo hidden" id="modal-change-log">
   <div class="md md-lg" style="max-width:720px">
     <div class="mt">📜 수정 이력</div>
-    <div style="font-size:12px;color:var(--text2);margin-bottom:12px">거래처/프로젝트 정보 변경 시 자동 기록됩니다. (Firestore changeLogs)</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px">거래처/프로젝트 저장 시 자동 기록. <b>거래처 목록·프로젝트 카드에서 우클릭</b>하면 해당 항목 수정 이력만 볼 수 있습니다.</div>
     <div style="max-height:400px;overflow-y:auto;border:1px solid var(--border);border-radius:10px" id="change-log-list"></div>
     <div class="mf"><button class="btn btn-gray" onclick="closeMd('change-log')">닫기</button></div>
   </div>
@@ -1310,55 +1330,69 @@ function openChangeLogModal(){
   openMd('change-log');
   loadChangeLogs();
 }
-async function loadChangeLogs(){
+function loadChangeLogs(){
   const el=document.getElementById('change-log-list');
   if(!el){return;}
-  el.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3)">불러오는 중...</div>';
-  try{
-    if(typeof db==='undefined'){ el.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3)">Firestore 미연동</div>'; return; }
-    const snap=await db.collection('changeLogs').orderBy('updatedAt','desc').limit(100).get();
-    if(!snap||snap.empty){ el.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3)">수정 이력이 없습니다</div>'; return; }
-    let html='';
-    snap.docs.forEach(doc=>{
-      const x=doc.data();
-      const dt=x.updatedAt?new Date(x.updatedAt).toLocaleString('ko-KR'):'-';
-      const who=(x.username||x.userId||'시스템')+'';
-      const ent=x.entityType==='client'?'거래처':'프로젝트';
-      const ch=x.changes||{};
-      const keys=Object.keys(ch);
-      const summary=keys.length?keys.map(k=>k+': '+(ch[k].after!=null?String(ch[k].after):'')).join(', '):'변경됨';
-      html+=`<div style="padding:12px 14px;border-bottom:1px solid var(--border);font-size:12px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-          <span style="font-weight:700;color:var(--accent)">${ent}</span>
-          <span style="color:var(--text3);font-size:11px">${dt}</span>
-        </div>
-        <div style="color:var(--text2)">${who} · ${summary}</div>
-      </div>`;
-    });
-    el.innerHTML=html||'<div style="padding:24px;text-align:center;color:var(--text3)">수정 이력이 없습니다</div>';
-  }catch(e){
-    console.error(e);
-    el.innerHTML='<div style="padding:24px;text-align:center;color:var(--red)">로드 실패: '+e.message+'</div>';
-  }
+  const list=CHANGE_LOG_CACHE.slice(0,100);
+  if(!list.length){ el.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3)">수정 이력이 없습니다. (거래처/프로젝트 저장 시 자동 기록·우클릭으로 해당 행 이력 확인)</div>'; return; }
+  let html='';
+  list.forEach(x=>{
+    const dt=x.updatedAt?new Date(x.updatedAt).toLocaleString('ko-KR'):'-';
+    const who=(x.username||x.userId||'시스템')+'';
+    const ent=x.entityType==='client'?'거래처':'프로젝트';
+    const ch=x.changes||{}; const keys=Object.keys(ch);
+    const summary=keys.length?keys.map(k=>k+': '+(ch[k].after!=null?String(ch[k].after):'')).join(', '):'변경됨';
+    html+=`<div style="padding:12px 14px;border-bottom:1px solid var(--border);font-size:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span style="font-weight:700;color:var(--accent)">${ent}</span>
+        <span style="color:var(--text3);font-size:11px">${dt}</span>
+      </div>
+      <div style="color:var(--text2)">${who} · ${summary}</div>
+    </div>`;
+  });
+  el.innerHTML=html;
 }
 
+let CHANGE_LOG_CACHE=[];
+const CHANGE_LOG_MAX=300;
 async function logChange(entityType, entityId, changes, context){
+  if(!changes || Object.keys(changes).length===0) return;
+  const payload={
+    entityType,
+    entityId,
+    context: context||{},
+    changes,
+    userId: CUR_ADMIN?.id||null,
+    username: CUR_ADMIN?.username||null,
+    updatedAt: new Date().toISOString(),
+  };
+  CHANGE_LOG_CACHE.unshift(payload);
+  if(CHANGE_LOG_CACHE.length>CHANGE_LOG_MAX) CHANGE_LOG_CACHE.length=CHANGE_LOG_MAX;
   try{
-    if(typeof db==='undefined') return;
-    if(!changes || Object.keys(changes).length===0) return;
-    const payload={
-      entityType,
-      entityId,
-      context: context||{},
-      changes,
-      userId: CUR_ADMIN?.id||null,
-      username: CUR_ADMIN?.username||null,
-      updatedAt: new Date().toISOString(),
-    };
-    await db.collection('changeLogs').add(payload);
-  }catch(e){
-    console.error('logChange error',e);
+    if(typeof db!=='undefined') await db.collection('changeLogs').add(payload);
+  }catch(e){ console.error('logChange error',e); }
+}
+function showChangeLogContext(entityType,entityId,ev){
+  if(ev)ev.preventDefault();
+  const list=CHANGE_LOG_CACHE.filter(x=>x.entityType===entityType&&x.entityId===entityId).slice(0,30);
+  const ent=entityType==='client'?'거래처':'프로젝트';
+  let html='<div style="padding:8px 12px;font-size:12px;font-weight:700;color:var(--accent);border-bottom:1px solid var(--border)">📜 '+ent+' 수정 이력</div>';
+  if(!list.length){ html+='<div style="padding:16px;color:var(--text3);font-size:12px">기록 없음</div>'; }
+  else{ list.forEach(x=>{ const dt=x.updatedAt?new Date(x.updatedAt).toLocaleString('ko-KR'):'-'; const who=(x.username||x.userId||'시스템')+''; const ch=x.changes||{}; const keys=Object.keys(ch); const summary=keys.length?keys.slice(0,3).map(k=>k).join(', ')+' 등':'변경'; html+=`<div style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:11px"><div style="color:var(--text2)">${dt} · ${who}</div><div style="color:var(--text3);margin-top:2px">${summary}</div></div>`; }); }
+  let pop=document.getElementById('change-log-context-popup');
+  if(!pop){
+    pop=document.createElement('div');
+    pop.id='change-log-context-popup';
+    pop.style.cssText='position:fixed;z-index:10000;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:var(--sh2);max-width:320px;max-height:280px;overflow-y:auto;';
+    pop.onclick=function(e){ e.stopPropagation(); };
+    document.body.appendChild(pop);
   }
+  pop.innerHTML=html+'<div style="padding:6px;font-size:10px;color:var(--text3);text-align:center">클릭하면 닫힙니다</div>';
+  pop.style.left=(ev?Math.min(ev.clientX, window.innerWidth-330):20)+'px';
+  pop.style.top=(ev?Math.min(ev.clientY, window.innerHeight-290):20)+'px';
+  pop.style.display='block';
+  const closeFn=function(){ pop.style.display='none'; document.removeEventListener('click',closeFn); };
+  setTimeout(()=>document.addEventListener('click',closeFn), 0);
 }
 
 function diffClient(prev, next){
@@ -2302,13 +2336,7 @@ function renderDailyPanel(mode, clientId){
     if(dt)dateMap[dt]=(dateMap[dt]||0)+1;
   });
 
-  // 있는 날짜들 정렬 (최신순)
-  const availDates=[...new Set(allRecs.map(r=>normDateD(r.purchaseDate)).filter(Boolean))].sort((a,b)=>b.localeCompare(a));
-
-  const selOptions=availDates.map(dt=>`<option value="${dt}">${dt} (${dateMap[dt]}건)</option>`).join('');
-
-  // clientId를 래퍼 data 속성으로 저장 → 버튼은 날짜만 data-date로 전달
-  // onclick은 handleDailyBtn(this) 형태로 단순화
+  // 작일/금일/익일 + 달력만 유지 (드롭다운 제거)
   const _m=mode, _cid=clientId;
   const html='<div style="max-width:960px" id="daily-wrap-'+_m+'" data-mode="'+_m+'" data-cid="'+_cid+'">'
     +'<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:var(--sh)">'
@@ -2317,11 +2345,7 @@ function renderDailyPanel(mode, clientId){
     +'<button id="daily-btn-'+_m+'-today" data-date="'+todayISO+'" data-mode="'+_m+'" class="btn btn-sm btn-blue" style="font-size:12px" onclick="handleDailyBtn(this)">금일 ('+todayISO.slice(5)+')</button>'
     +'<button id="daily-btn-'+_m+'-tmrw" data-date="'+tmrISO+'" data-mode="'+_m+'" class="btn btn-sm btn-gray" style="font-size:12px" onclick="handleDailyBtn(this)">익일 ('+tmrISO.slice(5)+') ▶</button>'
     +'<div style="display:flex;align-items:center;gap:6px;margin-left:8px">'
-    +'<span style="font-size:11px;color:var(--text2)">날짜 선택:</span>'
-    +'<select class="fs" id="daily-sel-'+_m+'" data-mode="'+_m+'" style="font-size:12px;padding:5px 8px" onchange="handleDailySel(this)">'
-    +'<option value="">-- 선택 --</option>'
-    +selOptions
-    +'</select>'
+    +'<span style="font-size:11px;color:var(--text2)">날짜:</span>'
     +'<input type="date" class="fi" id="daily-custom-'+_m+'" data-mode="'+_m+'" style="font-size:12px;padding:5px 8px;width:150px" onchange="handleDailySel(this)">'
     +'</div></div>'
     +'<div id="daily-result-'+_m+'"></div>'
@@ -2340,9 +2364,6 @@ function handleDailyBtn(el){
   if(!mode||!dateStr)return;
   const wrap=document.getElementById('daily-wrap-'+mode);
   const clientId=(wrap&&wrap.dataset.cid)||CUR_CLIENT;
-  // 버튼 클릭 시 날짜 선택/직접입력에도 동일 날짜를 반영
-  const sel=document.getElementById('daily-sel-'+mode);
-  if(sel) sel.value=dateStr;
   const custIn=document.getElementById('daily-custom-'+mode);
   if(custIn) custIn.value=dateStr;
   selectDailyDate(mode,clientId,dateStr);
@@ -2353,6 +2374,12 @@ function handleDailySel(el){
   if(!mode||!dateStr)return;
   const wrap=document.getElementById('daily-wrap-'+mode);
   const clientId=(wrap&&wrap.dataset.cid)||CUR_CLIENT;
+  const btnToday=document.getElementById('daily-btn-'+mode+'-today');
+  const btnYest=document.getElementById('daily-btn-'+mode+'-yest');
+  const btnTmrw=document.getElementById('daily-btn-'+mode+'-tmrw');
+  if(btnToday)btnToday.className='btn btn-sm '+(dateStr===btnToday.dataset.date?'btn-blue':'btn-gray');
+  if(btnYest)btnYest.className='btn btn-sm '+(dateStr===btnYest.dataset.date?'btn-blue':'btn-gray');
+  if(btnTmrw)btnTmrw.className='btn btn-sm '+(dateStr===btnTmrw.dataset.date?'btn-blue':'btn-gray');
   selectDailyDate(mode,clientId,dateStr);
 }
 // selectDailyDateById는 하위호환용으로 유지
@@ -2371,8 +2398,6 @@ function selectDailyDate(mode,clientId,dateStr){
     setTimeout(()=>selectDailyDate(mode,clientId,dateStr),40);
     return;
   }
-  const sel=document.getElementById('daily-sel-'+mode);
-  if(sel)sel.value=dateStr;
   const custIn=document.getElementById('daily-custom-'+mode);
   if(custIn)custIn.value=dateStr;
   // 버튼 active 표시 갱신
@@ -2624,7 +2649,11 @@ function cvToggle(rowId,arrowId){
 
 // ── 견적서 (업체용) ──
 function buildCvQuote(c,projs,d){
-  const myQuotes=(d.quotes||[]).filter(q=>q.clientId===c.id).sort((a,b)=>b.date.localeCompare(a.date));
+  const myQuotes=(d.quotes||[]).filter(q=>q.clientId===c.id).sort((a,b)=>{
+    const oa=a.order!=null?a.order:9999, ob=b.order!=null?b.order:9999;
+    if(oa!==ob)return oa-ob;
+    return b.date.localeCompare(a.date);
+  });
   if(!myQuotes.length){
     return `<div style="text-align:center;padding:60px;color:var(--text3)"><div style="font-size:40px;margin-bottom:12px">📄</div><div>등록된 견적서가 없습니다</div><div style="font-size:12px;margin-top:6px">관리자에게 문의하세요</div></div>`;
   }
@@ -3807,11 +3836,25 @@ async function confirmSettleImport(){
   toast(`${rawCount}개 항목 → ${added}건으로 묶어 업로드 완료`,'success');
 }
 
+async function setSettleTaxIssued(stId,checked){
+  const settles=[...stLd()];
+  const idx=settles.findIndex(s=>s.id===stId);
+  if(idx===-1)return;
+  settles[idx].taxIssued=!!checked;
+  await stSv(settles);
+  renderSettleAll();
+  toast(checked?'세금계산서 발행 여부: Y':'세금계산서 발행 여부: N');
+}
+
 function renderSettleAll(){
   const settles=stLd();
   const d=ld();
   const search=(document.getElementById('settle-search')?.value||'').toLowerCase();
   const filter=document.getElementById('settle-filter')?.value||'';
+  const dateFrom=(document.getElementById('settle-filter-date-from')?.value||'').trim();
+  const dateTo=(document.getElementById('settle-filter-date-to')?.value||'').trim();
+  const amtFilter=document.getElementById('settle-filter-amt')?.value||'';
+  const taxFilter=document.getElementById('settle-filter-tax')?.value||'';
 
   // 통계
   const totalAmt=settles.reduce((s,x)=>s+x.total,0);
@@ -3824,17 +3867,34 @@ function renderSettleAll(){
     ${sCard('정산 완료','var(--green)',fmtN(settledAmt)+'원',settles.filter(x=>x.settled).length+'건')}
     ${sCard('미정산','var(--red)',fmtN(pendingAmt)+'원',settles.filter(x=>!x.settled).length+'건')}`;
 
-  // 거래처명 매핑
+  // 거래처명 매핑 + 견적서 order (순서 반영)
   const clientMap={};
   d.clients.forEach(cl=>{clientMap[cl.id]=cl.name;});
+  const quoteOrder={};
+  (d.quotes||[]).forEach(q=>{ quoteOrder[q.id]=q.order!=null?q.order:9999; });
 
   let filtered=settles.filter(s=>{
     const cname=(clientMap[s.clientId]||'').toLowerCase();
     if(search&&!cname.includes(search)&&!(s.toName||'').toLowerCase().includes(search))return false;
     if(filter==='대기'&&s.settled)return false;
     if(filter==='완료'&&!s.settled)return false;
+    if(dateFrom&&(s.date||'').localeCompare(dateFrom)<0)return false;
+    if(dateTo&&(s.date||'').localeCompare(dateTo)>0)return false;
+    if(amtFilter){
+      const t=Number(s.total)||0;
+      if(amtFilter==='0'&&t!==0)return false;
+      if(amtFilter==='1-10'&&(t<10000||t>100000))return false;
+      if(amtFilter==='10-50'&&(t<100000||t>500000))return false;
+      if(amtFilter==='50-999'&&t<500000)return false;
+    }
+    if(taxFilter==='y'&&!s.taxYn)return false;
+    if(taxFilter==='n'&&s.taxYn)return false;
     return true;
-  }).sort((a,b)=>b.date.localeCompare(a.date));
+  }).sort((a,b)=>{
+    const oa=quoteOrder[a.qtId]!=null?quoteOrder[a.qtId]:9999, ob=quoteOrder[b.qtId]!=null?quoteOrder[b.qtId]:9999;
+    if(oa!==ob)return oa-ob;
+    return b.date.localeCompare(a.date);
+  });
 
   const tbody=filtered.map((s,i)=>`<tr>
     <td style="text-align:center;font-size:11px;color:var(--text3)">${i+1}</td>
@@ -3853,6 +3913,11 @@ function renderSettleAll(){
             ${!s.taxFee&&!s.taxDel&&!s.taxProd?'<span class="badge bg" style="font-size:9px">발행</span>':''}
           </div>`
         :'<span class="badge bgr" style="font-size:10px">미발행</span>'}
+    </td>
+    <td style="text-align:center;min-width:70px" title="실제 세금계산서 발행 여부 (관리자 체크)">
+      ${s.taxYn
+        ?`<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:11px"><input type="checkbox" ${s.taxIssued?'checked':''} onchange="setSettleTaxIssued('${s.id}',this.checked)" onclick="event.stopPropagation()">${s.taxIssued?'Y':'N'}</label>`
+        :'—'}
     </td>
     <td style="padding:9px 14px;text-align:center;font-size:11px">
       ${s.depositDate
@@ -3879,10 +3944,10 @@ function renderSettleAll(){
   tableEl.innerHTML=`<table>
     <thead><tr>
       <th>#</th><th>견적일자</th><th>거래처</th><th>수신처</th><th>견적번호</th><th>항목요약</th>
-      <th style="text-align:right">합계금액</th><th style="text-align:center">세금계산서</th>
+      <th style="text-align:right">합계금액</th><th style="text-align:center">세금계산서</th><th style="text-align:center">발행여부</th>
       <th style="text-align:center">입금 정보</th><th style="text-align:center">정산상태</th><th style="text-align:center">삭제</th>
     </tr></thead>
-    <tbody>${tbody||'<tr><td colspan="11" style="text-align:center;padding:40px;color:var(--text3)">정산 내역이 없습니다</td></tr>'}</tbody>
+    <tbody>${tbody||'<tr><td colspan="12" style="text-align:center;padding:40px;color:var(--text3)">정산 내역이 없습니다</td></tr>'}</tbody>
   </table>`;
 }
 
@@ -4533,9 +4598,9 @@ function renderClients(){
   document.getElementById('cl-count').textContent=`총 ${fl.length}개`;
   document.getElementById('cl-tbody').innerHTML=fl.map((c,i)=>{
     const pc=d.projects.filter(p=>p.clientId===c.id).length;
-    return `<tr>
+    return `<tr data-entity-type="client" data-entity-id="${c.id}" oncontextmenu="showChangeLogContext('client','${c.id}',event)">
       <td style="color:var(--text3)">${i+1}</td>
-      <td><span style="font-weight:800;color:var(--accent);cursor:pointer" ondblclick="openDetail('${c.id}')" title="더블클릭: 상세">${c.name}</span> <span style="font-size:10px;color:var(--text3)">(더블클릭)</span></td>
+      <td><span style="font-weight:800;color:var(--accent);cursor:pointer" ondblclick="openDetail('${c.id}')" title="더블클릭: 상세 / 우클릭: 수정 이력">${c.name}</span> <span style="font-size:10px;color:var(--text3)">(더블클릭)</span></td>
       <td>${c.manager||'-'}</td><td style="font-size:11px;color:var(--text2)">${c.phone||'-'}</td>
       <td><span style="font-family:monospace;background:var(--bg2);padding:2px 8px;border-radius:6px;font-size:11px;color:var(--accent)">${c.code}</span></td>
       <td><span class="badge bb">${pc}개</span></td>
@@ -4749,8 +4814,14 @@ function renderProdStat(){
 // ════════════════════════════════════════════
 function renderDetSettle(){
   const d=ld(),c=d.clients.find(x=>x.id===CUR_CLIENT);if(!c)return;
+  const quoteOrder={};
+  (d.quotes||[]).forEach(q=>{ quoteOrder[q.id]=q.order!=null?q.order:9999; });
   const settles=stLd().filter(s=>s.clientId===CUR_CLIENT)
-    .sort((a,b)=>b.date.localeCompare(a.date));
+    .sort((a,b)=>{
+      const oa=quoteOrder[a.qtId]!=null?quoteOrder[a.qtId]:9999, ob=quoteOrder[b.qtId]!=null?quoteOrder[b.qtId]:9999;
+      if(oa!==ob)return oa-ob;
+      return b.date.localeCompare(a.date);
+    });
 
   const totalAmt=settles.reduce((s,x)=>s+x.total,0);
   const settledAmt=settles.filter(x=>x.settled).reduce((s,x)=>s+x.total,0);
@@ -5212,7 +5283,7 @@ function renderDetProjView(){
     const notDone=rc.length-rvDone;
     const pp=reqTotal>0?~~((rvDone/reqTotal)*100):0;
     const statusColor=badgeClass(p.status)==='bgr'?'#ef4444':badgeClass(p.status)==='bg'?'#22c55e':'var(--border)';
-    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh)">
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh)" data-entity-type="project" data-entity-id="${p.id}" oncontextmenu="showChangeLogContext('project','${p.id}',event)">
       <!-- 헤더: 프로젝트명 + 명단 보기 -->
       <div style="padding:12px 18px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);cursor:pointer" onclick="showProjDetailModal('${p.id}')">
         <div>
