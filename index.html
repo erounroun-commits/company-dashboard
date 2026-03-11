@@ -144,6 +144,11 @@ tr:last-child td{border-bottom:none;}
 .ds-tbl td.td-profit{background:rgba(16,185,129,.07);font-weight:700;color:#10b981;text-align:right;padding:5px 10px;}
 .ds-tbl td.td-profit.neg{color:#ef4444;background:rgba(239,68,68,.07);}
 .ds-grp-h{background:rgba(99,102,241,.1)!important;}
+/* 견적서 드래그 순서 변경 */
+.qt-drag-handle{cursor:grab;user-select:none;padding:4px 8px;color:var(--text3);font-size:14px;border-radius:6px;}
+.qt-drag-handle:hover{background:var(--bg2);color:var(--text2);}
+.qt-drag-handle:active{cursor:grabbing;}
+.qt-card-dragover{outline:2px dashed var(--accent);outline-offset:2px;}
 .ds-sum-row td{background:var(--bg2)!important;font-weight:700;color:var(--text);border-top:2px solid var(--accent);}
 .bank-tx{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);margin-bottom:6px;font-size:12px;cursor:pointer;transition:background .15s;}
 .bank-tx:hover{background:var(--bg2);}
@@ -363,6 +368,7 @@ tr:last-child td{border-bottom:none;}
       <div class="nav-item nav-sub" onclick="showPage('daily-settle')" data-page="daily-settle"><span class="nav-icon" style="font-size:12px">📒</span>일/월 정산</div>
       <div class="nav-item nav-sub" onclick="showPage('user-mgmt');renderUserMgmt()" data-page="user-mgmt"><span class="nav-icon" style="font-size:12px">🔐</span>로그인 관리</div>
       <div class="nav-item nav-sub" onclick="showPage('gsync-settings');renderGsyncSettings()" data-page="gsync-settings"><span class="nav-icon" style="font-size:12px">🔗</span>시트 연동 설정</div>
+      <div class="nav-item nav-sub" onclick="openChangeLogModal()"><span class="nav-icon" style="font-size:12px">📜</span>수정 이력</div>
     </div>
     <div class="nav-item" onclick="showPage('export')" data-page="export"><span class="nav-icon">📤</span>엑셀 추출</div>
     <div style="padding:10px 20px;border-top:1px solid var(--border);margin-top:auto">
@@ -1012,6 +1018,15 @@ tr:last-child td{border-bottom:none;}
   </div>
 </div>
 
+<div class="mo hidden" id="modal-change-log">
+  <div class="md md-lg" style="max-width:720px">
+    <div class="mt">📜 수정 이력</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px">거래처/프로젝트 정보 변경 시 자동 기록됩니다. (Firestore changeLogs)</div>
+    <div style="max-height:400px;overflow-y:auto;border:1px solid var(--border);border-radius:10px" id="change-log-list"></div>
+    <div class="mf"><button class="btn btn-gray" onclick="closeMd('change-log')">닫기</button></div>
+  </div>
+</div>
+
 <div class="mo hidden" id="modal-view-link">
   <div class="md" style="max-width:480px">
     <div class="mt">업체 뷰 링크</div>
@@ -1291,6 +1306,42 @@ let CUR_ADMIN=null,CUR_CLIENT=null,SHEET_PROJ=null,SHEET_ROWS=[],SHEET_DIRTY=fal
 // ─────────────────────────────────────────────────────────────
 // 변경 이력 로깅 (changeLogs) - 거래처/프로젝트
 // ─────────────────────────────────────────────────────────────
+function openChangeLogModal(){
+  openMd('change-log');
+  loadChangeLogs();
+}
+async function loadChangeLogs(){
+  const el=document.getElementById('change-log-list');
+  if(!el){return;}
+  el.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3)">불러오는 중...</div>';
+  try{
+    if(typeof db==='undefined'){ el.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3)">Firestore 미연동</div>'; return; }
+    const snap=await db.collection('changeLogs').orderBy('updatedAt','desc').limit(100).get();
+    if(!snap||snap.empty){ el.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3)">수정 이력이 없습니다</div>'; return; }
+    let html='';
+    snap.docs.forEach(doc=>{
+      const x=doc.data();
+      const dt=x.updatedAt?new Date(x.updatedAt).toLocaleString('ko-KR'):'-';
+      const who=(x.username||x.userId||'시스템')+'';
+      const ent=x.entityType==='client'?'거래처':'프로젝트';
+      const ch=x.changes||{};
+      const keys=Object.keys(ch);
+      const summary=keys.length?keys.map(k=>k+': '+(ch[k].after!=null?String(ch[k].after):'')).join(', '):'변경됨';
+      html+=`<div style="padding:12px 14px;border-bottom:1px solid var(--border);font-size:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+          <span style="font-weight:700;color:var(--accent)">${ent}</span>
+          <span style="color:var(--text3);font-size:11px">${dt}</span>
+        </div>
+        <div style="color:var(--text2)">${who} · ${summary}</div>
+      </div>`;
+    });
+    el.innerHTML=html||'<div style="padding:24px;text-align:center;color:var(--text3)">수정 이력이 없습니다</div>';
+  }catch(e){
+    console.error(e);
+    el.innerHTML='<div style="padding:24px;text-align:center;color:var(--red)">로드 실패: '+e.message+'</div>';
+  }
+}
+
 async function logChange(entityType, entityId, changes, context){
   try{
     if(typeof db==='undefined') return;
@@ -2427,6 +2478,8 @@ function selectDailyDate(mode,clientId,dateStr){
 // ── 4번: 가로 스크롤 전체현황 ──
 function buildCvDash(c,projs,d){
   const allRecs=d.records.filter(r=>projs.some(p=>p.id===r.projectId));
+  const reqUrl=(c?.requestUrl||'').trim();
+  const reqBtn=reqUrl?'<div style="margin-bottom:14px"><button class="btn btn-sm btn-blue" data-req-url="'+encodeURIComponent(reqUrl)+'" onclick="openRequestUrl(this)">작업요청서 접수 바로가기</button></div>':'';
   // 단가/세금 요약 (중첩 백틱 없이 변수로 분리)
   let pbox='';
   if(c.price1||c.price2||c.price3){
@@ -2460,7 +2513,7 @@ function buildCvDash(c,projs,d){
       +'</div>';
   }
 
-  let html=pbox+buildStatsDash(c,projs,allRecs,false)+'<div class="proj-hscroll">';
+  let html=reqBtn+pbox+buildStatsDash(c,projs,allRecs,false)+'<div class="proj-hscroll">';
   projs.forEach(p=>{
     const rc=d.records.filter(r=>r.projectId===p.id);
     const reqTotal=p.contractTotal||p.total||rc.length||0;
@@ -5264,7 +5317,11 @@ let QT_ITEMS={}; // 임시 항목 상태 {qtId:[{type,label,qty,unitPrice,memo}]
 
 function renderDetQuote(){
   const d=ld(),c=d.clients.find(x=>x.id===CUR_CLIENT);if(!c)return;
-  const myQuotes=d.quotes.filter(q=>q.clientId===CUR_CLIENT).sort((a,b)=>b.date.localeCompare(a.date));
+  const myQuotes=d.quotes.filter(q=>q.clientId===CUR_CLIENT).sort((a,b)=>{
+    const oa=a.order!=null?a.order:9999, ob=b.order!=null?b.order:9999;
+    if(oa!==ob)return oa-ob;
+    return b.date.localeCompare(a.date);
+  });
   const bizList=c.bizInfoList||[];
   const bizOptions=bizList.map((b,i)=>`<option value="${i}">${b.bizName} (${b.bizNo})</option>`).join('');
   const bizOptHtml=bizList.length===0
@@ -5379,12 +5436,14 @@ function renderDetQuote(){
   if(!myQuotes.length){
     html+=`<div style="text-align:center;padding:40px;color:var(--text3)">📄 작성된 견적서가 없습니다<br><button class="btn btn-blue btn-sm" style="margin-top:12px" onclick="openNewQuoteForm()">견적서 작성하기</button></div>`;
   } else {
+    html+=`<div style="font-size:10px;color:var(--text3);margin-bottom:8px">⋮⋮ 드래그하여 순서 변경</div>`;
     myQuotes.forEach(q=>{
       const settled=q.settled||false;
       const collapsed=q.collapsed!==false;
-      html+=`<div style="background:var(--card);border:1px solid ${settled?'#86efac':'var(--border)'};border-radius:12px;margin-bottom:10px;overflow:hidden;box-shadow:var(--sh)">
+      html+=`<div class="qt-card-dragover-target" data-quote-id="${q.id}" style="background:var(--card);border:1px solid ${settled?'#86efac':'var(--border)'};border-radius:12px;margin-bottom:10px;overflow:hidden;box-shadow:var(--sh)" ondragover="event.preventDefault();this.classList.add('qt-card-dragover')" ondragleave="this.classList.remove('qt-card-dragover')" ondrop="qtDrop(event)">
         <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;background:${settled?'#f0fdf4':'var(--bg2)'}" onclick="toggleQt('${q.id}')">
           <div style="display:flex;align-items:center;gap:10px">
+            <span class="qt-drag-handle" draggable="true" data-quote-id="${q.id}" onclick="event.stopPropagation()" ondragstart="qtDragStart(event)" title="드래그하여 순서 변경">⋮⋮</span>
             <span style="font-size:11px;font-family:monospace;color:var(--text3)">${q.date}</span>
             <span style="font-size:13px;font-weight:700">${q.toName||c.name} 견적서</span>
             <span style="font-size:10px;color:var(--text3)">#${q.no||'-'}</span>
@@ -5670,6 +5729,30 @@ function saveNewQuote(){
   renderDetQuote();
   renderDetSettle();
   toast('견적서 저장 완료');
+}
+
+function qtDragStart(ev){
+  ev.dataTransfer.setData('text/plain', ev.target.dataset.quoteId||'');
+  ev.dataTransfer.effectAllowed='move';
+}
+function qtDrop(ev){
+  ev.preventDefault();
+  ev.currentTarget.classList.remove('qt-card-dragover');
+  const fromId=ev.dataTransfer.getData('text/plain');
+  const toId=ev.currentTarget.dataset.quoteId;
+  if(!fromId||!toId||fromId===toId)return;
+  const d=ld();
+  const clientQuotes=d.quotes.filter(q=>q.clientId===CUR_CLIENT);
+  const fromIdx=clientQuotes.findIndex(q=>q.id===fromId);
+  const toIdx=clientQuotes.findIndex(q=>q.id===toId);
+  if(fromIdx===-1||toIdx===-1)return;
+  const moved=clientQuotes[fromIdx];
+  const rest=clientQuotes.filter((_,i)=>i!==fromIdx);
+  const insertAt=fromIdx<toIdx?rest.findIndex(q=>q.id===toId):rest.findIndex(q=>q.id===toId);
+  const newOrder=insertAt===-1?[moved,...rest]:[...rest.slice(0,insertAt),moved,...rest.slice(insertAt)];
+  newOrder.forEach((q,i)=>{q.order=i;});
+  const updated=d.quotes.filter(q=>q.clientId!==CUR_CLIENT).concat(newOrder);
+  sv('qt',updated).then(()=>{ renderDetQuote(); toast('순서 변경됨'); }).catch(e=>{ console.error(e); toast('저장 실패','error'); });
 }
 
 function toggleQt(qtId){
@@ -7462,9 +7545,11 @@ function showDsTab(name){
   if(name==='dashboard') renderDsDashboard();
   if(name==='monthly') loadMonthlySettle(document.getElementById('ds-month-input').value);
   if(name==='daily'){
-    // 일별집계 진입 시 전체보기 자동
     syncAllDsRowsFromSettle();
-    loadDailyAll();
+    const today=getKSTDate();
+    const inp=document.getElementById('ds-date-input');
+    if(inp)inp.value=today;
+    loadDailySettle(today);
   }
   if(name==='expense') {
     const mf=document.getElementById('exp-month-filter');
