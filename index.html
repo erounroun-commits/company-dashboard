@@ -332,9 +332,12 @@ tr:last-child td{border-bottom:none;}
     <div id="cv-company" style="font-size:13px;color:var(--text2);font-weight:600"></div>
   </div>
   <div class="cb">
-    <div style="margin-bottom:18px">
-      <div style="font-size:22px;font-weight:800;letter-spacing:-.03em" id="cv-title"></div>
-      <div style="font-size:12px;color:var(--text2);margin-top:4px">업데이트: <span id="cv-date"></span></div>
+    <div style="margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+      <div>
+        <div style="font-size:22px;font-weight:800;letter-spacing:-.03em" id="cv-title"></div>
+        <div style="font-size:12px;color:var(--text2);margin-top:4px">업데이트: <span id="cv-date"></span></div>
+      </div>
+      <button type="button" class="btn btn-sm btn-gray" onclick="refreshClientViewFromServer()" title="최신 내용 불러오기">🔄 새로고침</button>
     </div>
     <div class="dtabs">
       <div class="dtab active" onclick="showCvTab('dashboard')" data-cvtab="dashboard">📊 전체 현황</div>
@@ -645,6 +648,12 @@ tr:last-child td{border-bottom:none;}
             <option value="">전체</option>
             <option value="대기">대기중</option>
             <option value="완료">정산완료</option>
+          </select>
+          <span style="font-size:11px;font-weight:700;color:var(--text2)">발행여부</span>
+          <select id="settle-filter-taxissued" style="background:var(--bg2);border:1px solid var(--border);padding:5px 8px;border-radius:6px;font-size:12px" onchange="renderSettleAll()">
+            <option value="">전체</option>
+            <option value="y">Y (발행함)</option>
+            <option value="n">N (미발행)</option>
           </select>
         </div>
         <div class="tw" id="settle-all-table"></div>
@@ -1530,6 +1539,12 @@ function scheduleRerender(){
   if(_renderTimer) return;
   _renderTimer = setTimeout(()=>{
     _renderTimer = null;
+    try{
+      const clientScreen=document.getElementById('client-screen');
+      if(clientScreen&&!clientScreen.classList.contains('hidden')&&CV_CURRENT_CODE){
+        refreshClientView();
+      }
+    }catch(e){}
     try{ updateAdminUI(); }catch(e){}
     try{ renderOverview(); }catch(e){}
     try{ renderClients(); }catch(e){}
@@ -2268,20 +2283,25 @@ window.addEventListener('hashchange',()=>{
 // ═══════════════════════════════════════════
 // CLIENT VIEW (업체 링크)
 // ═══════════════════════════════════════════
+let CV_CURRENT_CODE=null;
 async function showClientView(code){
-  // Firestore에서 최신 데이터 보장
   if(typeof loadMainDataFromFirestore==='function'){
     try{ await loadMainDataFromFirestore(); }catch(e){ console.error(e); }
   }
-  const d=ld(),c=d.clients.find(x=>x.code===code);
+  CV_CURRENT_CODE=code;
   hide('login-screen');hide('app');show('client-screen');
+  refreshClientView();
+}
+function refreshClientView(){
+  if(!CV_CURRENT_CODE)return;
+  const d=ld(),c=d.clients.find(x=>x.code===CV_CURRENT_CODE);
   if(!c){
     document.getElementById('cvpanel-dashboard').innerHTML='<div style="text-align:center;padding:80px"><div style="font-size:48px">🔍</div><div style="font-size:18px;font-weight:700;margin-top:16px">유효하지 않은 링크</div></div>';
     return;
   }
   document.getElementById('cv-company').textContent=c.name+' 님';
   document.getElementById('cv-title').textContent=c.name;
-  document.getElementById('cv-date').textContent=new Date().toLocaleDateString('ko-KR');
+  document.getElementById('cv-date').textContent=new Date().toLocaleString('ko-KR');
   const projs=d.projects.filter(p=>p.clientId===c.id);
   try{
     document.getElementById('cvpanel-dashboard').innerHTML=buildCvDash(c,projs,d);
@@ -2303,7 +2323,16 @@ async function showClientView(code){
   }
   document.getElementById('cvpanel-daily').innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">탭을 클릭하면 명단이 표시됩니다</div>';
   document.getElementById('cvpanel-daily').dataset.clientId=c.id;
-  document.getElementById('cvpanel-daily').dataset.clientCode=code;
+  document.getElementById('cvpanel-daily').dataset.clientCode=CV_CURRENT_CODE;
+}
+async function refreshClientViewFromServer(){
+  if(!CV_CURRENT_CODE)return;
+  if(typeof loadMainDataFromFirestore==='function'){
+    try{ await loadMainDataFromFirestore(); }catch(e){ console.error(e); }
+  }
+  refreshClientView();
+  const el=document.getElementById('cv-date');
+  if(el)el.textContent=new Date().toLocaleString('ko-KR');
 }
 
 
@@ -2311,10 +2340,26 @@ async function showClientView(code){
 // 일별 명단 탭 (수정 4)
 // ════════════════════════════════════════
 function normDateD(s){
-  if(!s)return '';
-  const m=String(s).match(/(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/);
+  if(s==null||s===undefined)return '';
+  const raw=String(s).trim();
+  if(!raw)return '';
+  if(/^\d{4}-\d{2}-\d{2}$/.test(raw))return raw;
+  let m=raw.match(/^(\d{4})[.\-\/\s](\d{1,2})[.\-\/\s](\d{1,2})/);
   if(m)return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
-  return String(s);
+  m=raw.match(/^(\d{1,2})[\/\.\-](\d{1,2})(?:[\/\.\-](\d{4}))?$/);
+  if(m){
+    const y=m[3]||new Date().getFullYear();
+    return `${y}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  }
+  m=raw.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if(m)return `${m[1]}-${m[2]}-${m[3]}`;
+  const num=Number(raw);
+  if(!isNaN(num)&&num>10000&&num<100000){
+    const utc=new Date((num-25569)*86400*1000);
+    const y=utc.getUTCFullYear(),mth=utc.getUTCMonth()+1,d=utc.getUTCDate();
+    return `${y}-${String(mth).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  }
+  return raw;
 }
 
 function renderDailyPanel(mode, clientId){
@@ -3855,6 +3900,7 @@ function renderSettleAll(){
   const dateTo=(document.getElementById('settle-filter-date-to')?.value||'').trim();
   const amtFilter=document.getElementById('settle-filter-amt')?.value||'';
   const taxFilter=document.getElementById('settle-filter-tax')?.value||'';
+  const taxIssuedFilter=document.getElementById('settle-filter-taxissued')?.value||'';
 
   // 통계
   const totalAmt=settles.reduce((s,x)=>s+x.total,0);
@@ -3889,6 +3935,8 @@ function renderSettleAll(){
     }
     if(taxFilter==='y'&&!s.taxYn)return false;
     if(taxFilter==='n'&&s.taxYn)return false;
+    if(taxIssuedFilter==='y'){ if(!s.taxYn||!s.taxIssued)return false; }
+    if(taxIssuedFilter==='n'){ if(s.taxYn&&s.taxIssued)return false; }
     return true;
   }).sort((a,b)=>{
     const oa=quoteOrder[a.qtId]!=null?quoteOrder[a.qtId]:9999, ob=quoteOrder[b.qtId]!=null?quoteOrder[b.qtId]:9999;
