@@ -1162,6 +1162,32 @@ async function loadUsersFromFirestore(){
   }
 }
 
+// Firestore users 실시간 구독 (멀티 PC 즉시 반영)
+let _unsubUsers = null;
+function subscribeUsersFromFirestore(){
+  if(typeof db === 'undefined') return;
+  if(_unsubUsers) return;
+  _unsubUsers = db.collection('users').onSnapshot(async snap=>{
+    if(snap.empty){
+      // 비어있으면 기본 사용자 생성 후 캐시 세팅
+      const def = getDefaultUsers();
+      const batch = db.batch();
+      def.forEach(u=>{
+        const ref = db.collection('users').doc(u.id);
+        batch.set(ref,u);
+      });
+      await batch.commit();
+      USERS_CACHE = def;
+    } else {
+      USERS_CACHE = snap.docs.map(doc=>({ id: doc.id, ...doc.data() }));
+    }
+    try{
+      const active = document.querySelector('.page.active')?.id || '';
+      if(active==='page-user-mgmt') renderUserMgmt();
+    }catch(e){}
+  });
+}
+
 // 현재 메모리에 올라와 있는 사용자 목록 반환
 function getUsers(){
   return USERS_CACHE;
@@ -1250,6 +1276,39 @@ let _unsubMonthlyCnt = null;
 let _unsubUiCols = null;
 
 let _renderTimer = null;
+function refreshDetailProjectSelectors(){
+  try{
+    if(!CUR_CLIENT) return;
+    // 상세 화면이 열려있을 때만 갱신
+    const detailEl=document.getElementById('cl-detail');
+    if(!detailEl || detailEl.style.display==='none') return;
+
+    const d=ld();
+    // 삭제된 거래처를 보고 있으면 리스트로 복귀
+    if(!d.clients.some(c=>c.id===CUR_CLIENT)){
+      backToList();
+      return;
+    }
+
+    const projs=d.projects.filter(p=>p.clientId===CUR_CLIENT);
+    const sel=document.getElementById('sheet-proj-sel');
+    if(sel){
+      const cur=sel.value;
+      sel.innerHTML='<option value="">선택하세요</option><option value="__new__">+ 신규 프로젝트 생성</option>'
+        +projs.map(p=>`<option value="${p.id}">${p.name}</option>`).join('');
+      // 선택 유지(가능하면)
+      if(cur && projs.some(p=>p.id===cur)) sel.value=cur;
+      else if(cur==='__new__') sel.value='__new__';
+      else sel.value='';
+    }
+    const imp=document.getElementById('imp-proj');
+    if(imp){
+      const cur=imp.value;
+      imp.innerHTML=projs.map(p=>`<option value="${p.id}">${p.name}</option>`).join('');
+      if(cur && projs.some(p=>p.id===cur)) imp.value=cur;
+    }
+  }catch(e){}
+}
 function scheduleRerender(){
   if(_renderTimer) return;
   _renderTimer = setTimeout(()=>{
@@ -1263,12 +1322,14 @@ function scheduleRerender(){
         renderDetDash();renderDetProjView();renderDetQuote();renderDetSettle();
         const d=ld(); const c=d.clients.find(x=>x.id===CUR_CLIENT);
         if(c) renderInfoForm(c);
+        refreshDetailProjectSelectors();
       }
     }catch(e){}
     try{
       const active = document.querySelector('.page.active')?.id || '';
       if(active==='page-settle-all') renderSettleAll();
       if(active==='page-deposit'){ updateUnmatchedBadge(); renderDepositHistory?.(); }
+      if(active==='page-user-mgmt') renderUserMgmt();
     }catch(e){}
   }, 80);
 }
@@ -1475,8 +1536,10 @@ function _gsyncDefaults(s){
   if(!out.colReceiver) out.colReceiver=4;
   if(!out.colUrl) out.colUrl=5;
   if(out.headerRows===undefined) out.headerRows=1;
-  if(out.autoSync===undefined) out.autoSync=false;
-  if(!out.interval) out.interval=10;
+  // 요구사항: URL만 있으면 무조건 자동 동기화가 돌도록 강제 ON
+  out.autoSync = true;
+  // 기본값: 5분 (실패 시 자동 백오프)
+  if(!out.interval) out.interval=5;
   return out;
 }
 
@@ -1639,6 +1702,8 @@ async function deleteClientCascadeFirestore(cid){
   // 하위 데이터 삭제
   await _deleteQueryDocs('quotes','clientId',cid);
   await _deleteQueryDocs('settles','clientId',cid);
+  // 일별정산 행도 Firestore에서 완전 삭제
+  await _deleteQueryDocs('dailySettleRows','clientId',cid);
 
   // projects/records 삭제
   await _deleteDocsByIds('projects', pids);
@@ -1912,6 +1977,10 @@ function doModalLogin(){
     document.getElementById('modal-login-pw').value='';
     errEl.classList.add('hidden');
     closeMd('admin-login');
+    try{
+      const active = document.querySelector('.page.active')?.id || '';
+      if(active==='page-user-mgmt') renderUserMgmt();
+    }catch(e){}
     if(PENDING_ADMIN_PAGE){
       if(u.role==='admin') showPage(PENDING_ADMIN_PAGE);
       PENDING_ADMIN_PAGE=null;
@@ -1940,6 +2009,10 @@ function doLogin(){
     show('app');
     seed();
     initApp();
+    try{
+      const active = document.querySelector('.page.active')?.id || '';
+      if(active==='page-user-mgmt') renderUserMgmt();
+    }catch(e){}
   } else {
     document.getElementById('login-err').classList.remove('hidden');
   }
@@ -3996,34 +4069,60 @@ async function doSync(silent=false){
     gsyncSave({...s,lastSync:new Date().toISOString(),lastResult:msg});
     if(statusEl) statusEl.innerHTML='✅ '+now+'\n'+updated+'건 업데이트';
     if(!silent) toast(msg,'success');
+    return true;
 
   }catch(e){
     const msg='❌ 동기화 실패: '+e.message;
     log(msg);
     if(statusEl) statusEl.textContent='❌ 실패: '+e.message;
     if(!silent) toast(msg,'error');
+    return false;
   }
 }
 
-function manualSync(){ doSync(false); }
+function manualSync(){
+  // 수동 동기화는 즉시 실행 + 자동 동기화 백오프 리셋
+  try{ GSYNC_BACKOFF_LEVEL = 0; }catch(e){}
+  doSync(false).finally(()=>setupAutoSync(true));
+}
 
 function setupAutoSync(){
-  if(GSYNC_TIMER){ clearInterval(GSYNC_TIMER); GSYNC_TIMER=null; }
+  setupAutoSync(false);
+}
+
+let GSYNC_BACKOFF_LEVEL = 0; // 0=정상(기본간격), 1=2배, 2=6배, 3=12배
+function _gsyncNextMs(baseMin){
+  const mult=[1,2,6,12][Math.max(0,Math.min(3,GSYNC_BACKOFF_LEVEL))]||1;
+  return baseMin*mult*60*1000;
+}
+
+function setupAutoSync(forceRestart=false){
+  if(GSYNC_TIMER){ clearTimeout(GSYNC_TIMER); GSYNC_TIMER=null; }
   const s=gsyncLoad();
-  if(s.autoSync&&s.url){
-    const ms=(s.interval||10)*60*1000;
-    GSYNC_TIMER=setInterval(()=>doSync(true),ms);
-    // 시작하자마자 1회 실행
-    doSync(true);
+  if(s.url){
+    const baseMin = Math.max(5, parseInt(s.interval||5));
+    const loop = async ()=>{
+      const ok = await doSync(true);
+      if(ok) GSYNC_BACKOFF_LEVEL = 0;
+      else GSYNC_BACKOFF_LEVEL = Math.min(3, (GSYNC_BACKOFF_LEVEL||0)+1);
+      const next = _gsyncNextMs(baseMin);
+      GSYNC_TIMER = setTimeout(loop, next);
+      // 상태문구 갱신
+      const statusEl=document.getElementById('gsync-status');
+      if(statusEl){
+        const curMin = Math.round(next/60000);
+        statusEl.textContent = '🔗 자동동기화 켜짐 (약 '+curMin+'분 간격'+(GSYNC_BACKOFF_LEVEL?'/백오프':'')+')';
+      }
+    };
+    // 시작하자마자 1회 실행 (실패 시 백오프)
+    loop();
   }
   // 사이드바 상태 업데이트
   const statusEl=document.getElementById('gsync-status');
   if(statusEl){
     const s2=gsyncLoad();
     if(s2.url){
-      statusEl.textContent=s2.autoSync
-        ? '🔗 자동동기화 켜짐 ('+s2.interval+'분)'
-        : (s2.lastSync ? '마지막: '+new Date(s2.lastSync).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '🔗 시트 연동 설정됨');
+      statusEl.textContent='🔗 자동동기화 켜짐 ('+(s2.interval||5)+'분)';
     } else {
       statusEl.textContent='🔗 시트 연동 미설정';
     }
@@ -5875,6 +5974,18 @@ function delCurrentClient(){
 async function deleteClientById(cid, cname){
   const name = cname || ld().clients.find(x=>x.id===cid)?.name || '거래처';
   if(!confirm(`"${name}" 거래처를 삭제하시겠습니까?\n연결된 프로젝트·데이터·정산·일별정산 행이 모두 삭제됩니다.`))return;
+  // UI 정합을 위해 로컬 캐시도 즉시 정리(실제 원본은 Firestore 삭제가 담당)
+  try{
+    CLIENTS_CACHE = (CLIENTS_CACHE||[]).filter(c=>c.id!==cid);
+    const removedPids = new Set((PROJECTS_CACHE||[]).filter(p=>p.clientId===cid).map(p=>p.id));
+    PROJECTS_CACHE = (PROJECTS_CACHE||[]).filter(p=>p.clientId!==cid);
+    RECORDS_CACHE = (RECORDS_CACHE||[]).filter(r=>!removedPids.has(r.projectId));
+    QUOTES_CACHE = (QUOTES_CACHE||[]).filter(q=>q.clientId!==cid);
+    SETTLES_CACHE = (SETTLES_CACHE||[]).filter(s=>s.clientId!==cid);
+    DS_CACHE = (DS_CACHE||[]).filter(r=>r.clientId!==cid);
+    if(CUR_CLIENT===cid){ backToList(); }
+    scheduleRerender();
+  }catch(e){}
   // Firestore에서 관련 문서 완전 삭제 (다른 PC에도 즉시 반영)
   await deleteClientCascadeFirestore(cid);
   // 일/월 정산 행 삭제
@@ -8146,6 +8257,7 @@ function exportDsExcel(){
   document.addEventListener('DOMContentLoaded', () => {
     // Firestore에서 사용자 및 메인 데이터 미리 로드
     loadUsersFromFirestore().catch(console.error);
+    subscribeUsersFromFirestore();
     // 실시간 반영 (다른 PC에서 추가/삭제 즉시 업데이트)
     subscribeMainDataFromFirestore();
     subscribeAuxCollectionsFromFirestore();
