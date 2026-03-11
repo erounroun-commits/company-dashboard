@@ -2337,30 +2337,37 @@ async function refreshClientViewFromServer(){
 
 
 // ════════════════════════════════════════
-// 일별 명단 탭 (수정 4)
+// 일별 명단 탭 (수정 4) — 구매날짜 → YYYY-MM-DD 통일 (프로젝트별/데이터관리와 동일 인식)
 // ════════════════════════════════════════
-function normDateD(s){
+function purchaseDateToYYYYMMDD(s){
   if(s==null||s===undefined)return '';
-  const raw=String(s).trim();
+  if(typeof s==='object'){
+    if(s instanceof Date&&!isNaN(s.getTime())){
+      try{ return s.toLocaleDateString('sv-SE',{timeZone:'Asia/Seoul'}); }catch(_){ return s.getFullYear()+'-'+String(s.getMonth()+1).padStart(2,'0')+'-'+String(s.getDate()).padStart(2,'0'); }
+    }
+    if(typeof s.toDate==='function'){ const d=s.toDate(); return purchaseDateToYYYYMMDD(d); }
+    if(typeof s.seconds==='number'){ const d=new Date(s.seconds*1000); return purchaseDateToYYYYMMDD(d); }
+    return '';
+  }
+  if(typeof s==='number'){
+    if(s>10000&&s<100000){ const d=new Date((s-25569)*86400*1000); return purchaseDateToYYYYMMDD(d); }
+    if(s>1e12){ const d=new Date(s); return purchaseDateToYYYYMMDD(d); }
+    return '';
+  }
+  const raw=String(s).replace(/\s/g,'').trim();
   if(!raw)return '';
   if(/^\d{4}-\d{2}-\d{2}$/.test(raw))return raw;
-  let m=raw.match(/^(\d{4})[.\-\/\s](\d{1,2})[.\-\/\s](\d{1,2})/);
+  let m=raw.match(/^(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/);
   if(m)return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
   m=raw.match(/^(\d{1,2})[\/\.\-](\d{1,2})(?:[\/\.\-](\d{4}))?$/);
-  if(m){
-    const y=m[3]||new Date().getFullYear();
-    return `${y}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
-  }
+  if(m){ const y=m[3]||new Date().getFullYear(); return `${y}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`; }
   m=raw.match(/^(\d{4})(\d{2})(\d{2})$/);
   if(m)return `${m[1]}-${m[2]}-${m[3]}`;
-  const num=Number(raw);
-  if(!isNaN(num)&&num>10000&&num<100000){
-    const utc=new Date((num-25569)*86400*1000);
-    const y=utc.getUTCFullYear(),mth=utc.getUTCMonth()+1,d=utc.getUTCDate();
-    return `${y}-${String(mth).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-  }
+  m=raw.match(/^(\d{2})[.\-\/](\d{1,2})[.\-\/](\d{1,2})$/);
+  if(m){ const y=parseInt(m[1],10); const yy=y>=0&&y<=99?(y>=50?1900+y:2000+y):y; return `${yy}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`; }
   return raw;
 }
+function normDateD(s){ return purchaseDateToYYYYMMDD(s); }
 
 function renderDailyPanel(mode, clientId){
   const todayISO=getKSTDate();
@@ -2374,10 +2381,10 @@ function renderDailyPanel(mode, clientId){
   const projs=d.projects.filter(p=>p.clientId===clientId);
   const allRecs=d.records.filter(r=>projs.some(p=>p.id===r.projectId));
 
-  // 날짜별 카운트
+  // 날짜별 카운트 (구매날짜 → YYYY-MM-DD 통일)
   const dateMap={};
   allRecs.forEach(r=>{
-    const dt=normDateD(r.purchaseDate);
+    const dt=purchaseDateToYYYYMMDD(r.purchaseDate);
     if(dt)dateMap[dt]=(dateMap[dt]||0)+1;
   });
 
@@ -2462,8 +2469,9 @@ function selectDailyDate(mode,clientId,dateStr){
   const allRecs=d.records.filter(r=>projs.some(p=>p.id===r.projectId));
   // 진행중단 프로젝트는 일별명단에서 별도 경고 표시
   const stoppedProjIds=new Set(projs.filter(p=>p.status==='진행중단').map(p=>p.id));
-  const stoppedDayRecs=allRecs.filter(r=>stoppedProjIds.has(r.projectId)&&normDateD(r.purchaseDate)===dateStr);
-  const dayRecs=allRecs.filter(r=>!stoppedProjIds.has(r.projectId)&&normDateD(r.purchaseDate)===dateStr);
+  const targetDate=purchaseDateToYYYYMMDD(dateStr)||dateStr;
+  const stoppedDayRecs=allRecs.filter(r=>stoppedProjIds.has(r.projectId)&&(purchaseDateToYYYYMMDD(r.purchaseDate)===targetDate));
+  const dayRecs=allRecs.filter(r=>!stoppedProjIds.has(r.projectId)&&(purchaseDateToYYYYMMDD(r.purchaseDate)===targetDate));
 
   const projMap={};projs.forEach(p=>{projMap[p.id]=p;});
 
