@@ -5590,6 +5590,28 @@ function syncAllDsRowsFromSettle(){
   } catch(e){ console.warn('syncAllDsRowsFromSettle err:', e); }
 }
 
+// 일/월 정산(일별 집계)에서 수정한 입금일자/입금명 → 거래처 정산(wv_st)으로 역동기화
+function syncSettlesFromDaily(){
+  try{
+    const dsArr=dsLd();
+    const settles=[...stLd()];
+    let changed=false;
+    dsArr.forEach(r=>{
+      if(!r.qtId)return;
+      const idx=settles.findIndex(s=>s.qtId===r.qtId);
+      if(idx<0)return;
+      const st=settles[idx];
+      const newDate=(r.payDate||'').slice(0,10);
+      const newName=r.payName||'';
+      if((st.depositDate||'')!==newDate || (st.depositor||'')!==newName){
+        settles[idx]={...st,depositDate:newDate,depositor:newName};
+        changed=true;
+      }
+    });
+    if(changed) stSv(settles);
+  }catch(e){ console.warn('syncSettlesFromDaily err:',e); }
+}
+
 async function addToSettle(qt){
   const settles=[...stLd()];
   const itemParts=(qt.items||[]).map(it=>it.label||it.calc);
@@ -9256,7 +9278,15 @@ function delDsRow(id){
 }
 
 function saveDailySettle(){
-  toast('저장 완료 (실시간 자동저장)');
+  try{
+    // 일/월 정산 행(payDate/payName 등)은 dsFieldChange에서 실시간 저장되고 있으므로
+    // 여기서는 거래처 정산(wv_st)의 입금정보와 동기화만 수행
+    syncSettlesFromDaily();
+    toast('저장 완료 (거래처 정산 입금정보 동기화)');
+  }catch(e){
+    console.warn('saveDailySettle err',e);
+    toast('저장 중 오류가 발생했습니다: '+e.message,'error');
+  }
   DS_DIRTY=false;
 }
 
