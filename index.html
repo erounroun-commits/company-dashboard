@@ -171,7 +171,12 @@ tr:last-child td{border-bottom:none;}
 /* 드래그 선택 */
 .st td.sel{background:#dbeafe !important;outline:1px solid #3b82f6;}
 .st td.sel input,.st td.sel select{background:#dbeafe !important;}
-.daily-edit-cell.daily-sel,.daily-cell.daily-sel{background:#dbeafe !important;outline:1px solid #3b82f6;}
+.daily-edit-cell.daily-sel,.daily-cell.daily-sel{
+  background:#dbeafe !important;
+  outline:1px solid #3b82f6;
+  white-space:normal !important;
+  max-width:none !important;
+}
 .daily-edit-cell.daily-sel{background:#dbeafe !important;outline:1px solid #3b82f6;}
 .sheet-toolbar{display:flex;gap:6px;margin-bottom:6px;align-items:center;padding:6px 8px;background:var(--card);border:1px solid var(--border);border-radius:8px;flex-wrap:wrap;}
 .sheet-toolbar span{font-size:11px;color:var(--text2)}
@@ -2599,7 +2604,8 @@ function selectDailyDate(mode,clientId,dateStr){
     {key:'accountNo',label:'계좌번호',align:'left',ed:true},
     {key:'reviewUrl',label:'리뷰URL',align:'left',ed:true}
   ];
-  // 데이터 입력 시트에서 추가한 열(EXTRA_COLS)도 일별명단에서 함께 보여주기
+  // 데이터 입력 시트에서 추가한 열(EXTRA_COLS)도 일별명단에서 함께 보여주고,
+  // 열 순서는 데이터 입력 시트에서 설정한 순서(colOrder)를 최대한 따름
   let dailyCols=dailyColsBase.slice();
   try{
     const ui=uiColsLd();
@@ -2610,7 +2616,25 @@ function selectDailyDate(mode,clientId,dateStr){
       align:'left',
       ed:true,
     }));
-    if(extraForDaily.length) dailyCols=dailyCols.concat(extraForDaily);
+    const colOrder=Array.isArray(ui?.colOrder)?ui.colOrder:[];
+    if(extraForDaily.length || colOrder.length){
+      const projCol=dailyColsBase[0];
+      const others=[...dailyColsBase.slice(1),...extraForDaily];
+      const map={};
+      others.forEach(c=>{map[c.key]=c;});
+      const ordered=[];
+      if(colOrder.length){
+        colOrder.forEach(k=>{
+          if(map[k]){
+            ordered.push(map[k]);
+            delete map[k];
+          }
+        });
+      }
+      // 남은 컬럼들은 기본 순서대로 뒤에 붙이기
+      Object.keys(map).forEach(k=>{ordered.push(map[k]);});
+      dailyCols=[projCol,...ordered];
+    }
   }catch(e){}
   const fmtVal=(r,key)=>{
     if(key==='_proj')return projMap[r.projectId]?.name||'—';
@@ -2926,27 +2950,61 @@ function exportDailyListXlsx(mode,dateStr){
   const dayRecs=allRecs.filter(r=>!stoppedProjIds.has(r.projectId)&&(purchaseDateToYYYYMMDD(r.purchaseDate)===targetDate));
   if(!dayRecs.length){toast('해당 날짜에 명단이 없습니다','error');return;}
   const projMap={};projs.forEach(p=>{projMap[p.id]=p;});
-  const headers=['NO','프로젝트','일자','구매날짜','품명','옵션','리뷰종류','닉네임','수취인','아이디','주소','연락처','상품금액','송장번호','계좌번호','리뷰URL'];
+  // 일별 명단 화면과 동일한 컬럼 순서로 헤더/데이터 구성 (추가 열 포함)
+  const dailyColsBase=[
+    {key:'_proj',label:'프로젝트'},
+    {key:'day',label:'일자'},
+    {key:'purchaseDate',label:'구매날짜'},
+    {key:'product',label:'품명'},
+    {key:'option',label:'옵션'},
+    {key:'reviewType',label:'리뷰종류'},
+    {key:'nickname',label:'닉네임'},
+    {key:'receiver',label:'수취인'},
+    {key:'email',label:'아이디'},
+    {key:'address',label:'주소'},
+    {key:'phone',label:'연락처'},
+    {key:'amount',label:'상품금액'},
+    {key:'tracking',label:'송장번호'},
+    {key:'accountNo',label:'계좌번호'},
+    {key:'reviewUrl',label:'리뷰URL'}
+  ];
+  let dailyCols=dailyColsBase.slice();
+  try{
+    const ui=uiColsLd();
+    const extra=(ui && Array.isArray(ui.extraCols))?ui.extraCols:[];
+    const extraForDaily=extra.map(ec=>({key:ec.k,label:ec.lb||ec.k}));
+    const colOrder=Array.isArray(ui?.colOrder)?ui.colOrder:[];
+    if(extraForDaily.length || colOrder.length){
+      const projCol=dailyColsBase[0];
+      const others=[...dailyColsBase.slice(1),...extraForDaily];
+      const map={};
+      others.forEach(c=>{map[c.key]=c;});
+      const ordered=[];
+      if(colOrder.length){
+        colOrder.forEach(k=>{
+          if(map[k]){
+            ordered.push(map[k]);
+            delete map[k];
+          }
+        });
+      }
+      Object.keys(map).forEach(k=>{ordered.push(map[k]);});
+      dailyCols=[projCol,...ordered];
+    }
+  }catch(e){}
+  const headers=['NO',...dailyCols.map(c=>c.label)];
   const rows=dayRecs.map((r,i)=>{
     const proj=projMap[r.projectId];
-    return [
+    const base=[
       i+1,
-      proj?.name||'',
-      r.day||'',
-      purchaseDateToYYYYMMDD(r.purchaseDate)||r.purchaseDate||'',
-      r.product||'',
-      r.option||'',
-      r.reviewType||'',
-      r.nickname||'',
-      r.receiver||'',
-      r.email||'',
-      r.address||'',
-      r.phone||'',
-      r.amount||'',
-      r.tracking||'',
-      r.accountNo||'',
-      r.reviewUrl||''
     ];
+    const cols=dailyCols.map(c=>{
+      const k=c.key;
+      if(k==='_proj') return proj?.name||'';
+      if(k==='purchaseDate') return purchaseDateToYYYYMMDD(r.purchaseDate)||r.purchaseDate||'';
+      return r[k]||'';
+    });
+    return base.concat(cols);
   });
   const wb=XLSX.utils.book_new();
   const ws=XLSX.utils.aoa_to_sheet([headers,...rows]);
@@ -7397,6 +7455,7 @@ function renderSheet(){
       <select id="sheet-product-filter" style="font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card);max-width:180px" onchange="applySheetFilters()">
         ${prodOpts}
       </select>
+      <button class="btn btn-xs btn-gray" style="margin-left:4px" onclick="resetSheetFilters()">필터 초기화</button>
     </div>
     <span id="sel-info" style="font-size:10px;color:var(--text3);margin-left:auto">드래그 선택 → Del:초기화 | Ctrl+C/V:복붙 | 꾹 누르기:이동</span>
   </div>`;
@@ -7880,6 +7939,18 @@ function applySheetFilters(){
   const info=document.getElementById('sel-info');
   if(info&&(filterDate||filterText||filterRv||filterProd))info.textContent=`필터 적용 — ${vis}건 표시`;
   else if(info)info.textContent='드래그 선택 → Del:초기화 | Ctrl+C/V:복붙 | 꾹 누르기:이동';
+}
+function resetSheetFilters(){
+  const ids=['sheet-text-filter','sheet-date-filter','sheet-reviewtype-filter','sheet-product-filter'];
+  ids.forEach(id=>{
+    const el=document.getElementById(id);
+    if(el)el.value='';
+  });
+  window._SHEET_FILTER_TEXT='';
+  window._SHEET_FILTER_DATE='';
+  window._SHEET_FILTER_RVTYPE='';
+  window._SHEET_FILTER_PRODUCT='';
+  applySheetFilters();
 }
 function getVisibleSheetRowIndices(){
   const tbody=document.getElementById('sheet-tbl')?.querySelector('tbody');
