@@ -988,10 +988,10 @@ tr:last-child td{border-bottom:none;}
     <div class="card" style="margin-bottom:14px;background:var(--bg2);border:1px solid var(--border)">
       <div style="font-size:12px;font-weight:700;color:var(--accent);margin-bottom:6px">③ 명단 엑셀 파일 업로드</div>
       <div style="font-size:11px;color:var(--text2);margin-bottom:8px;padding:8px 12px;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;line-height:1.8">
-        📌 엑셀 컬럼 순서 (1행 헤더, 2행부터 데이터)<br>
-        <b>A: 프로젝트명</b> | <b>B: NO</b> | <b>C: 일자</b> | <b>D: 구매날짜</b> | <b>E: 상품명</b> | <b>F: 옵션</b> | <b>G: 리뷰종류</b><br>
+        📌 엑셀 컬럼 순서 (1행 헤더, 2행부터 데이터). 헤더는 <b>일자·구매날짜·상품명</b> 등이 있으면 자동 인식됩니다.<br>
+        <b>A: 프로젝트명/프로젝트NO</b> | <b>B: NO 또는 일차</b> | <b>C: 일자</b> | <b>D: 구매날짜</b> | <b>E: 상품명</b> | <b>F: 옵션</b> | <b>G: 리뷰종류</b><br>
         <b>H: 닉네임</b> | <b>I: 수취인</b> | <b>J: 아이디</b> | <b>K: 주소</b> | <b>L: 연락처</b> | <b>M: 상품금액</b><br>
-        <b>N: 송장번호</b> | <b>O: 계좌번호</b> | <b>P: 리뷰URL</b>
+        <b>N: 송장번호</b> | <b>O: 계좌번호</b> | <b>P: 리뷰URL</b> — N·O·P는 비어 있어도 업로드 가능합니다.
       </div>
       <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
         <label class="btn btn-blue btn-sm" style="cursor:pointer">
@@ -7068,24 +7068,47 @@ function previewBulkUpload(input){
 
       const COLS_TO_CHECK = 30;
       const getRows=(ws)=>XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
+      // 헤더로 쓸 수 있는 키워드 (이 중 2개 이상 있으면 그 행을 헤더로 인식)
+      const HEADER_KEYWORDS = ['일자','구매날짜','상품명','닉네임','수취인','송장번호','리뷰URL','옵션','연락처','주소','상품금액','계좌번호','리뷰종류','프로젝트NO','프로젝트명','아이디'];
+      const rowLooksLikeHeader=(row)=>{
+        if(!row||!Array.isArray(row)) return false;
+        const str = row.slice(0,20).map(c=>String(c==null?'':c).trim()).join(' ');
+        return HEADER_KEYWORDS.filter(kw=>str.includes(kw)).length >= 2;
+      };
+      const rowHasData=(row)=>{
+        if(!row||!Array.isArray(row)) return false;
+        for(let ci=0;ci<Math.max(16,COLS_TO_CHECK);ci++){
+          const v=row[ci];
+          if(v==null||v===undefined) continue;
+          if(typeof v==='number'&&!isNaN(v)) return true;
+          if(String(v).trim()!=='') return true;
+        }
+        return false;
+      };
 
       for(const name of wb.SheetNames){
         const ws = wb.Sheets[name];
         const rows = getRows(ws);
         if(!rows.length) continue;
 
+        // 1) 헤더 행 찾기: 키워드로 헤더 행 먼저 탐색 (최대 5행만 검사)
+        let foundHeaderIdx = -1;
+        for(let i=0;i<Math.min(5,rows.length);i++){
+          if(rowLooksLikeHeader(rows[i])){ foundHeaderIdx=i; break; }
+        }
+        if(foundHeaderIdx>=0){
+          headerRowIndex = foundHeaderIdx;
+          rawRows = rows;
+          sheetNameUsed = name;
+          break;
+        }
+
+        // 2) 기존 방식: 데이터가 있는 첫 행의 바로 위를 헤더로
         let firstDataIdx = -1;
         for(let i=0;i<rows.length;i++){
-          const hasAny=[...Array(COLS_TO_CHECK)].some((_,ci)=> {
-            const v=rows[i][ci];
-            if(v==null||v===undefined) return false;
-            if(typeof v==='number'&&!isNaN(v)) return true;
-            return String(v).trim()!=='';
-          });
-          if(hasAny){ firstDataIdx=i; break; }
+          if(rowHasData(rows[i])){ firstDataIdx=i; break; }
         }
         if(firstDataIdx===-1) continue;
-
         headerRowIndex = Math.max(0, firstDataIdx-1);
         rawRows = rows;
         sheetNameUsed = name;
@@ -7107,24 +7130,27 @@ function previewBulkUpload(input){
       let allDataRows = [];
       for(let i=headerRowIndex+1;i<rawRows.length;i++){
         const rr = rawRows[i];
-        const hasAny=[...Array(COLS_TO_CHECK)].some((_,ci)=> {
-          const v=rr[ci];
-          if(v==null||v===undefined) return false;
-          if(typeof v==='number'&&!isNaN(v)) return true;
-          return String(v).trim()!=='';
-        });
-        if(!hasAny) continue;
+        if(!rowHasData(rr)) continue;
         allDataRows.push({rr,lineNo:i+1});
       }
 
+      // 헤더 없이 1행부터 데이터인 경우: 1행이 헤더처럼 보이면 2행부터 데이터로 한 번 더 시도
       if(!allDataRows.length&&rawRows.length>=2){
-        headerRowIndex = 0;
-        allDataRows = [];
-        for(let i=1;i<rawRows.length;i++) allDataRows.push({rr:rawRows[i],lineNo:i+1});
+        if(rowLooksLikeHeader(rawRows[0])){
+          headerRowIndex = 0;
+          for(let i=1;i<rawRows.length;i++){
+            const rr = rawRows[i];
+            if(rowHasData(rr)) allDataRows.push({rr,lineNo:i+1});
+          }
+        }
+        if(!allDataRows.length){
+          headerRowIndex = 0;
+          for(let i=1;i<rawRows.length;i++) allDataRows.push({rr:rawRows[i],lineNo:i+1});
+        }
       }
 
       if(!allDataRows.length){
-        toast('데이터 행이 비어 있습니다. 1행은 헤더, 2행부터 데이터가 있는지 확인하세요. (A=프로젝트명, B=일차/NO, C=일자, D=구매날짜 …)','error');
+        toast('데이터 행이 비어 있습니다. 1행은 헤더(일자, 상품명, 닉네임 등), 2행부터 데이터가 있는지 확인하세요.','error');
         return;
       }
 
@@ -7180,8 +7206,8 @@ function previewBulkUpload(input){
           createdAt:    new Date().toISOString()
         };
 
-        // NO도 없고 핵심 컬럼(닉네임/수취인/상품명)도 모두 비면 스킵
-        const hasMeaningful= rec.no||rec.nickname||rec.receiver||rec.product||rec.purchaseDate;
+        // NO/일차/상품명/닉네임/수취인/일자/금액 중 하나라도 있으면 유효 행으로 인정 (계좌번호·송장번호 등은 비어도 허용)
+        const hasMeaningful= rec.no||rec.day||rec.nickname||rec.receiver||rec.product||rec.purchaseDate||(rec.amount&&rec.amount>0);
         if(!hasMeaningful) return;
 
         if(!projMap[projName]) projMap[projName]=[];
