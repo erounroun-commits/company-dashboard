@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>웨이프로젝트 · 리뷰 마케팅 대시보드</title>
+<title>WAY PROJECT · 리뷰 마케팅 대시보드</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
@@ -295,7 +295,7 @@ tr:last-child td{border-bottom:none;}
 <!-- ══ LOGIN ══ -->
 <div id="login-screen">
   <div class="login-box">
-    <div class="login-logo">⚡ WAVE PROJECT</div>
+    <div class="login-logo">⚡ WAY PROJECT</div>
     <div class="login-sub">관리자 전용 로그인</div>
     <input type="text" id="login-id" placeholder="아이디" />
     <input type="password" id="login-pw" placeholder="비밀번호" onkeydown="if(event.key==='Enter')doLogin()" />
@@ -326,7 +326,7 @@ tr:last-child td{border-bottom:none;}
 <div id="client-screen" class="hidden">
   <div class="ch">
     <div>
-      <div style="font-size:16px;font-weight:800;color:var(--accent)">⚡ WAVE PROJECT</div>
+      <div style="font-size:16px;font-weight:800;color:var(--accent)">⚡ WAY PROJECT</div>
       <div style="font-size:11px;color:var(--text2);margin-top:2px">리뷰 마케팅 진행현황</div>
     </div>
     <div id="cv-company" style="font-size:13px;color:var(--text2);font-weight:600"></div>
@@ -357,7 +357,7 @@ tr:last-child td{border-bottom:none;}
 <!-- ══ ADMIN APP ══ -->
 <div id="app" class="hidden">
   <div class="sidebar">
-    <div class="sidebar-logo">⚡ WAVE PROJECT<span>관리자 대시보드</span></div>
+    <div class="sidebar-logo">⚡ WAY PROJECT<span>관리자 대시보드</span></div>
     <div class="nav-item active" onclick="showPage('overview')" data-page="overview"><span class="nav-icon">📊</span>전체 현황</div>
     <div class="nav-item" onclick="showPage('clients')" data-page="clients"><span class="nav-icon">🏢</span>거래처 관리</div>
     <!-- 관리자 접이식 메뉴 -->
@@ -2504,55 +2504,144 @@ function selectDailyDate(mode,clientId,dateStr){
 
   const buyDone=dayRecs.filter(r=>r.tracking).length;
   const rvDone=dayRecs.filter(r=>r.reviewUrl).length;
+  const isAdminEdit=CUR_ADMIN&&CUR_ADMIN.role==='admin';
 
-  el.innerHTML=stoppedWarnHtml+`<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh)">
+  const dailyCols=[
+    {key:'_proj',label:'프로젝트',align:'left',ed:false},
+    {key:'day',label:'일자',align:'left',ed:true},
+    {key:'purchaseDate',label:'구매날짜',align:'left',ed:true},
+    {key:'product',label:'품명',align:'left',ed:true},
+    {key:'option',label:'옵션',align:'left',ed:true},
+    {key:'reviewType',label:'리뷰종류',align:'left',ed:true},
+    {key:'nickname',label:'닉네임',align:'left',ed:true},
+    {key:'receiver',label:'수취인',align:'left',ed:true},
+    {key:'email',label:'아이디',align:'left',ed:true},
+    {key:'address',label:'주소',align:'left',ed:true},
+    {key:'phone',label:'연락처',align:'left',ed:true},
+    {key:'amount',label:'상품금액',align:'right',ed:true},
+    {key:'tracking',label:'송장번호',align:'left',ed:true},
+    {key:'accountNo',label:'계좌번호',align:'left',ed:true},
+    {key:'reviewUrl',label:'리뷰URL',align:'left',ed:true}
+  ];
+  const fmtVal=(r,key)=>{
+    if(key==='_proj')return projMap[r.projectId]?.name||'—';
+    if(key==='amount')return r.amount?fmtN(r.amount)+'원':'—';
+    if(key==='reviewUrl'&&r.reviewUrl)return r.reviewUrl;
+    const v=r[key];
+    return v===undefined||v===null||v===''?'—':String(v).trim();
+  };
+  const tbodyRowsFixed=dayRecs.map((r,i)=>{
+    const proj=projMap[r.projectId];
+    let cells='<td style="padding:7px 10px;text-align:center;font-size:11px;color:var(--text3);font-weight:700">'+(i+1)+'</td>';
+    dailyCols.forEach(col=>{
+      const val=col.key==='_proj'?(proj?.name||'—'):fmtVal(r,col.key);
+      const displayVal=col.key==='reviewUrl'&&r.reviewUrl?'<a href="'+r.reviewUrl+'" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent)">링크</a>':(col.key==='amount'?val:escHtml(val));
+      const editable=isAdminEdit&&col.ed;
+      const style='padding:7px 10px;text-align:'+col.align+';font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      cells+=editable
+        ?`<td class="daily-edit-cell" style="${style}" data-record-id="${r.id}" data-field="${col.key}" contenteditable="true" title="클릭 후 수정">${displayVal}</td>`
+        :`<td style="${style}" title="${escHtml(val)}">${displayVal}</td>`;
+    });
+    return `<tr style="border-top:1px solid var(--border);background:${i%2===0?'':'var(--bg2)'}">${cells}</tr>`;
+  }).join('');
+
+  el.innerHTML=stoppedWarnHtml+`<div id="daily-table-wrap" style="background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh)" data-mode="${mode}" data-cid="${clientId||''}" data-date="${dateStr}">
     <div style="padding:14px 18px;background:linear-gradient(90deg,#eff6ff,#f0fdf4);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
       <div>
         <div style="font-size:15px;font-weight:800;color:var(--accent)">${dateStr} 진행 명단</div>
         <div style="font-size:11px;color:var(--text2);margin-top:2px">총 ${dayRecs.length}건 · 구매완료 ${buyDone}건 · 리뷰완료 ${rvDone}건</div>
       </div>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <button type="button" class="btn btn-sm btn-blue" onclick="exportDailyListXlsx('${mode}','${dateStr}')">📥 엑셀 추출</button>
         <span style="font-size:11px;padding:4px 10px;background:#dbeafe;color:#1e40af;border-radius:99px;font-weight:700">전체 ${dayRecs.length}건</span>
         <span style="font-size:11px;padding:4px 10px;background:#dcfce7;color:#065f46;border-radius:99px;font-weight:700">완료 ${rvDone}건</span>
       </div>
     </div>
     <div style="overflow-x:auto">
-    <table style="width:100%;border-collapse:collapse;font-size:12px">
+    <table style="width:100%;border-collapse:collapse;font-size:12px" id="daily-list-tbl">
       <thead><tr style="background:var(--bg2)">
-        <th style="padding:8px 10px;text-align:center;width:38px">NO</th>
-        <th style="padding:8px 10px;text-align:left;min-width:100px">프로젝트</th>
-        <th style="padding:8px 10px;text-align:left;min-width:120px">품명</th>
-        <th style="padding:8px 10px;text-align:left;min-width:80px">옵션</th>
-        <th style="padding:8px 10px;text-align:left;min-width:85px">리뷰종류</th>
-        <th style="padding:8px 10px;text-align:left;min-width:72px">닉네임</th>
-        <th style="padding:8px 10px;text-align:left;min-width:68px">수취인</th>
-        <th style="padding:8px 10px;text-align:left;min-width:120px">아이디</th>
-        <th style="padding:8px 10px;text-align:left;min-width:150px">주소</th>
-        <th style="padding:8px 10px;text-align:left;min-width:110px">연락처</th>
-        <th style="padding:8px 10px;text-align:right;min-width:75px">상품금액</th>
+        <th style="padding:8px 10px;text-align:center;width:38px">NO</th>${dailyCols.map(c=>`<th style="padding:8px 10px;text-align:${c.align};min-width:${c.key==='reviewUrl'?120:75}px">${c.label}</th>`).join('')}
       </tr></thead>
-      <tbody>
-        ${dayRecs.map((r,i)=>{
-          const proj=projMap[r.projectId];
-          return `<tr style="border-top:1px solid var(--border);background:${i%2===0?'':'var(--bg2)'}">
-            <td style="padding:7px 10px;text-align:center;font-size:11px;color:var(--text3);font-weight:700">${i+1}</td>
-            <td style="padding:7px 10px;font-size:11px;color:var(--accent);font-weight:600;white-space:nowrap">${proj?.name||'—'}</td>
-            <td style="padding:7px 10px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.product||''}">${r.product||'—'}</td>
-            <td style="padding:7px 10px;font-size:11px">${r.option||'—'}</td>
-            <td style="padding:7px 10px;white-space:nowrap">${r.reviewType?`<span class="tag">${r.reviewType}</span>`:'—'}</td>
-            <td style="padding:7px 10px;font-weight:600;color:var(--accent)">${r.nickname||'—'}</td>
-            <td style="padding:7px 10px">${r.receiver||'—'}</td>
-            <td style="padding:7px 10px;font-size:11px;max-width:140px;overflow:hidden;text-overflow:ellipsis" title="${r.email||''}">${r.email||'—'}</td>
-            <td style="padding:7px 10px;font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.address||''}">${r.address||'—'}</td>
-            <td style="padding:7px 10px;font-size:11px;white-space:nowrap;font-family:monospace">${r.phone||'—'}</td>
-            <td style="padding:7px 10px;text-align:right;font-size:11px;font-weight:700">${r.amount?fmtN(r.amount)+'원':'—'}</td>
-          </tr>`;
-        }).join('')}
-      </tbody>
+      <tbody>${tbodyRowsFixed}</tbody>
     </table>
     </div>
   </div>`;
+  if(isAdminEdit){
+    el.querySelectorAll('.daily-edit-cell').forEach(td=>{
+      td.addEventListener('blur',function(){ onDailyCellBlur(this); });
+    });
+  }
 }
+
+function onDailyCellBlur(td){
+  const recId=td.dataset.recordId;
+  const field=td.dataset.field;
+  if(!recId||!field)return;
+  let newVal=(td.textContent||'').trim();
+  if(field==='amount'){
+    newVal=newVal.replace(/[원,\s]/g,'');
+    const n=parseInt(newVal,10);
+    if(!isNaN(n))newVal=n; else newVal=0;
+  }
+  const d=ld();
+  const idx=d.records.findIndex(r=>r.id===recId);
+  if(idx<0)return;
+  const prev=d.records[idx][field];
+  if(String(prev)===''+newVal)return;
+  d.records[idx][field]=newVal;
+  sv('rc',d.records);
+  const wrap=document.getElementById('daily-table-wrap');
+  if(wrap){
+    const mode=wrap.dataset.mode;
+    const cid=wrap.dataset.cid||CUR_CLIENT;
+    const dateStr=wrap.dataset.date;
+    if(mode&&dateStr) selectDailyDate(mode,cid||null,dateStr);
+  }
+  toast('저장됨 (모든 화면에 반영)');
+}
+
+function exportDailyListXlsx(mode,dateStr){
+  if(typeof XLSX==='undefined'){toast('XLSX 라이브러리 로딩 중...','error');return;}
+  const d=ld();
+  const cid=CUR_CLIENT||(document.getElementById('daily-table-wrap')&&document.getElementById('daily-table-wrap').dataset.cid)||'';
+  if(!cid){toast('거래처를 선택해주세요','error');return;}
+  const projs=d.projects.filter(p=>p.clientId===cid);
+  const allRecs=d.records.filter(r=>projs.some(p=>p.id===r.projectId));
+  const stoppedProjIds=new Set(projs.filter(p=>p.status==='진행중단').map(p=>p.id));
+  const targetDate=purchaseDateToYYYYMMDD(dateStr)||dateStr;
+  const dayRecs=allRecs.filter(r=>!stoppedProjIds.has(r.projectId)&&(purchaseDateToYYYYMMDD(r.purchaseDate)===targetDate));
+  if(!dayRecs.length){toast('해당 날짜에 명단이 없습니다','error');return;}
+  const projMap={};projs.forEach(p=>{projMap[p.id]=p;});
+  const headers=['NO','프로젝트','일자','구매날짜','품명','옵션','리뷰종류','닉네임','수취인','아이디','주소','연락처','상품금액','송장번호','계좌번호','리뷰URL'];
+  const rows=dayRecs.map((r,i)=>{
+    const proj=projMap[r.projectId];
+    return [
+      i+1,
+      proj?.name||'',
+      r.day||'',
+      purchaseDateToYYYYMMDD(r.purchaseDate)||r.purchaseDate||'',
+      r.product||'',
+      r.option||'',
+      r.reviewType||'',
+      r.nickname||'',
+      r.receiver||'',
+      r.email||'',
+      r.address||'',
+      r.phone||'',
+      r.amount||'',
+      r.tracking||'',
+      r.accountNo||'',
+      r.reviewUrl||''
+    ];
+  });
+  const wb=XLSX.utils.book_new();
+  const ws=XLSX.utils.aoa_to_sheet([headers,...rows]);
+  ws['!cols']=headers.map((_,i)=>({wch:Math.min(30,Math.max(10,(rows[0]&&String(rows[0][i]||'').length)||headers[i].length)+2)}));
+  XLSX.utils.book_append_sheet(wb,ws,'일별명단');
+  XLSX.writeFile(wb,'일별명단_'+dateStr+'.xlsx');
+  toast('엑셀 다운로드 완료');
+}
+
 // ── 4번: 가로 스크롤 전체현황 ──
 function buildCvDash(c,projs,d){
   const allRecs=d.records.filter(r=>projs.some(p=>p.id===r.projectId));
@@ -4445,9 +4534,12 @@ function setupAutoSync(forceRestart=false){
 // ════════════════════════════════════════════════
 function renderUserMgmt(){
   const users=getUsers();
+  const ONLINE_MINUTES=5;
+  const nowMs=Date.now();
   const rows=users.map((u,i)=>{
-    const isOnline=CUR_ADMIN&&CUR_ADMIN.loginId===u.loginId;
     const isSelf=CUR_ADMIN?.loginId===u.loginId;
+    const lastMs=u.lastLogin?new Date(u.lastLogin).getTime():0;
+    const isOnline=isSelf||(lastMs&&(nowMs-lastMs)<ONLINE_MINUTES*60*1000);
     const roleLabel=u.role==='admin'?'<span class="badge bg" style="font-size:10px">관리자</span>':'<span class="badge by" style="font-size:10px">기본</span>';
     return `<tr style="background:${isOnline?'rgba(16,185,129,.06)':'var(--card)'}">
       <td style="text-align:center;color:var(--text3);font-size:11px">${i+1}</td>
@@ -4605,11 +4697,20 @@ function openAdminMenu(){
 function renderOverview(){
   const d=ld();
   const tot=d.records.length,rev=d.records.filter(r=>r.reviewUrl).length,pend=tot-rev;
+  const todayISO=getKSTDate(),tmrISO=getKSTDate(1);
+  function nd(s){if(!s)return'';const m=String(s).match(/(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/);if(m)return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;return s;}
+  const activeProjs=d.projects.filter(p=>p.status!=='진행중단');
+  const activeRecs=d.records.filter(r=>activeProjs.some(p=>p.id===r.projectId));
+  const todayBuy=activeRecs.filter(r=>nd(r.purchaseDate)===todayISO).length;
+  const tmrBuy=activeRecs.filter(r=>nd(r.purchaseDate)===tmrISO).length;
+
   document.getElementById('ov-stats').innerHTML=`
     <div class="stat-card" style="border-top-color:var(--accent)"><div class="stat-label">총 거래처</div><div class="stat-value" style="color:var(--accent)">${d.clients.length}</div><div class="stat-sub">활성 ${d.clients.filter(c=>c.status==='활성').length}개</div></div>
     <div class="stat-card" style="border-top-color:var(--green)"><div class="stat-label">진행중 프로젝트</div><div class="stat-value" style="color:var(--green)">${d.projects.filter(p=>p.status==='진행중').length}</div><div class="stat-sub">전체 ${d.projects.length}개</div></div>
     <div class="stat-card" style="border-top-color:var(--yellow)"><div class="stat-label">리뷰 완료</div><div class="stat-value" style="color:var(--yellow)">${rev}</div><div class="stat-sub">${tot}건 중 ${tot>0?~~((rev/tot)*100):0}%</div></div>
-    <div class="stat-card clickable" style="border-top-color:var(--red)" ondblclick="showPending()" title="더블클릭: 미작성 목록"><div class="stat-label">⚠️ 미완료 <span style="font-size:9px;color:var(--text3)">(더블클릭)</span></div><div class="stat-value" style="color:var(--red)">${pend}</div><div class="stat-sub">처리 대기중</div></div>`;
+    <div class="stat-card clickable" style="border-top-color:var(--red)" ondblclick="showPending()" title="더블클릭: 미작성 목록"><div class="stat-label">⚠️ 미완료 <span style="font-size:9px;color:var(--text3)">(더블클릭)</span></div><div class="stat-value" style="color:var(--red)">${pend}</div><div class="stat-sub">처리 대기중</div></div>
+    <div class="stat-card" style="border-top-color:var(--accent)"><div class="stat-label">📅 금일 구매</div><div class="stat-value" style="color:var(--accent)">${todayBuy}</div><div class="stat-sub">${todayISO} 예정</div></div>
+    <div class="stat-card" style="border-top-color:var(--orange)"><div class="stat-label">📅 익일 구매</div><div class="stat-value" style="color:var(--orange)">${tmrBuy}</div><div class="stat-sub">${tmrISO} 예정</div></div>`;
 
   const plats={};
   d.records.forEach(r=>{const p=d.projects.find(x=>x.id===r.projectId);if(!p)return;p.platform.split('+').map(s=>s.trim()).forEach(pl=>{plats[pl]=(plats[pl]||0)+1;});});
@@ -4622,10 +4723,14 @@ function renderOverview(){
 
   document.getElementById('ov-clients').innerHTML=d.clients.slice(0,6).map(c=>{
     const pr=d.projects.filter(p=>p.clientId===c.id);
+    const activePr=pr.filter(p=>p.status!=='진행중단');
     const rc=d.records.filter(r=>pr.some(p=>p.id===r.projectId));
+    const activeRc=rc.filter(r=>activePr.some(p=>p.id===r.projectId));
     const rv=rc.filter(r=>r.reviewUrl).length,pp=rc.length>0?~~((rv/rc.length)*100):0;
+    const cToday=activeRc.filter(r=>nd(r.purchaseDate)===todayISO).length;
+    const cTmr=activeRc.filter(r=>nd(r.purchaseDate)===tmrISO).length;
     return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;cursor:pointer" onclick="openDetail('${c.id}');showPage('clients')">
-      <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700">${c.name}</div><div style="font-size:10px;color:var(--text2)">${pr.length}개 프로젝트</div></div>
+      <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700">${c.name}</div><div style="font-size:10px;color:var(--text2)">${pr.length}개 프로젝트 · 금일 ${cToday}건 / 익일 ${cTmr}건</div></div>
       <div style="width:90px"><div class="pb-wrap" style="height:6px"><div class="pb" style="width:${pp}%;height:6px;background:var(--accent)"></div></div><div style="font-size:10px;color:var(--text3);text-align:right;margin-top:2px">${rv}/${rc.length}</div></div>
     </div>`;
   }).join('')||'<div style="font-size:12px;color:var(--text3)">없음</div>';
@@ -5117,9 +5222,11 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
 
   const rev=allRecs.filter(r=>r.reviewUrl).length;
   const tot=allRecs.length;
-  const contractTotal=c?.contractTotal||projs.reduce((a,p)=>a+(p.contractTotal||p.total||0),0);
+  const contractType=(c&&c.contractType==='건별결제')?'건별결제':'숫자입력';
+  const contractTotal=(c&&c.contractTotal!==undefined&&c.contractTotal!==null)?Number(c.contractTotal):projs.reduce((a,p)=>a+(p.contractTotal||p.total||0),0);
   const purchaseDone=allRecs.filter(r=>r.nickname||r.tracking).length; // 닉네임 있으면 구매완료
-  const remaining=Math.max(0,contractTotal-purchaseDone);
+  const isPerItem=contractType==='건별결제';
+  const remaining=isPerItem?null:Math.max(0,contractTotal-purchaseDone);
   // 진행중단 프로젝트는 금일/익일 구매건에서 제외
   const todayBuy=activeRecs.filter(r=>nd(r.purchaseDate)===todayISO).length;
   const tmrBuy=activeRecs.filter(r=>nd(r.purchaseDate)===tmrISO).length;
@@ -5140,24 +5247,33 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
     ${sub?`<div style="font-size:9px;color:var(--text3);margin-top:1px">${sub}</div>`:''}
   </div>`;
 
-  // 상단 2컬럼: [계약현황 도넛] [구매일정]
-  const editBtn=isAdmin?'<button class="btn btn-xs btn-gray" style="padding:1px 8px;font-size:10px" onclick="openContractEdit()">수정</button>':'';
   const uid='d'+Math.random().toString(36).slice(2,8);
-  const contractPct=contractTotal>0?Math.round((purchaseDone/contractTotal)*100):0;
+  const contractPct=!isPerItem&&contractTotal>0?Math.round((purchaseDone/contractTotal)*100):0;
   const reviewPct=tot>0?Math.round((rev/tot)*100):0;
+  const contractSelect=isAdmin?('<select id="contract-type-'+uid+'" style="font-size:10px;padding:2px 6px;border-radius:6px;border:1px solid #0891b2;background:#fff;cursor:pointer" onchange="saveContractType(this.value);renderDetDash();renderDetProjView();">'
+    +'<option value="건별결제"'+(isPerItem?' selected':'')+'>건별결제</option>'
+    +'<option value="숫자입력"'+(!isPerItem?' selected':'')+'>숫자입력</option></select>'):'';
+  const contractValueHtml=isPerItem
+    ?('<span style="font-size:14px;font-weight:800;color:#0891b2">건별결제</span>')
+    :(isAdmin
+      ?('<input type="number" id="contract-num-'+uid+'" value="'+contractTotal+'" min="0" style="width:70px;font-size:13px;font-weight:700;text-align:right;padding:2px 6px;border:1px solid #0891b2;border-radius:6px" onchange="saveContractTotal(this.value);renderDetDash();renderDetProjView();" onblur="saveContractTotal(this.value);renderDetDash();renderDetProjView();" title="숫자 입력 후 Enter 또는 포커스 아웃"> <small style="font-size:9px;color:var(--text3)">건</small>')
+      :('<span style="font-size:14px;font-weight:800;color:#0891b2">'+fmtN(contractTotal)+'<small style="font-size:9px;color:var(--text3)">건</small></span>'));
+  const remainingHtml=isPerItem
+    ?'<span style="font-size:14px;font-weight:800;color:var(--text3)">—</span>'
+    :('<span style="font-size:14px;font-weight:800;color:'+(remaining>0?'#ef4444':'#22c55e')+'">'+fmtN(remaining)+'<small style="font-size:9px;color:var(--text3)">건</small></span>');
   const result=warnHtml
     // ── 3열 가로 레이아웃: 계약현황 | 진행현황 | 구매일정 ──
     +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:18px;align-items:start">'
 
     // ① 계약현황 도넛
     +'<div style="background:var(--card);border:1px solid #a5f3fc;border-radius:12px;overflow:hidden;box-shadow:var(--sh)">'
-    +'<div style="padding:7px 12px;background:#ecfeff;border-bottom:1px solid #a5f3fc;font-size:10px;font-weight:700;color:#0891b2;display:flex;justify-content:space-between;align-items:center">📊 계약 현황 '+editBtn+'</div>'
+    +'<div style="padding:7px 12px;background:#ecfeff;border-bottom:1px solid #a5f3fc;font-size:10px;font-weight:700;color:#0891b2;display:flex;justify-content:space-between;align-items:center">📊 계약 현황 '+contractSelect+'</div>'
     +'<div style="display:flex;flex-direction:column;align-items:center;padding:14px 12px;gap:10px">'
     +'<canvas id="donut-c-'+uid+'" width="100" height="100"></canvas>'
     +'<div style="width:100%">'
-    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#0891b2;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">선계약</span></span><span style="font-size:14px;font-weight:800;color:#0891b2">'+fmtN(contractTotal)+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#0891b2;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">선계약</span></span>'+contractValueHtml+'</div>'
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">구매완료</span></span><span style="font-size:14px;font-weight:800;color:#22c55e">'+fmtN(purchaseDone)+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
-    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:'+(remaining>0?'#ef4444':'#22c55e')+';display:inline-block"></span><span style="font-size:11px;color:var(--text2)">잔여</span></span><span style="font-size:14px;font-weight:800;color:'+(remaining>0?'#ef4444':'#22c55e')+'">'+fmtN(remaining)+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:'+(isPerItem?'var(--border)':(remaining>0?'#ef4444':'#22c55e'))+';display:inline-block"></span><span style="font-size:11px;color:var(--text2)">잔여</span></span>'+remainingHtml+'</div>'
     +'</div></div></div>'
 
     // ② 진행현황 도넛
@@ -5186,17 +5302,17 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
     +'</div></div>'
 
     +'</div>';
-  // 도넛 그래프 렌더
-  drawDonut('donut-c-'+uid,[
-    {val:purchaseDone,color:'#22c55e'},
-    {val:remaining,color:remaining>0?'#ef4444':'#d1fae5'},
-  ],{size:100,lineWidth:16,centerLabel:contractPct+'%',centerSub:'구매율'});
+  // 도넛 그래프 렌더 (건별결제 시 잔여 없음)
+  drawDonut('donut-c-'+uid, isPerItem
+    ?[{val:purchaseDone,color:'#22c55e'},{val:Math.max(1,purchaseDone||0),color:'#e5e7eb'}]
+    :[{val:purchaseDone,color:'#22c55e'},{val:remaining,color:remaining>0?'#ef4444':'#d1fae5'}],
+  {size:100,lineWidth:16,centerLabel:isPerItem?'—':(contractPct+'%'),centerSub:isPerItem?'건별결제':'구매율'});
   drawDonut('donut-r-'+uid,[
     {val:rev,color:'#7c3aed'},
     {val:purchaseDone-rev,color:'#22c55e'},
     {val:Math.max(0,tot-purchaseDone),color:'#f59e0b'},
   ],{size:100,lineWidth:16,centerLabel:reviewPct+'%',centerSub:'리뷰율'});
-  return result;  return result;
+  return result;
 }
 // ── 전체현황탭 (단가+세금+6번 통계) ──
 function renderDetDash(){
@@ -5215,8 +5331,8 @@ function renderDetDash(){
   }
   const todayBuy=allRecs.filter(r=>normDate(r.purchaseDate)===todayISO).length;
   const tmrBuy=allRecs.filter(r=>normDate(r.purchaseDate)===tmrISO).length;
-  // 선계약수량: 거래처 레벨 우선 (거래처 정보에서 입력), 없으면 프로젝트 합산
-  const contractTotal=c?.contractTotal||projs.reduce((a,p)=>a+(p.contractTotal||p.total||0),0);
+  // 선계약수량: 거래처 레벨 우선 (거래처 정보에서 입력), 없으면 프로젝트 합산 (0 입력 시 0 반영)
+  const contractTotal=(c&&c.contractTotal!==undefined&&c.contractTotal!==null)?Number(c.contractTotal):projs.reduce((a,p)=>a+(p.contractTotal||p.total||0),0);
   const purchaseDone=allRecs.filter(r=>r.tracking).length; // 송장번호 입력 = 구매완료
   const remaining=Math.max(0,contractTotal-purchaseDone);
 
@@ -5313,19 +5429,30 @@ function openRequestUrl(btn){
   }catch(e){}
 }
 
-// 선계약수량 수정 팝업
+function saveContractType(type){
+  const d=ld();const idx=d.clients.findIndex(x=>x.id===CUR_CLIENT);if(idx<0)return;
+  d.clients[idx].contractType=type;
+  sv('cl',d.clients);
+  toast(type==='건별결제'?'선계약: 건별결제로 저장':'선계약: 숫자입력 모드');
+}
+function saveContractTotal(val){
+  const d=ld();const idx=d.clients.findIndex(x=>x.id===CUR_CLIENT);if(idx<0)return;
+  const n=parseInt(val,10);
+  const numVal=isNaN(n)||n<0?0:n;
+  d.clients[idx].contractTotal=numVal;
+  d.clients[idx].contractType='숫자입력';
+  sv('cl',d.clients);
+  toast('선계약 수량 저장: '+fmtN(numVal)+'건');
+}
+// 선계약수량 수정 팝업 (하위호환)
 function openContractEdit(){
   const d=ld(),c=d.clients.find(x=>x.id===CUR_CLIENT);if(!c)return;
   const projs=d.projects.filter(p=>p.clientId===CUR_CLIENT);
-  const cur=c.contractTotal!=null?c.contractTotal:projs.reduce((a,p)=>a+(p.contractTotal||p.total||0),0);
-  const val=prompt('선계약 수량 입력 (현재: '+fmtN(cur)+'건)',cur);
+  const cur=(c.contractTotal!==undefined&&c.contractTotal!==null)?Number(c.contractTotal):projs.reduce((a,p)=>a+(p.contractTotal||p.total||0),0);
+  const val=prompt('선계약 수량 입력 (현재: '+fmtN(cur)+'건)',String(cur));
   if(val===null)return;
-  const n=parseInt(val)||0;
-  const idx=d.clients.findIndex(x=>x.id===CUR_CLIENT);if(idx<0)return;
-  d.clients[idx].contractTotal=n;
-  sv('cl',d.clients);
-  renderDetDash();
-  toast('선계약 수량 저장: '+fmtN(n)+'건');
+  saveContractTotal(val);
+  renderDetDash();renderDetProjView();
 }
 
 function renderDetProjView(){
@@ -7067,18 +7194,23 @@ function previewBulkUpload(input){
 
       const COLS_TO_CHECK = 30;
       const getRows=(ws,raw,forceRange)=>{
-        if(!ws) return [];
-        var opts={header:1,defval:'',raw:raw!==false,blank:true};
-        var out=[];
-        if(forceRange){
-          var ranges=['A1:P500','A1:Z1000','A1:P1000'];
-          for(var r=0;r<ranges.length&&out.length===0;r++){
-            try{ out=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:raw!==false,blank:true,range:ranges[r]})||[]; }catch(e){}
+        try{
+          if(!ws||typeof ws!=='object') return [];
+          var opts={header:1,defval:'',raw:raw!==false,blank:true};
+          var out=[];
+          if(forceRange){
+            var ranges=['A1:P500','A1:Z1000','A1:P1000'];
+            for(var r=0;r<ranges.length&&out.length===0;r++){
+              try{ out=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:raw!==false,blank:true,range:ranges[r]})||[]; }catch(e){}
+            }
+            var ref=ws&&ws['!ref'];
+            if(out.length===0&&ref) try{ out=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:raw!==false,blank:true,range:ref})||[]; }catch(e){}
           }
-          if(out.length===0&&ws&&ws['!ref']) try{ out=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:raw!==false,blank:true,range:ws['!ref']})||[]; }catch(e){}
+          if(out.length===0) try{ out=XLSX.utils.sheet_to_json(ws,opts)||[]; }catch(e){}
+          return out||[];
+        }catch(e){
+          return [];
         }
-        if(out.length===0) try{ out=XLSX.utils.sheet_to_json(ws,opts)||[]; }catch(e){}
-        return out||[];
       };
       const HEADER_KEYWORDS = ['일자','구매날짜','상품명','닉네임','수취인','송장번호','리뷰URL','옵션','연락처','주소','상품금액','계좌번호','리뷰종류','프로젝트NO','프로젝트명','아이디'];
       const rowLooksLikeHeader=(row)=>{
