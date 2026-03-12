@@ -2570,7 +2570,54 @@ function selectDailyDate(mode,clientId,dateStr){
     el.querySelectorAll('.daily-edit-cell').forEach(td=>{
       td.addEventListener('blur',function(){ onDailyCellBlur(this); });
     });
+    initDailyListKeys(el);
   }
+}
+
+var _dailyUndoStack=[];
+var _dailyUndoMax=50;
+function initDailyListKeys(container){
+  if(!container)return;
+  var tbl=container.querySelector('#daily-list-tbl');
+  if(!tbl)tbl=container.querySelector('table');
+  if(!tbl)return;
+  tbl.addEventListener('keydown',function(e){
+    var cell=e.target.closest('.daily-edit-cell');
+    if(!cell)return;
+    if(e.key==='Delete'||e.key==='Backspace'){
+      var sel=window.getSelection();
+      if(sel.toString().trim()!==''){
+        e.preventDefault();
+        document.execCommand('delete',false,null);
+      }else if(cell.textContent.trim()===''){
+        e.preventDefault();
+      }
+      return;
+    }
+    if(e.ctrlKey||e.metaKey){
+      if(e.key==='z'){
+        e.preventDefault();
+        if(_dailyUndoStack.length===0){toast('실행 취소할 내용 없음','warn');return;}
+        var item=_dailyUndoStack.pop();
+        var d=ld();
+        var idx=d.records.findIndex(function(r){return r.id===item.recId;});
+        if(idx>=0){ d.records[idx][item.field]=item.prevVal; sv('rc',d.records); }
+        var wrap=document.getElementById('daily-table-wrap');
+        if(wrap&&wrap.dataset.mode&&wrap.dataset.date) selectDailyDate(wrap.dataset.mode,wrap.dataset.cid||CUR_CLIENT,wrap.dataset.date);
+        toast('실행 취소됨');
+      }
+    }
+  });
+  tbl.addEventListener('paste',function(e){
+    var cell=e.target.closest('.daily-edit-cell');
+    if(!cell){return;}
+    e.preventDefault();
+    var text=(e.clipboardData||window.clipboardData).getData('text/plain');
+    if(text==null)text='';
+    text=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+    var firstCell=text.split(/\n/)[0].split(/\t/)[0];
+    document.execCommand('insertText',false,firstCell);
+  });
 }
 
 function onDailyCellBlur(td){
@@ -2588,6 +2635,7 @@ function onDailyCellBlur(td){
   if(idx<0)return;
   const prev=d.records[idx][field];
   if(String(prev)===''+newVal)return;
+  if(_dailyUndoStack.length<_dailyUndoMax) _dailyUndoStack.push({recId:recId,field:field,prevVal:prev});
   d.records[idx][field]=newVal;
   sv('rc',d.records);
   const wrap=document.getElementById('daily-table-wrap');
@@ -4701,8 +4749,9 @@ function renderOverview(){
   function nd(s){if(!s)return'';const m=String(s).match(/(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/);if(m)return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;return s;}
   const activeProjs=d.projects.filter(p=>p.status!=='진행중단');
   const activeRecs=d.records.filter(r=>activeProjs.some(p=>p.id===r.projectId));
-  const todayBuy=activeRecs.filter(r=>nd(r.purchaseDate)===todayISO).length;
-  const tmrBuy=activeRecs.filter(r=>nd(r.purchaseDate)===tmrISO).length;
+  const purchaseDateNorm=(r)=>purchaseDateToYYYYMMDD(r.purchaseDate)||nd(r.purchaseDate);
+  const todayBuy=activeRecs.filter(r=>purchaseDateNorm(r)===todayISO).length;
+  const tmrBuy=activeRecs.filter(r=>purchaseDateNorm(r)===tmrISO).length;
 
   document.getElementById('ov-stats').innerHTML=`
     <div class="stat-card" style="border-top-color:var(--accent)"><div class="stat-label">총 거래처</div><div class="stat-value" style="color:var(--accent)">${d.clients.length}</div><div class="stat-sub">활성 ${d.clients.filter(c=>c.status==='활성').length}개</div></div>
@@ -5227,13 +5276,14 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
   const purchaseDone=allRecs.filter(r=>r.nickname||r.tracking).length; // 닉네임 있으면 구매완료
   const isPerItem=contractType==='건별결제';
   const remaining=isPerItem?null:Math.max(0,contractTotal-purchaseDone);
-  // 진행중단 프로젝트는 금일/익일 구매건에서 제외
-  const todayBuy=activeRecs.filter(r=>nd(r.purchaseDate)===todayISO).length;
-  const tmrBuy=activeRecs.filter(r=>nd(r.purchaseDate)===tmrISO).length;
+  // 금일/익일 구매예정: 구매날짜만 기준 (닉네임·수취인 비어 있어도 카운팅)
+  const purchaseDateNorm=(r)=>purchaseDateToYYYYMMDD(r.purchaseDate)||nd(r.purchaseDate);
+  const todayBuy=activeRecs.filter(r=>purchaseDateNorm(r)===todayISO).length;
+  const tmrBuy=activeRecs.filter(r=>purchaseDateNorm(r)===tmrISO).length;
 
   // 진행중단 경고박스 HTML
   const warnHtml=stoppedProjs.length?stoppedProjs.map(p=>{
-    const cnt=allRecs.filter(r=>r.projectId===p.id&&nd(r.purchaseDate)===todayISO).length;
+    const cnt=allRecs.filter(r=>r.projectId===p.id&&purchaseDateNorm(r)===todayISO).length;
     return '<div style="background:#fef2f2;border:2px solid #fca5a5;border-radius:10px;padding:10px 14px;margin-bottom:8px;display:flex;align-items:flex-start;gap:10px">'
       +'<span style="font-size:18px;flex-shrink:0">⚠️</span>'
       +'<div><div style="font-size:12px;font-weight:800;color:#b91c1c">진행중단 · '+p.name+(cnt?' (금일 '+cnt+'건 스케줄)':'')+'</div>'
@@ -5329,8 +5379,9 @@ function renderDetDash(){
     if(m)return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
     return s;
   }
-  const todayBuy=allRecs.filter(r=>normDate(r.purchaseDate)===todayISO).length;
-  const tmrBuy=allRecs.filter(r=>normDate(r.purchaseDate)===tmrISO).length;
+  const purchaseDateNorm2=(r)=>normDate(r.purchaseDate)||purchaseDateToYYYYMMDD(r.purchaseDate)||'';
+  const todayBuy=allRecs.filter(r=>purchaseDateNorm2(r)===todayISO).length;
+  const tmrBuy=allRecs.filter(r=>purchaseDateNorm2(r)===tmrISO).length;
   // 선계약수량: 거래처 레벨 우선 (거래처 정보에서 입력), 없으면 프로젝트 합산 (0 입력 시 0 반영)
   const contractTotal=(c&&c.contractTotal!==undefined&&c.contractTotal!==null)?Number(c.contractTotal):projs.reduce((a,p)=>a+(p.contractTotal||p.total||0),0);
   const purchaseDone=allRecs.filter(r=>r.tracking).length; // 송장번호 입력 = 구매완료
