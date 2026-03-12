@@ -2650,9 +2650,7 @@ function selectDailyDate(mode,clientId,dateStr){
       const val=col.key==='_proj'?(proj?.name||'—'):fmtVal(r,col.key);
       const displayVal=col.key==='reviewUrl'&&r.reviewUrl?'<a href="'+r.reviewUrl+'" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent)">링크</a>':(col.key==='amount'?val:escHtml(val));
       const editable=isAdminEdit&&col.ed;
-      const style='padding:7px 10px;text-align:'+col.align+';font-size:11px;max-width:260px;'+(mode==='cv'
-        ?'white-space:normal;'
-        :'overflow:hidden;text-overflow:ellipsis;white-space:nowrap');
+      const style='padding:7px 10px;text-align:'+col.align+';font-size:11px;max-width:'+(mode==='cv'?'none':'260px')+';white-space:nowrap;overflow:'+(mode==='cv'?'visible':'hidden')+';text-overflow:'+(mode==='cv'?'clip':'ellipsis');
       const cls=editable?'daily-cell daily-edit-cell':'daily-cell';
       cells+=editable
         ?`<td class="${cls}" style="${style}" data-record-id="${r.id}" data-field="${col.key}" contenteditable="true" title="클릭 후 수정">${displayVal}</td>`
@@ -4432,7 +4430,7 @@ function renderSettleAll(){
     <td style="text-align:right;font-weight:700;color:var(--accent)">${fmtN(s.total)}원</td>
     <td style="text-align:center;min-width:80px">
       ${s.taxYn
-        ?`<div style="display:flex;flex-direction:column;gap:2px;align-items:center">
+        ?`<div style="display:flex;flex-direction:column;gap:2px;align-items:center" ondblclick="openSettleQuote('${s.qtId||''}')" title="더블클릭: 견적서 보기">
             ${s.taxFee?'<span class="badge bg" style="font-size:9px;padding:2px 6px">① 진행비</span>':''}
             ${s.taxDel?'<span class="badge bg" style="font-size:9px;padding:2px 6px">② 택배비</span>':''}
             ${s.taxProd?'<span class="badge by" style="font-size:9px;padding:2px 6px">③ 상품금액</span>':''}
@@ -4475,6 +4473,17 @@ function renderSettleAll(){
     </tr></thead>
     <tbody>${tbody||'<tr><td colspan="12" style="text-align:center;padding:40px;color:var(--text3)">정산 내역이 없습니다</td></tr>'}</tbody>
   </table>`;
+}
+
+function openSettleQuote(qtId){
+  if(!qtId){toast('연결된 견적서를 찾을 수 없습니다','error');return;}
+  const d=ld();
+  const qt=(d.quotes||[]).find(q=>q.id===qtId);
+  if(!qt){toast('견적서를 찾을 수 없습니다','error');return;}
+  const body=document.getElementById('qt-view-body');
+  if(!body){console.warn('qt-view-body not found');return;}
+  body.innerHTML=buildQtDoc(qt);
+  openMd('qt-view');
 }
 
 async function markSettleDoneAll(stId){
@@ -5450,8 +5459,11 @@ function extractQtDsData(qt){
     const isFee=it.calc==='fee1'||it.calc==='fee2';
     const isBox=it.calc==='delivery';
     const isProd=it.calc==='product';
+    const isCustom=it.calc==='custom';
+    const isCustomFee=isCustom && (it.taxApply!==false);
     const applyTax=qt.taxYn&&(
       (isFee&&ti.fee)||(isBox&&ti.delivery)||(isProd&&ti.product)||
+      isCustomFee||
       (!ti.fee&&!ti.delivery&&!ti.product)
     );
     const fr=(isProd&&applyTax)?(it.feeRate||10):0;
@@ -5459,7 +5471,7 @@ function extractQtDsData(qt){
     const supWF=sup+comm;
     const vat=applyTax?Math.round(supWF*0.1):0;
 
-    if(isFee){
+    if(isFee||isCustomFee){
       feeQty+=qty; feeAmt+=sup; feeTax+=vat;
     } else if(isBox){
       boxQty+=qty; boxAmt+=sup; boxTax+=vat;
