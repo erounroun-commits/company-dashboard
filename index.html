@@ -171,6 +171,7 @@ tr:last-child td{border-bottom:none;}
 /* 드래그 선택 */
 .st td.sel{background:#dbeafe !important;outline:1px solid #3b82f6;}
 .st td.sel input,.st td.sel select{background:#dbeafe !important;}
+.daily-edit-cell.daily-sel,.daily-cell.daily-sel{background:#dbeafe !important;outline:1px solid #3b82f6;}
 .daily-edit-cell.daily-sel{background:#dbeafe !important;outline:1px solid #3b82f6;}
 .sheet-toolbar{display:flex;gap:6px;margin-bottom:6px;align-items:center;padding:6px 8px;background:var(--card);border:1px solid var(--border);border-radius:8px;flex-wrap:wrap;}
 .sheet-toolbar span{font-size:11px;color:var(--text2)}
@@ -388,7 +389,10 @@ tr:last-child td{border-bottom:none;}
 
     <!-- 전체현황 -->
     <div class="page active" id="page-overview">
-      <div class="page-header"><div><div class="page-title">전체 현황</div><div class="page-sub" id="ov-date"></div></div></div>
+      <div class="page-header">
+        <div><div class="page-title">전체 현황</div><div class="page-sub" id="ov-date"></div></div>
+        <button class="btn btn-sm btn-gray" onclick="refreshAllData()" title="최신 데이터로 새로고침">🔄 새로고침</button>
+      </div>
       <div class="stat-grid" id="ov-stats"></div>
       <div class="grid-2" style="margin-bottom:16px">
         <div class="card"><div class="card-title">플랫폼별</div><div id="ov-platform"></div></div>
@@ -408,7 +412,8 @@ tr:last-child td{border-bottom:none;}
       <div id="cl-list">
         <div class="page-header">
           <div><div class="page-title">거래처 관리</div><div class="page-sub">거래처명 더블클릭 → 상세 화면</div></div>
-          <div style="display:flex;gap:8px">
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-sm btn-gray" onclick="refreshAllData()" title="최신 데이터로 새로고침">🔄 새로고침</button>
             <button class="btn btn-gray" onclick="openMd('bulk-upload')">📥 과거 데이터 업로드</button>
             <button class="btn btn-blue" onclick="openMd('add-client')">+ 거래처 추가</button>
           </div>
@@ -438,6 +443,7 @@ tr:last-child td{border-bottom:none;}
           <div class="dtab" onclick="showDTab('projview')" data-dtab="projview">📋 프로젝트별 보기</div>
           <div class="dtab" onclick="showDTab('quote')" data-dtab="quote">📄 견적서</div>
           <div class="dtab" onclick="showDTab('prodstat')" data-dtab="prodstat">📦 제품별 진행현황</div>
+          <div class="dtab" onclick="showDTab('alldata')" data-dtab="alldata">📚 전체 데이터 보기</div>
           <div class="dtab" onclick="showDTab('input')" data-dtab="input"><span class="adot" style="margin-right:3px"></span>데이터 입력</div>
           <div class="dtab" onclick="showDTab('settle')" data-dtab="settle"><span class="adot" style="margin-right:3px"></span>거래처 정산</div>
           <div class="dtab" onclick="showDTab('info')" data-dtab="info"><span class="adot" style="margin-right:3px"></span>거래처 정보</div>
@@ -449,6 +455,7 @@ tr:last-child td{border-bottom:none;}
         <div class="dpanel" id="dp-projview"></div>
         <div class="dpanel" id="dp-quote"><div id="dp-quote-inner"></div></div>
         <div class="dpanel" id="dp-prodstat"><div id="dp-prodstat-inner"></div></div>
+        <div class="dpanel" id="dp-alldata"><div id="dp-alldata-inner"></div></div>
         <div class="dpanel" id="dp-input">
           <div class="new-proj-bar">
             <span style="font-size:12px;font-weight:700;color:var(--accent)">프로젝트:</span>
@@ -491,6 +498,7 @@ tr:last-child td{border-bottom:none;}
     <div class="page" id="page-deposit">
       <div class="page-header">
         <div><div class="page-title">🏦 입금 내역 관리</div><div class="page-sub">엑셀 파일 업로드 → 합계금액 기반 정산 자동 매칭</div></div>
+        <button class="btn btn-sm btn-gray" onclick="refreshAllData()" title="최신 데이터로 새로고침">🔄 새로고침</button>
       </div>
 
       <!-- 탭 바: 4개 -->
@@ -616,7 +624,8 @@ tr:last-child td{border-bottom:none;}
     <div class="page" id="page-settle-all">
       <div class="page-header">
         <div><div class="page-title">💰 거래처 정산 현황</div><div class="page-sub">모든 거래처 견적서 발행 및 정산 내역</div></div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-sm btn-gray" onclick="refreshAllData()" title="최신 데이터로 새로고침">🔄 새로고침</button>
           <button class="btn btn-blue btn-sm" onclick="openMd('settle-import')">📥 과거 정산 업로드</button>
           <button class="btn btn-green btn-sm" onclick="exportSettleExcel()">📥 엑셀 다운로드</button>
         </div>
@@ -689,7 +698,10 @@ tr:last-child td{border-bottom:none;}
 
     <!-- 엑셀 추출 -->
     <div class="page" id="page-export">
-      <div class="page-header"><div><div class="page-title">엑셀 추출</div></div></div>
+      <div class="page-header">
+        <div><div class="page-title">엑셀 추출</div></div>
+        <button class="btn btn-sm btn-gray" onclick="refreshAllData()" title="최신 데이터로 새로고침">🔄 새로고침</button>
+      </div>
       <div class="grid-2">
         <div class="card">
           <div class="card-title">거래처별 추출</div>
@@ -719,7 +731,8 @@ tr:last-child td{border-bottom:none;}
   <div class="page" id="page-daily-settle">
     <div class="page-header">
       <div><div class="page-title">📒 일/월 정산</div><div class="page-sub">일별 업체 정산 입력 · 월별 집계 · 입금 매칭</div></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-sm btn-gray" onclick="refreshAllData()" title="최신 데이터로 새로고침">🔄 새로고침</button>
         <button class="btn btn-gray btn-sm" onclick="openDsImport()">📥 엑셀 임포트</button>
         <button class="btn btn-green btn-sm" onclick="exportDsExcel()">📤 엑셀 내보내기</button>
       </div>
@@ -2336,7 +2349,35 @@ async function refreshClientViewFromServer(){
   if(el)el.textContent=new Date().toLocaleString('ko-KR');
 }
 
-
+async function refreshAllData(){
+  try{
+    if(typeof loadMainDataFromFirestore==='function') await loadMainDataFromFirestore();
+    if(typeof loadSettlesFromFirestore==='function') await loadSettlesFromFirestore();
+    if(typeof loadDepositHistoryFromFirestore==='function') await loadDepositHistoryFromFirestore();
+    if(typeof loadDepositUnmatchedFromFirestore==='function') await loadDepositUnmatchedFromFirestore();
+    if(typeof loadDepNamesFromFirestore==='function') await loadDepNamesFromFirestore();
+    if(typeof loadGsyncFromFirestore==='function') await loadGsyncFromFirestore();
+    if(typeof loadDailySettleFromFirestore==='function') await loadDailySettleFromFirestore();
+    if(typeof loadBankTxFromFirestore==='function') await loadBankTxFromFirestore();
+    if(typeof loadCompanyExpFromFirestore==='function') await loadCompanyExpFromFirestore();
+    if(typeof loadMonthlyCntFromFirestore==='function') await loadMonthlyCntFromFirestore();
+    if(typeof loadUiColsFromFirestore==='function') await loadUiColsFromFirestore();
+    // 메인/현재 화면 재렌더
+    try{renderOverview();}catch(e){}
+    try{renderClients();}catch(e){}
+    try{renderDetDash();renderDetProjView();renderDetQuote();renderDetSettle();}catch(e){}
+    try{renderExportPage();}catch(e){}
+    try{initDailySettle();}catch(e){}
+    try{renderSettleAll();}catch(e){}
+    try{renderDepositHistory();}catch(e){}
+    // 업체뷰도 열려 있을 수 있으므로 최신 상태 반영
+    try{refreshClientViewFromServer();}catch(e){}
+    toast('최신 데이터로 새로고침 되었습니다');
+  }catch(e){
+    console.error(e);
+    toast('새로고침 중 오류가 발생했습니다: '+e.message,'error');
+  }
+}
 // ════════════════════════════════════════
 // 일별 명단 탭 (수정 4) — 구매날짜 → YYYY-MM-DD 통일 (프로젝트별/데이터관리와 동일 인식)
 // ════════════════════════════════════════
@@ -2505,7 +2546,8 @@ function selectDailyDate(mode,clientId,dateStr){
 
   const buyDone=dayRecs.filter(r=>r.tracking).length;
   const rvDone=dayRecs.filter(r=>r.reviewUrl).length;
-  const isAdminEdit=CUR_ADMIN&&CUR_ADMIN.role==='admin';
+  // 메인 대시보드(dp)에서는 관리자·일반 권한 모두 수정 가능, 업체뷰(cv)는 조회만
+  const isAdminEdit=!!CUR_ADMIN && mode!=='cv';
 
   const dailyCols=[
     {key:'_proj',label:'프로젝트',align:'left',ed:false},
@@ -2539,9 +2581,10 @@ function selectDailyDate(mode,clientId,dateStr){
       const displayVal=col.key==='reviewUrl'&&r.reviewUrl?'<a href="'+r.reviewUrl+'" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent)">링크</a>':(col.key==='amount'?val:escHtml(val));
       const editable=isAdminEdit&&col.ed;
       const style='padding:7px 10px;text-align:'+col.align+';font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      const cls=editable?'daily-cell daily-edit-cell':'daily-cell';
       cells+=editable
-        ?`<td class="daily-edit-cell" style="${style}" data-record-id="${r.id}" data-field="${col.key}" contenteditable="true" title="클릭 후 수정">${displayVal}</td>`
-        :`<td style="${style}" title="${escHtml(val)}">${displayVal}</td>`;
+        ?`<td class="${cls}" style="${style}" data-record-id="${r.id}" data-field="${col.key}" contenteditable="true" title="클릭 후 수정">${displayVal}</td>`
+        :`<td class="${cls}" style="${style}" title="${escHtml(val)}">${displayVal}</td>`;
     });
     return `<tr style="border-top:1px solid var(--border);background:${i%2===0?'':'var(--bg2)'}">${cells}</tr>`;
   }).join('');
@@ -2596,7 +2639,7 @@ function updateDailySelVisual(tbl){
     }
   }
 }
-function getDailyCellsInRange(tbl){
+function getDailyCellsInRange(tbl,mode,forCopy){
   var out=[];
   if(!_dailySelStart||!_dailySelEnd||!tbl)return out;
   var tbody=tbl.tBodies[0];
@@ -2608,7 +2651,13 @@ function getDailyCellsInRange(tbl){
     if(!tr)continue;
     for(var c=c1;c<=c2;c++){
       var td=tr.cells[c];
-      if(td&&td.classList.contains('daily-edit-cell')&&td.dataset.recordId&&td.dataset.field)out.push(td);
+      if(!td)continue;
+      if(forCopy){
+        if(!td.classList.contains('daily-cell'))continue;
+        out.push(td);
+      }else{
+        if(td.classList.contains('daily-edit-cell')&&td.dataset.recordId&&td.dataset.field)out.push(td);
+      }
     }
   }
   return out;
@@ -2621,7 +2670,7 @@ function initDailyListKeys(container){
   _dailySelStart=null;_dailySelEnd=null;_dailySelMouseDown=false;
   tbl.addEventListener('mousedown',function(e){
     if(e.button!==0)return;
-    var td=e.target.closest('.daily-edit-cell');
+    var td=e.target.closest('.daily-cell');
     if(!td)return;
     var tr=td.closest('tr');
     var tbody=tbl.tBodies[0];
@@ -2636,7 +2685,7 @@ function initDailyListKeys(container){
   });
   tbl.addEventListener('mouseover',function(e){
     if(!_dailySelMouseDown)return;
-    var td=e.target.closest('.daily-edit-cell');
+    var td=e.target.closest('.daily-cell');
     if(!td)return;
     var tr=td.closest('tr');
     var tbody=tbl.tBodies[0];
@@ -2651,9 +2700,37 @@ function initDailyListKeys(container){
     _dailySelMouseDown=false;
   });
   tbl.addEventListener('keydown',function(e){
-    var cell=e.target.closest('.daily-edit-cell');
+    var cell=e.target.closest('.daily-cell');
+    var wrap=document.getElementById('daily-table-wrap');
+    var mode=wrap?wrap.dataset.mode:'dp';
+    // Ctrl+C: 선택 영역을 TSV로 복사 (모든 모드)
+    if((e.ctrlKey||e.metaKey)&&e.key==='c'){
+      var copyCells=getDailyCellsInRange(tbl,mode,true);
+      if(copyCells.length>0){
+        e.preventDefault();
+        var tbody=tbl.tBodies[0];
+        var r1=Math.min(_dailySelStart.r,_dailySelEnd.r),r2=Math.max(_dailySelStart.r,_dailySelEnd.r);
+        var c1=Math.min(_dailySelStart.c,_dailySelEnd.c),c2=Math.max(_dailySelStart.c,_dailySelEnd.c);
+        var lines=[];
+        for(var r=r1;r<=r2;r++){
+          var tr=tbody.rows[r];if(!tr)continue;
+          var row=[];
+          for(var c=c1;c<=c2;c++){
+            var td2=tr.cells[c];
+            if(!td2||!td2.classList.contains('daily-cell')){row.push('');continue;}
+            row.push((td2.textContent||'').trim());
+          }
+          lines.push(row.join('\\t'));
+        }
+        var txt=lines.join('\\n');
+        if(navigator.clipboard&&navigator.clipboard.writeText){
+          navigator.clipboard.writeText(txt).then(function(){ toast(lines.length+'행 복사됨'); }).catch(function(){});
+        }
+      }
+    }
+    if(mode==='cv')return; // 업체뷰: 복사만 허용
     if(e.key==='Delete'||e.key==='Backspace'){
-      var cellsToClear=getDailyCellsInRange(tbl);
+      var cellsToClear=getDailyCellsInRange(tbl,mode,false);
       if(cellsToClear.length>0){
         e.preventDefault();
         var wrap=document.getElementById('daily-table-wrap');
@@ -2902,6 +2979,14 @@ function buildCvDash(c,projs,d){
 
 function buildCvProjects(projs,d){
   if(!projs.length) return '<div style="text-align:center;padding:60px;color:var(--text3)">프로젝트가 없습니다</div>';
+  // 관리자 화면에서 설정한 order 기준으로 정렬
+  projs=projs.slice().sort(function(a,b){
+    var ao=(typeof a.order==='number'?a.order:999999);
+    var bo=(typeof b.order==='number'?b.order:999999);
+    if(ao!==bo)return ao-bo;
+    var ac=a.createdAt||'';var bc=b.createdAt||'';
+    return String(ac).localeCompare(String(bc));
+  });
   let rows='';
   projs.forEach(function(p){
     var rc=d.records.filter(function(r){return r.projectId===p.id;});
@@ -4999,6 +5084,7 @@ function showDTab(name){
     var projs=d.projects.filter(function(p){return p.clientId===CUR_CLIENT;});
     if(typeof SHEET_PROJ!=='undefined'&&SHEET_PROJ&&projs.some(function(p){return p.id===SHEET_PROJ;}))loadSheet(SHEET_PROJ);
   }
+   if(name==='alldata')renderDetAllData();
 }
 
 // ════════════════════════════════════════════════════════
@@ -5653,6 +5739,14 @@ function openContractEdit(){
 
 function renderDetProjView(){
   const d=ld(),projs=d.projects.filter(p=>p.clientId===CUR_CLIENT);
+  // 정렬: order → createdAt 기준
+  projs.sort((a,b)=>{
+    const ao=(typeof a.order==='number'?a.order:999999);
+    const bo=(typeof b.order==='number'?b.order:999999);
+    if(ao!==bo)return ao-bo;
+    const ac=a.createdAt||'';const bc=b.createdAt||'';
+    return String(ac).localeCompare(String(bc));
+  });
   if(!projs.length){document.getElementById('dp-projview').innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">프로젝트 없음<br><button class="btn btn-blue btn-sm" style="margin-top:12px" onclick="showDTab(\'input\')">프로젝트 생성하기</button></div>';return;}
   document.getElementById('dp-projview').innerHTML='<div style="display:flex;flex-direction:column;gap:12px">'+projs.map(p=>{
     const rc=d.records.filter(r=>r.projectId===p.id);
@@ -5665,9 +5759,16 @@ function renderDetProjView(){
     return `<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh)" data-entity-type="project" data-entity-id="${p.id}" oncontextmenu="showChangeLogContext('project','${p.id}',event)">
       <!-- 헤더: 프로젝트명 + 명단 보기 -->
       <div style="padding:12px 18px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);cursor:pointer" onclick="showProjDetailModal('${p.id}')">
-        <div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="display:flex;flex-direction:column">
           <div style="font-size:14px;font-weight:700">${p.name}</div>
           <div style="font-size:11px;color:var(--text2);margin-top:1px">${p.platform} · ${p.product}</div>
+          </div>
+          ${CUR_ADMIN?`<div style="display:flex;flex-direction:column;gap:2px;font-size:10px;color:var(--text3)" onclick="event.stopPropagation()">
+            <button class="btn btn-xs btn-gray" style="padding:2px 6px;font-size:10px" onclick="moveProjOrder('${p.id}',-1)">▲ 위로</button>
+            <button class="btn btn-xs btn-gray" style="padding:2px 6px;font-size:10px" onclick="moveProjOrder('${p.id}',1)">▼ 아래로</button>
+            <button class="btn btn-xs btn-gray" style="padding:2px 6px;font-size:10px" onclick="renameProject('${p.id}')">✏ 이름</button>
+          </div>`:''}
         </div>
         <span style="font-size:12px;color:var(--accent);font-weight:600">명단 보기 →</span>
       </div>
@@ -5693,6 +5794,151 @@ function renderDetProjView(){
       </div>
     </div>`;
   }).join('')+'</div>';
+}
+
+function moveProjOrder(projId,dir){
+  const d=ld();
+  const projs=d.projects.filter(p=>p.clientId===CUR_CLIENT);
+  if(!projs.length)return;
+  // 현재 클라이언트 내 정렬 기준 배열 만들기
+  projs.sort((a,b)=>{
+    const ao=(typeof a.order==='number'?a.order:999999);
+    const bo=(typeof b.order==='number'?b.order:999999);
+    if(ao!==bo)return ao-bo;
+    const ac=a.createdAt||'';const bc=b.createdAt||'';
+    return String(ac).localeCompare(String(bc));
+  });
+  const ids=projs.map(p=>p.id);
+  const idx=ids.indexOf(projId);
+  if(idx===-1)return;
+  const ni=idx+dir;
+  if(ni<0||ni>=ids.length)return;
+  // swap
+  const tmp=ids[idx];ids[idx]=ids[ni];ids[ni]=tmp;
+  // 일관된 order 재할당
+  ids.forEach((id,i)=>{
+    const p=d.projects.find(x=>x.id===id);
+    if(p)p.order=i;
+  });
+  sv('pr',d.projects);
+  renderDetProjView();
+  // 업체뷰도 다음 로드 시 동일 순서 사용
+  toast('프로젝트 순서가 변경되었습니다');
+}
+
+function renameProject(projId){
+  const d=ld();
+  const p=d.projects.find(x=>x.id===projId);
+  if(!p)return;
+  const currentName=p.name||'';
+  const nu=prompt('프로젝트 이름 수정',currentName);
+  if(nu===null)return;
+  const name=String(nu).trim();
+  if(!name||name===currentName)return;
+  p.name=name;
+  sv('pr',d.projects);
+  // 현재 화면들 갱신
+  try{renderOverview();}catch(e){}
+  try{renderDetDash();}catch(e){}
+  try{renderDetProjView();}catch(e){}
+  // 데이터 입력 탭의 셀렉트 박스 텍스트도 업데이트
+  const sel=document.getElementById('sheet-proj-sel');
+  if(sel){
+    const opt=Array.from(sel.options).find(o=>o.value===projId);
+    if(opt)opt.textContent=name;
+  }
+  const imp=document.getElementById('imp-proj');
+  if(imp){
+    const opt2=Array.from(imp.options).find(o=>o.value===projId);
+    if(opt2)opt2.textContent=name;
+  }
+  toast('프로젝트 이름이 수정되었습니다');
+}
+
+function renderDetAllData(){
+  const el=document.getElementById('dp-alldata-inner');
+  if(!el)return;
+  const d=ld();
+  const projs=d.projects.filter(p=>p.clientId===CUR_CLIENT);
+  if(!projs.length){
+    el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">프로젝트가 없습니다</div>';
+    return;
+  }
+  // 프로젝트 정렬: order → createdAt
+  const sortedProjs=projs.slice().sort((a,b)=>{
+    const ao=(typeof a.order==='number'?a.order:999999);
+    const bo=(typeof b.order==='number'?b.order:999999);
+    if(ao!==bo)return ao-bo;
+    const ac=a.createdAt||'';const bc=b.createdAt||'';
+    return String(ac).localeCompare(String(bc));
+  });
+  const projOrderIndex={};
+  sortedProjs.forEach((p,i)=>{projOrderIndex[p.id]=i;});
+  const projMap={};sortedProjs.forEach(p=>{projMap[p.id]=p;});
+  const allRecs=d.records.filter(r=>projMap[r.projectId]);
+  if(!allRecs.length){
+    el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">등록된 명단이 없습니다</div>';
+    return;
+  }
+  // 기존 검색어 유지
+  const prevInput=document.getElementById('alldata-filter');
+  const keyword=(prevInput?prevInput.value:'').trim().toLowerCase();
+  // 정렬: 프로젝트 순서 → 구매날짜 → NO
+  const sortedRecs=allRecs.slice().sort((a,b)=>{
+    const pa=projOrderIndex[a.projectId]??999999;
+    const pb=projOrderIndex[b.projectId]??999999;
+    if(pa!==pb)return pa-pb;
+    const da=purchaseDateToYYYYMMDD(a.purchaseDate)||''; 
+    const db=purchaseDateToYYYYMMDD(b.purchaseDate)||'';
+    if(da!==db)return da.localeCompare(db);
+    const na=Number(a.no)||0;
+    const nb=Number(b.no)||0;
+    return na-nb;
+  });
+  const filteredRecs=keyword
+    ?sortedRecs.filter(r=>String(r.receiver||'').toLowerCase().includes(keyword))
+    :sortedRecs;
+  const headers=['프로젝트','NO','일자','구매날짜','품명','옵션','리뷰종류','닉네임','수취인','아이디','주소','연락처','상품금액','송장번호','계좌번호','리뷰URL'];
+  const rowsHtml=filteredRecs.map(r=>{
+    const p=projMap[r.projectId];
+    const cells=[
+      p?p.name:'',
+      r.no||'',
+      r.day||'',
+      purchaseDateToYYYYMMDD(r.purchaseDate)||r.purchaseDate||'',
+      r.product||'',
+      r.option||'',
+      r.reviewType||'',
+      r.nickname||'',
+      r.receiver||'',
+      r.email||'',
+      r.address||'',
+      r.phone||'',
+      r.amount?fmtN(r.amount):'',
+      r.tracking||'',
+      r.accountNo||'',
+      r.reviewUrl||''
+    ];
+    return '<tr>'+cells.map((v,i)=>{
+      const align=(i===1||i===12)?'right':'left';
+      return '<td style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;text-align:'+align+'">'+escHtml(String(v))+'</td>';
+    }).join('')+'</tr>';
+  }).join('');
+  const totalTxt=keyword?`총 ${filteredRecs.length}건 (검색 결과)`:`총 ${sortedRecs.length}건`;
+  el.innerHTML=
+    '<div class="card" style="margin-bottom:12px">'+
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
+        '<div style="font-size:12px;font-weight:700;color:var(--text2)">📚 전체 데이터 보기</div>'+
+        '<input id="alldata-filter" class="fi" style="max-width:220px;font-size:11px;padding:4px 8px" placeholder="수취인명 검색..." value="'+escHtml(keyword)+'" oninput="renderDetAllData()">'+
+        '<span style="font-size:11px;color:var(--text3)">'+totalTxt+'</span>'+
+      '</div>'+
+    '</div>'+
+    '<div class="card" style="padding:0;overflow:auto">'+
+      '<table style="width:100%;border-collapse:collapse;font-size:12px">'+
+        '<thead><tr>'+headers.map(h=>'<th style="position:sticky;top:0;background:var(--bg2);border-bottom:1px solid var(--border);padding:7px 8px;font-size:11px;text-align:left;white-space:nowrap">'+h+'</th>').join('')+'</tr></thead>'+
+        '<tbody>'+rowsHtml+'</tbody>'+
+      '</table>'+
+    '</div>';
 }
 
 function showProjDetailModal(projId){
