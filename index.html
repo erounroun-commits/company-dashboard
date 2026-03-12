@@ -3743,7 +3743,10 @@ function parseDateStr(s){
 }
 
 // ── 매칭 로직 ─────────────────────────
-// 규칙: 금액이 정확히 일치하는 미정산 항목만 매칭
+// 규칙:
+// 1차: 금액이 정확히 일치하는 미정산 항목만 후보
+// 2차: 안내일(정산일)과 입금일이 같은 건을 우선 매칭
+// 3차: 그래도 여러 개면 가장 오래된 안내일(과거 날짜)부터 매칭
 function matchDeposits(){
   const settles=stLd();
   const d=ld();
@@ -3765,11 +3768,17 @@ function matchDeposits(){
       const cl=clientMap[candidates[0].clientId]||{};
       return {...dep,matched:true,stId:candidates[0].id,clientName:cl.name||'',stDate:candidates[0].date,stTotal:candidates[0].total,matchNote:'금액 일치'};
     }
-    // 후보가 여러 개면 입금자명으로 추가 필터링
+    // 후보가 여러 개면 안내일/입금일 기준 + 입금자명으로 추가 필터링
     const content=(dep.content||dep.rawDate||'').toLowerCase();
     let best=null;
-    // 1) 거래처 입금자명 테이블 매칭
-    for(const cand of candidates){
+    // 1) 안내일(정산일)과 입금일이 같은 건을 우선
+    const depDate=(dep.date||'').slice(0,10); // YYYY-MM-DD 기준
+    const exactDateCands=depDate
+      ?candidates.filter(c=> (c.date||'').slice(0,10)===depDate)
+      :[];
+    const pool=exactDateCands.length?exactDateCands:candidates;
+    // 2) 거래처 입금자명 테이블 매칭
+    for(const cand of pool){
       const cl=clientMap[cand.clientId]||{};
       const cname=cl.name||'';
       const regNames=(cl.depositName||'').split(/[,，\s]+/).map(s=>s.trim().toLowerCase()).filter(Boolean);
@@ -3778,8 +3787,21 @@ function matchDeposits(){
       const allNames=[...regNames,...tableNames,cname.toLowerCase(),(cand.toName||'').toLowerCase()];
       if(allNames.some(n=>n&&content.includes(n))){best=cand;break;}
     }
-    // 2) 이름 매칭 안되면 첫 번째
-    if(!best)best=candidates[0];
+    // 3) 이름 매칭도 안되면: 안내일과 가장 가까운(또는 가장 오래된) 정산일 우선
+    if(!best){
+      if(pool.length>1 && depDate){
+        pool.sort((a,b)=>{
+          const da=(a.date||'').slice(0,10);
+          const db=(b.date||'').slice(0,10);
+          if(da===db) return 0;
+          if(da<db) return -1;
+          return 1;
+        });
+        best=pool[0];
+      }else{
+        best=pool[0];
+      }
+    }
     usedStIds.add(best.id);
     const cl=clientMap[best.clientId]||{};
     return {...dep,matched:true,stId:best.id,clientName:cl.name||'',stDate:best.date,stTotal:best.total,matchNote:'금액 일치'+(candidates.length>1?' (다중후보)':'')};
