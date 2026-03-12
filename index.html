@@ -2600,7 +2600,7 @@ function selectDailyDate(mode,clientId,dateStr){
     {key:'address',label:'주소',align:'left',ed:true},
     {key:'phone',label:'연락처',align:'left',ed:true},
     {key:'amount',label:'상품금액',align:'right',ed:true},
-    {key:'tracking',label:'송장번호',align:'left',ed:true},
+    {key:'tracking',label:'송장번호(CJ대한통운)',align:'left',ed:true},
     {key:'accountNo',label:'계좌번호',align:'left',ed:true},
     {key:'reviewUrl',label:'리뷰URL',align:'left',ed:true}
   ];
@@ -2966,7 +2966,7 @@ function exportDailyListXlsx(mode,dateStr){
     {key:'address',label:'주소'},
     {key:'phone',label:'연락처'},
     {key:'amount',label:'상품금액'},
-    {key:'tracking',label:'송장번호'},
+    {key:'tracking',label:'송장번호(CJ대한통운)'},
     {key:'accountNo',label:'계좌번호'},
     {key:'reviewUrl',label:'리뷰URL'}
   ];
@@ -5593,6 +5593,7 @@ async function markSettleDone(stId){
   // ★ 일/월 정산 동기화
   syncDsRowFromSettle(stId);
   renderDetSettle();renderDetQuote();
+  try{ scheduleRerender(); }catch(e){}
   toast('정산 완료 처리됨');
 }
 
@@ -6023,7 +6024,7 @@ function renderDetAllData(){
   const filteredRecs=keyword
     ?sortedRecs.filter(r=>String(r.receiver||'').toLowerCase().includes(keyword))
     :sortedRecs;
-  const headers=['프로젝트','NO','일자','구매날짜','품명','옵션','리뷰종류','닉네임','수취인','아이디','주소','연락처','상품금액','송장번호','계좌번호','리뷰URL'];
+  const headers=['프로젝트','NO','일자','구매날짜','품명','옵션','리뷰종류','닉네임','수취인','아이디','주소','연락처','상품금액','송장번호(CJ대한통운)','계좌번호','리뷰URL'];
   const rowsHtml=filteredRecs.map(r=>{
     const p=projMap[r.projectId];
     const cells=[
@@ -6440,6 +6441,7 @@ async function updateSettleFromQuote(qt){
     } else {
       await addToSettle(qt);
     }
+    try{ scheduleRerender(); }catch(e){}
   }catch(e){ console.warn('updateSettleFromQuote err',e); }
 }
 
@@ -6748,6 +6750,7 @@ function delQt(qtId){
     dsSv(dsArr);
   }catch(e){console.warn('delQt ds sync err',e);}
   renderDetQuote();renderDetSettle();
+  try{ scheduleRerender(); }catch(e){}
   toast('삭제됨');
 }
 
@@ -8548,8 +8551,8 @@ function exportClients(){
 function renderExportPage(){
   const d=ld(),sel=document.getElementById('exp-client');
   if(sel)sel.innerHTML='<option value="">선택</option>'+d.clients.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
-  const mc=['닉네임','수취인','연락처','주소','상품금액','송장번호','리뷰유형','리뷰URL'];
-  const mis=d.records.map(r=>{const p=d.projects.find(x=>x.id===r.projectId);const mf=mc.filter(c=>{const m={'닉네임':r.nickname,'수취인':r.receiver,'연락처':r.phone,'주소':r.address,'상품금액':r.amount,'송장번호':r.tracking,'리뷰유형':r.reviewType,'리뷰URL':r.reviewUrl};return !m[c];});return{proj:p?.name||'-',no:r.no,nick:r.nickname||'-',mf};}).filter(r=>r.mf.length>0).slice(0,12);
+  const mc=['닉네임','수취인','연락처','주소','상품금액','송장번호(CJ대한통운)','리뷰유형','리뷰URL'];
+  const mis=d.records.map(r=>{const p=d.projects.find(x=>x.id===r.projectId);const mf=mc.filter(c=>{const m={'닉네임':r.nickname,'수취인':r.receiver,'연락처':r.phone,'주소':r.address,'상품금액':r.amount,'송장번호(CJ대한통운)':r.tracking,'리뷰유형':r.reviewType,'리뷰URL':r.reviewUrl};return !m[c];});return{proj:p?.name||'-',no:r.no,nick:r.nickname||'-',mf};}).filter(r=>r.mf.length>0).slice(0,12);
   document.getElementById('exp-missing').innerHTML=mis.length===0?'<div style="font-size:12px;color:var(--green);padding:10px">✅ 미입력 없음</div>':`<table><thead><tr><th>프로젝트</th><th>NO</th><th>닉네임</th><th>미입력</th></tr></thead><tbody>${mis.map(m=>`<tr><td style="font-size:11px">${m.proj}</td><td>${m.no}</td><td>${m.nick}</td><td>${m.mf.map(f=>`<span class="badge br" style="margin-right:3px">${f}</span>`).join('')}</td></tr>`).join('')}</tbody></table>`;
 }
 
