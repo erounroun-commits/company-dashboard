@@ -7385,6 +7385,66 @@ function selInsertBelow(){
   markDirty();renderSheet();
 }
 
+// 엑셀처럼 Copy/Paste (input 포커스에서도 동작)
+function _sheetIsInFocus(){
+  const a=document.activeElement;
+  return !!(a && a.closest && a.closest('#sheet-tbl'));
+}
+function _sheetRowIndicesInRange(rng){
+  const vis=getVisibleSheetRowIndices();
+  if(!vis) return {list:null, get:(ri)=>ri};
+  // vis 중에서 rng 범위에 포함되는 ri만 사용 (표시된 행만)
+  const inRange=vis.filter(ri=>ri>=rng.r1&&ri<=rng.r2);
+  return {list:inRange, get:(idx)=>inRange[idx]};
+}
+document.addEventListener('copy',function(e){
+  if(!SEL_START || !_sheetIsInFocus()) return;
+  const rng=getSelRange(); if(!rng) return;
+  const lines=[];
+  const rowSrc=_sheetRowIndicesInRange(rng);
+  const rows=(rowSrc.list?rowSrc.list.length:(rng.r2-rng.r1+1));
+  for(let r=0;r<rows;r++){
+    const ri=(rowSrc.list?rowSrc.get(r):(rng.r1+r));
+    const cells=[];
+    for(let ci=rng.c1;ci<=rng.c2;ci++){
+      if(ci<COLS.length) cells.push(SHEET_ROWS[ri]?.[COLS[ci].k]||'');
+    }
+    lines.push(cells.join('\t'));
+  }
+  try{
+    e.clipboardData.setData('text/plain',lines.join('\n'));
+    e.preventDefault();
+    toast(`${rows}행 복사됨`);
+  }catch(err){}
+});
+document.addEventListener('paste',function(e){
+  if(!SEL_START || !_sheetIsInFocus()) return;
+  const rng=getSelRange(); if(!rng) return;
+  // 단일 값 붙여넣기: 선택 영역 전체 채우기
+  const text=(e.clipboardData&&e.clipboardData.getData)?e.clipboardData.getData('text/plain'):'';
+  if(!text) return;
+  if(text.includes('\t')||text.includes('\n')) return; // 다중 셀 TSV는 기존 handlePaste/로직 사용
+  const rows=(rng.r2-rng.r1+1), cols=(rng.c2-rng.c1+1);
+  if(rows*cols<=1) return; // 1칸이면 기본 붙여넣기 허용
+  e.preventDefault();
+  const val=text.trim();
+  const rowSrc=_sheetRowIndicesInRange(rng);
+  const rowCount=(rowSrc.list?rowSrc.list.length:rows);
+  for(let r=0;r<rowCount;r++){
+    const ri=(rowSrc.list?rowSrc.get(r):(rng.r1+r));
+    while(SHEET_ROWS.length<=ri) SHEET_ROWS.push(blankRow(SHEET_ROWS.length+1));
+    for(let ci=rng.c1;ci<=rng.c2;ci++){
+      if(ci>=COLS.length) continue;
+      const k=COLS[ci].k;
+      if(k==='no') continue; // NO는 자동
+      SHEET_ROWS[ri][k]=(k==='purchaseDate')?normPurchaseDate(val):val;
+    }
+    SHEET_ROWS[ri].no=ri+1;
+  }
+  markDirty();renderSheet();
+  toast(`${rowCount}행 × ${cols}열 채우기`);
+});
+
 // Ctrl+C 로 선택 범위 복사
 document.addEventListener('keydown',e=>{
   if((e.ctrlKey||e.metaKey)&&e.key==='c'&&SEL_START&&document.activeElement.tagName!=='INPUT'&&document.activeElement.tagName!=='TEXTAREA'){
