@@ -171,6 +171,7 @@ tr:last-child td{border-bottom:none;}
 /* 드래그 선택 */
 .st td.sel{background:#dbeafe !important;outline:1px solid #3b82f6;}
 .st td.sel input,.st td.sel select{background:#dbeafe !important;}
+.daily-edit-cell.daily-sel{background:#dbeafe !important;outline:1px solid #3b82f6;}
 .sheet-toolbar{display:flex;gap:6px;margin-bottom:6px;align-items:center;padding:6px 8px;background:var(--card);border:1px solid var(--border);border-radius:8px;flex-wrap:wrap;}
 .sheet-toolbar span{font-size:11px;color:var(--text2)}
 
@@ -2576,24 +2577,87 @@ function selectDailyDate(mode,clientId,dateStr){
 
 var _dailyUndoStack=[];
 var _dailyUndoMax=50;
+var _dailySelStart=null,_dailySelEnd=null,_dailySelMouseDown=false;
+function updateDailySelVisual(tbl){
+  if(!tbl)tbl=document.querySelector('#daily-list-tbl');
+  if(!tbl)return;
+  tbl.querySelectorAll('.daily-edit-cell').forEach(function(td){td.classList.remove('daily-sel');});
+  if(!_dailySelStart||!_dailySelEnd)return;
+  var tbody=tbl.tBodies[0];
+  if(!tbody)return;
+  var r1=Math.min(_dailySelStart.r,_dailySelEnd.r),r2=Math.max(_dailySelStart.r,_dailySelEnd.r);
+  var c1=Math.min(_dailySelStart.c,_dailySelEnd.c),c2=Math.max(_dailySelStart.c,_dailySelEnd.c);
+  for(var r=r1;r<=r2;r++){
+    var tr=tbody.rows[r];
+    if(!tr)continue;
+    for(var c=c1;c<=c2;c++){
+      var td=tr.cells[c];
+      if(td&&td.classList.contains('daily-edit-cell'))td.classList.add('daily-sel');
+    }
+  }
+}
+function getDailyCellsInRange(tbl){
+  var out=[];
+  if(!_dailySelStart||!_dailySelEnd||!tbl)return out;
+  var tbody=tbl.tBodies[0];
+  if(!tbody)return out;
+  var r1=Math.min(_dailySelStart.r,_dailySelEnd.r),r2=Math.max(_dailySelStart.r,_dailySelEnd.r);
+  var c1=Math.min(_dailySelStart.c,_dailySelEnd.c),c2=Math.max(_dailySelStart.c,_dailySelEnd.c);
+  for(var r=r1;r<=r2;r++){
+    var tr=tbody.rows[r];
+    if(!tr)continue;
+    for(var c=c1;c<=c2;c++){
+      var td=tr.cells[c];
+      if(td&&td.classList.contains('daily-edit-cell')&&td.dataset.recordId&&td.dataset.field)out.push(td);
+    }
+  }
+  return out;
+}
 function initDailyListKeys(container){
   if(!container)return;
   var tbl=container.querySelector('#daily-list-tbl');
   if(!tbl)tbl=container.querySelector('table');
   if(!tbl)return;
+  _dailySelStart=null;_dailySelEnd=null;_dailySelMouseDown=false;
+  tbl.addEventListener('mousedown',function(e){
+    if(e.button!==0)return;
+    var td=e.target.closest('.daily-edit-cell');
+    if(!td)return;
+    var tr=td.closest('tr');
+    var tbody=tbl.tBodies[0];
+    if(!tr||!tbody)return;
+    var rowIdx=Array.prototype.indexOf.call(tbody.rows,tr);
+    var colIdx=Array.prototype.indexOf.call(tr.cells,td);
+    if(rowIdx<0||colIdx<0)return;
+    _dailySelMouseDown=true;
+    _dailySelStart={r:rowIdx,c:colIdx};
+    _dailySelEnd={r:rowIdx,c:colIdx};
+    updateDailySelVisual(tbl);
+  });
+  tbl.addEventListener('mouseover',function(e){
+    if(!_dailySelMouseDown)return;
+    var td=e.target.closest('.daily-edit-cell');
+    if(!td)return;
+    var tr=td.closest('tr');
+    var tbody=tbl.tBodies[0];
+    if(!tr||!tbody)return;
+    var rowIdx=Array.prototype.indexOf.call(tbody.rows,tr);
+    var colIdx=Array.prototype.indexOf.call(tr.cells,td);
+    if(rowIdx<0||colIdx<0)return;
+    _dailySelEnd={r:rowIdx,c:colIdx};
+    updateDailySelVisual(tbl);
+  });
+  document.addEventListener('mouseup',function dailyMouseUp(){
+    _dailySelMouseDown=false;
+  });
   tbl.addEventListener('keydown',function(e){
     var cell=e.target.closest('.daily-edit-cell');
     if(e.key==='Delete'||e.key==='Backspace'){
-      var sel=window.getSelection();
-      var range=sel.rangeCount?sel.getRangeAt(0):null;
-      var cellsToClear=[];
-      if(range){
-        tbl.querySelectorAll('.daily-edit-cell').forEach(function(td){
-          if(range.intersectsNode(td))cellsToClear.push(td);
-        });
-      }
+      var cellsToClear=getDailyCellsInRange(tbl);
       if(cellsToClear.length>0){
         e.preventDefault();
+        var wrap=document.getElementById('daily-table-wrap');
+        var dateStr=wrap?wrap.dataset.date:'';
         var d=ld();
         var any=false;
         for(var i=0;i<cellsToClear.length;i++){
@@ -2606,10 +2670,11 @@ function initDailyListKeys(container){
           var newVal=field==='amount'?0:'';
           if(_dailyUndoStack.length<_dailyUndoMax)_dailyUndoStack.push({recId:recId,field:field,prevVal:prev});
           d.records[idx][field]=newVal;
+          if(dateStr){ d.records[idx].purchaseDate=dateStr; d.records[idx].day=dateStr; }
           any=true;
         }
         if(any){ sv('rc',d.records); }
-        var wrap=document.getElementById('daily-table-wrap');
+        _dailySelStart=null;_dailySelEnd=null;
         if(wrap&&wrap.dataset.mode&&wrap.dataset.date){ selectDailyDate(wrap.dataset.mode,wrap.dataset.cid||CUR_CLIENT,wrap.dataset.date); }
         toast(cellsToClear.length+'개 셀 삭제됨');
       }else if(cell){
@@ -2678,13 +2743,17 @@ function initDailyListKeys(container){
     }
     if(updates.length===0)return;
     var d=ld();
+    var wrap=document.getElementById('daily-table-wrap');
+    var dateStr=wrap?wrap.dataset.date:'';
     for(var i=0;i<updates.length;i++){
       var u=updates[i];
       var idx=d.records.findIndex(function(r){ return r.id===u.recId; });
-      if(idx>=0) d.records[idx][u.field]=u.val;
+      if(idx>=0){
+        d.records[idx][u.field]=u.val;
+        if(dateStr){ d.records[idx].purchaseDate=dateStr; d.records[idx].day=dateStr; }
+      }
     }
     sv('rc',d.records);
-    var wrap=document.getElementById('daily-table-wrap');
     if(wrap&&wrap.dataset.mode&&wrap.dataset.date) selectDailyDate(wrap.dataset.mode,wrap.dataset.cid||CUR_CLIENT,wrap.dataset.date);
     toast(updates.length+'개 셀 반영됨');
   });
@@ -2705,14 +2774,15 @@ function onDailyCellBlur(td){
   if(idx<0)return;
   const prev=d.records[idx][field];
   if(String(prev)===''+newVal)return;
+  const wrap=document.getElementById('daily-table-wrap');
+  const dateStr=wrap?wrap.dataset.date:'';
   if(_dailyUndoStack.length<_dailyUndoMax) _dailyUndoStack.push({recId:recId,field:field,prevVal:prev});
   d.records[idx][field]=newVal;
+  if(dateStr){ d.records[idx].purchaseDate=dateStr; d.records[idx].day=dateStr; }
   sv('rc',d.records);
-  const wrap=document.getElementById('daily-table-wrap');
   if(wrap){
     const mode=wrap.dataset.mode;
     const cid=wrap.dataset.cid||CUR_CLIENT;
-    const dateStr=wrap.dataset.date;
     if(mode&&dateStr) selectDailyDate(mode,cid||null,dateStr);
   }
   toast('저장됨 (모든 화면에 반영)');
@@ -4924,6 +4994,11 @@ function showDTab(name){
   if(name==='settle')renderDetSettle();
   if(name==='daily')renderDailyPanel('dp',CUR_CLIENT);
   if(name==='prodstat')renderProdStat();
+  if(name==='input'){
+    var d=ld();
+    var projs=d.projects.filter(function(p){return p.clientId===CUR_CLIENT;});
+    if(typeof SHEET_PROJ!=='undefined'&&SHEET_PROJ&&projs.some(function(p){return p.id===SHEET_PROJ;}))loadSheet(SHEET_PROJ);
+  }
 }
 
 // ════════════════════════════════════════════════════════
