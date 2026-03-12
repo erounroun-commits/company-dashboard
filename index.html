@@ -6062,6 +6062,7 @@ function showProjDetailModal(projId){
 // 견적서 v7 — 날짜별 독립 견적서 (Firestore quotes)
 // ════════════════════════════════════════════
 let QT_ITEMS={}; // 임시 항목 상태 {qtId:[{type,label,qty,unitPrice,memo}]}
+let QT_EDIT_ID=null; // 편집 중인 견적서 id
 
 function renderDetQuote(){
   const d=ld(),c=d.clients.find(x=>x.id===CUR_CLIENT);if(!c)return;
@@ -6087,7 +6088,8 @@ function renderDetQuote(){
 
     <!-- 신규 견적서 작성 폼 (기본 숨김) -->
     <div id="qt-new-form" class="hidden" style="background:var(--card);border:2px solid var(--accent);border-radius:14px;padding:22px;margin-bottom:18px;box-shadow:var(--sh2)">
-      <div style="font-size:14px;font-weight:800;color:var(--accent);margin-bottom:16px">✏️ 견적서 작성</div>
+      <input type="hidden" id="qn-edit-id" value="">
+      <div style="font-size:14px;font-weight:800;color:var(--accent);margin-bottom:16px" id="qn-form-title">✏️ 견적서 작성</div>
 
       <!-- 기본 정보 -->
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px">
@@ -6174,7 +6176,7 @@ function renderDetQuote(){
 
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn btn-gray btn-sm" onclick="closeNewQuoteForm()">취소</button>
-        <button class="btn btn-green btn-sm" onclick="saveNewQuote()">💾 견적서 저장</button>
+        <button class="btn btn-green btn-sm" onclick="saveQuoteForm()">💾 저장</button>
       </div>
     </div>
 
@@ -6199,6 +6201,7 @@ function renderDetQuote(){
           </div>
           <div style="display:flex;gap:6px;align-items:center">
             <span style="font-size:12px;font-weight:700;color:${settled?'var(--green)':'var(--accent)'}">${fmtN(calcQtTotal(q))}원</span>
+            <button class="btn btn-xs btn-gray" onclick="event.stopPropagation();openEditQuoteForm('${q.id}')">수정</button>
             ${!settled?`<button class="btn btn-xs btn-green" onclick="event.stopPropagation();markQtSettled('${q.id}')">정산완료</button>`:''}
             <button class="btn btn-xs btn-red" onclick="event.stopPropagation();delQt('${q.id}')">삭제</button>
             <span style="font-size:12px;color:var(--text3)">${collapsed?'▼':'▲'}</span>
@@ -6267,6 +6270,9 @@ function getQtTaxItems(){
   };
 }
 function openNewQuoteForm(){
+  QT_EDIT_ID=null;
+  const hid=document.getElementById('qn-edit-id');if(hid)hid.value='';
+  const ttl=document.getElementById('qn-form-title');if(ttl)ttl.textContent='✏️ 견적서 작성';
   const _d=ld(),_cl=_d.clients.find(x=>x.id===CUR_CLIENT);
   const _types=getQtTypeList(_cl);
   QT_NEW_ITEMS=[{id:gid(),typeIdx:0,label:_types[0].label,calc:_types[0].calc,qty:1,unitPrice:_types[0].defaultPrice||0,feeRate:_types[0].feeRate||0,memo:''}];
@@ -6288,7 +6294,120 @@ function openNewQuoteForm(){
   const cnt=(d.quotes.filter(q=>q.clientId===CUR_CLIENT).length||0)+1;
   document.getElementById('qn-no').value=`Q${new Date().toISOString().slice(0,7).replace('-','')}-${String(cnt).padStart(3,'0')}`;
 }
-function closeNewQuoteForm(){hide('qt-new-form');QT_NEW_ITEMS=[];}
+function closeNewQuoteForm(){
+  hide('qt-new-form');
+  QT_NEW_ITEMS=[];
+  QT_EDIT_ID=null;
+  const hid=document.getElementById('qn-edit-id');if(hid)hid.value='';
+  const ttl=document.getElementById('qn-form-title');if(ttl)ttl.textContent='✏️ 견적서 작성';
+}
+
+function openEditQuoteForm(qtId){
+  const d=ld();
+  const qt=(d.quotes||[]).find(q=>q.id===qtId);
+  if(!qt){toast('견적서를 찾을 수 없습니다','error');return;}
+  QT_EDIT_ID=qtId;
+  const hid=document.getElementById('qn-edit-id');if(hid)hid.value=qtId;
+  const ttl=document.getElementById('qn-form-title');if(ttl)ttl.textContent='✏️ 견적서 수정';
+  // 기본 필드 채우기
+  document.getElementById('qn-date').value=qt.date||getKSTDate();
+  document.getElementById('qn-no').value=qt.no||'';
+  document.getElementById('qn-validity').value=qt.validity||'30일';
+  document.getElementById('qn-to-name').value=qt.toName||'';
+  document.getElementById('qn-to-biz-no').value=qt.toBizNo||'';
+  document.getElementById('qn-to-biz-name').value=qt.toBizName||'';
+  document.getElementById('qn-to-ceo').value=qt.toCeo||'';
+  document.getElementById('qn-to-type').value=qt.toType||'';
+  // 세금 설정
+  const taxEl=document.getElementById('qn-tax-yn');if(taxEl)taxEl.checked=!!qt.taxYn;
+  const taxWrap=document.getElementById('qn-tax-items');if(taxWrap)taxWrap.style.display=(qt.taxYn)?'grid':'none';
+  const ti=qt.taxItems||{};
+  setQtTaxItem('fee', !!ti.fee);
+  setQtTaxItem('del', !!ti.delivery);
+  setQtTaxItem('prod', !!ti.product);
+  // 항목
+  QT_NEW_ITEMS=(qt.items||[]).map(it=>({
+    id:it.id||gid(),
+    typeIdx: (it.typeIdx!=null?it.typeIdx:0),
+    label: it.label||'',
+    calc: it.calc||'custom',
+    qty: parseFloat(it.qty)||0,
+    unitPrice: parseFloat(it.unitPrice)||0,
+    feeRate: parseFloat(it.feeRate)||0,
+    taxApply: (it.calc==='custom' ? (it.taxApply!==false) : it.taxApply),
+    memo: it.memo||'',
+  }));
+  if(!QT_NEW_ITEMS.length){
+    const cl=d.clients.find(x=>x.id===CUR_CLIENT);
+    const types=getQtTypeList(cl);
+    QT_NEW_ITEMS=[{id:gid(),typeIdx:0,label:types[0].label,calc:types[0].calc,qty:1,unitPrice:types[0].defaultPrice||0,feeRate:types[0].feeRate||0,memo:''}];
+  }
+  document.getElementById('qn-notes').value=qt.notes||'';
+  renderQtNewItems();
+  show('qt-new-form');
+  // 폼으로 스크롤
+  setTimeout(()=>{ try{ document.getElementById('qt-new-form')?.scrollIntoView({behavior:'smooth',block:'start'}); }catch(e){} },20);
+}
+
+async function updateSettleFromQuote(qt){
+  try{
+    const settles=[...stLd()];
+    const idx=settles.findIndex(s=>s.qtId===qt.id);
+    const itemParts=(qt.items||[]).map(it=>it.label||it.calc).filter(Boolean);
+    const ti=qt.taxItems||{};
+    if(qt.taxYn){
+      if(ti.fee)itemParts.push('세금① 진행비');
+      if(ti.delivery)itemParts.push('세금② 택배비');
+      if(ti.product)itemParts.push('세금③ 상품금액');
+    }
+    const itemSummary=itemParts.join(' · ');
+    if(idx>=0){
+      settles[idx]={...settles[idx],date:qt.date,no:qt.no,toName:qt.toName,itemSummary,total:calcQtTotal(qt),taxYn:!!qt.taxYn};
+      await stSv(settles);
+    } else {
+      await addToSettle(qt);
+    }
+  }catch(e){ console.warn('updateSettleFromQuote err',e); }
+}
+
+function saveQuoteForm(){
+  const date=document.getElementById('qn-date')?.value;
+  if(!date){toast('견적일자를 입력하세요','error');return;}
+  if(!QT_NEW_ITEMS.length){toast('견적 항목을 1개 이상 추가하세요','error');return;}
+  const taxYn=document.getElementById('qn-tax-yn')?.checked||false;
+  const taxItems=getQtTaxItems();
+  const items=QT_NEW_ITEMS.map(it=>({...it, taxApply: it.calc==='custom' ? (it.taxApply!==false) : it.taxApply}));
+  const d=ld();
+  const editId=QT_EDIT_ID||document.getElementById('qn-edit-id')?.value||'';
+  if(editId){
+    const idx=d.quotes.findIndex(q=>q.id===editId);
+    if(idx<0){toast('수정할 견적서를 찾을 수 없습니다','error');return;}
+    const prev=d.quotes[idx];
+    const qt={...prev,
+      date,
+      no:document.getElementById('qn-no')?.value||'',
+      validity:document.getElementById('qn-validity')?.value||'30일',
+      toName:document.getElementById('qn-to-name')?.value||'',
+      toBizNo:document.getElementById('qn-to-biz-no')?.value||'',
+      toBizName:document.getElementById('qn-to-biz-name')?.value||'',
+      toCeo:document.getElementById('qn-to-ceo')?.value||'',
+      toType:document.getElementById('qn-to-type')?.value||'',
+      taxYn,taxItems,items,
+      notes:document.getElementById('qn-notes')?.value||'',
+    };
+    d.quotes[idx]=qt;
+    sv('qt',d.quotes);
+    // 정산/일월정산 반영
+    updateSettleFromQuote(qt);
+    syncQtToDailySettle(qt);
+    closeNewQuoteForm();
+    renderDetQuote();renderDetSettle();
+    try{ scheduleRerender(); }catch(e){}
+    toast('견적서 수정 완료');
+  } else {
+    saveNewQuote(); // 신규는 기존 로직 사용
+  }
+}
 
 function addQtItem(dummy){
   const _d2=ld(),_cl2=_d2.clients.find(x=>x.id===CUR_CLIENT);
@@ -6316,7 +6435,11 @@ function onQtTypeChange(itemId,sel){
 }
 function onQtFieldChange(itemId,field,val){
   const it=QT_NEW_ITEMS.find(x=>x.id===itemId);
-  if(it) it[field]=field==='qty'||field==='unitPrice'?parseFloat(val)||0:val;
+  if(it){
+    if(field==='qty'||field==='unitPrice') it[field]=parseFloat(val)||0;
+    else if(field==='taxApply') it[field]=!!val;
+    else it[field]=val;
+  }
   renderQtNewItems();
 }
 
@@ -6331,7 +6454,7 @@ function renderQtNewItems(){
   function calcRow(it){
     const supply=it.qty*it.unitPrice;
     // 항목 유형별 부가세/수수료 적용 여부
-    const applyTax=((it.calc==='fee1'||it.calc==='fee2')&&taxItems.fee)||(it.calc==='delivery'&&taxItems.delivery)||(it.calc==='product'&&taxItems.product)||(it.calc==='custom'&&taxYn);
+    const applyTax=((it.calc==='fee1'||it.calc==='fee2')&&taxItems.fee)||(it.calc==='delivery'&&taxItems.delivery)||(it.calc==='product'&&taxItems.product)||(it.calc==='custom'&&taxYn&&(it.taxApply!==false));
     const feeRate=(it.calc==='product'&&applyTax)?(it.feeRate||10):0;
     const commission=applyTax?Math.round(supply*(feeRate/100)):0;
     const supplyWithFee=supply+commission;
@@ -6358,6 +6481,7 @@ function renderQtNewItems(){
         ${QT_NEW_ITEMS.map(it=>{
           const r=calcRow(it);
           const isProd=it.calc==='product';
+          const isCustom=it.calc==='custom';
           return `<tr style="border-top:1px solid var(--border);background:${isProd?'#fffdf5':''}">
             <td style="padding:5px 8px">
               <select class="fs" style="font-size:11px;padding:3px 6px" onchange="onQtTypeChange('${it.id}',this)">
@@ -6373,7 +6497,14 @@ function renderQtNewItems(){
             ${taxYn?`<td style="padding:5px 6px;text-align:right;font-size:11px;color:#ea580c">
               ${isProd&&r.applyTax?`<div style="display:flex;align-items:center;gap:2px;justify-content:flex-end"><input class="fi" type="number" min="0" style="font-size:10px;padding:2px 5px;width:50px;text-align:right" value="${r.feeRate}" oninput="onQtFeeRateChange('${it.id}',this.value)" title="수수료율(%)"><span style="font-size:9px;color:var(--text3)">%</span></div>`:(r.commission?fmtN(r.commission):'—')}
             </td>
-            <td style="padding:5px 6px;text-align:right;font-size:11px;color:#7c3aed">${r.applyTax?(r.vat?fmtN(r.vat)+'원':'0원'):'—'}</td>`:''}
+            <td style="padding:5px 6px;text-align:right;font-size:11px;color:#7c3aed">
+              ${isCustom?`<label style="display:inline-flex;align-items:center;gap:6px;justify-content:flex-end;cursor:pointer">
+                <input type="checkbox" ${it.taxApply===false?'':'checked'} onchange="onQtFieldChange('${it.id}','taxApply',this.checked)">
+                <span style="font-size:10px;color:var(--text2);font-weight:700">부가세</span>
+              </label>
+              <div style="margin-top:2px">${(taxYn&&(it.taxApply!==false))?(r.vat?fmtN(r.vat)+'원':'0원'):'—'}</div>`
+              : (r.applyTax?(r.vat?fmtN(r.vat)+'원':'0원'):'—')}
+            </td>`:''}
             <td style="padding:5px 6px;text-align:right;font-weight:700;color:var(--accent)">${fmtN(r.total)}</td>
             <td style="padding:5px 4px;text-align:center"><button class="btn btn-xs btn-red" style="padding:2px 5px" onclick="removeQtItem('${it.id}')">✕</button></td>
           </tr>`;
@@ -6449,7 +6580,7 @@ function saveNewQuote(){
   if(!QT_NEW_ITEMS.length){toast('견적 항목을 1개 이상 추가하세요','error');return;}
   const taxYn=document.getElementById('qn-tax-yn')?.checked||false;
   const taxItems=getQtTaxItems();
-  const items=QT_NEW_ITEMS.map(it=>({...it}));
+  const items=QT_NEW_ITEMS.map(it=>({...it, taxApply: it.calc==='custom' ? (it.taxApply!==false) : it.taxApply}));
   const qt={
     id:gid(),clientId:CUR_CLIENT,
     date,
@@ -6539,7 +6670,13 @@ function calcQtTotal(qt){
   const ti=qt.taxItems||{};
   return (qt.items||[]).reduce((s,it)=>{
     const sup=(it.qty||0)*(it.unitPrice||0);
-    const applyTax=qt.taxYn&&(((it.calc==='fee1'||it.calc==='fee2')&&ti.fee)||(it.calc==='delivery'&&ti.delivery)||(it.calc==='product'&&ti.product)||(!ti.fee&&!ti.delivery&&!ti.product));
+    const applyTax=qt.taxYn&&(
+      ((it.calc==='fee1'||it.calc==='fee2')&&ti.fee) ||
+      (it.calc==='delivery'&&ti.delivery) ||
+      (it.calc==='product'&&ti.product) ||
+      (it.calc==='custom'&&(it.taxApply!==false)) ||
+      (!ti.fee&&!ti.delivery&&!ti.product)
+    );
     const fr=(it.calc==='product'&&applyTax)?(it.feeRate||10):0;
     const comm=applyTax?Math.round(sup*(fr/100)):0;
     const supWF=sup+comm;
@@ -6555,7 +6692,13 @@ function buildQtDoc(qt){
   const rows=qt.items.map(it=>{
     const sup=(it.qty||0)*(it.unitPrice||0);
     const isProd=it.calc==='product';
-    const applyTax=taxYn&&(((it.calc==='fee1'||it.calc==='fee2')&&qti.fee)||(it.calc==='delivery'&&qti.delivery)||(it.calc==='product'&&qti.product)||(!qti.fee&&!qti.delivery&&!qti.product));
+    const applyTax=taxYn&&(
+      ((it.calc==='fee1'||it.calc==='fee2')&&qti.fee) ||
+      (it.calc==='delivery'&&qti.delivery) ||
+      (it.calc==='product'&&qti.product) ||
+      (it.calc==='custom'&&(it.taxApply!==false)) ||
+      (!qti.fee&&!qti.delivery&&!qti.product)
+    );
     const feeRate=(isProd&&applyTax)?(it.feeRate||10):0;
     const commission=applyTax?Math.round(sup*(feeRate/100)):0;
     const supplyWF=sup+commission;
@@ -6574,13 +6717,25 @@ function buildQtDoc(qt){
   const totalSupply=qt.items.reduce((s,it)=>s+(it.qty||0)*(it.unitPrice||0),0);
   const totalCommission=taxYn?qt.items.reduce((s,it)=>{
     const sup=(it.qty||0)*(it.unitPrice||0);
-    const applyTax=((it.calc==='fee1'||it.calc==='fee2')&&qti.fee)||(it.calc==='delivery'&&qti.delivery)||(it.calc==='product'&&qti.product)||(!qti.fee&&!qti.delivery&&!qti.product);
+    const applyTax=(
+      ((it.calc==='fee1'||it.calc==='fee2')&&qti.fee) ||
+      (it.calc==='delivery'&&qti.delivery) ||
+      (it.calc==='product'&&qti.product) ||
+      (it.calc==='custom'&&(it.taxApply!==false)) ||
+      (!qti.fee&&!qti.delivery&&!qti.product)
+    );
     const fr=(it.calc==='product'&&applyTax)?(it.feeRate||10):0;
     return s+(applyTax?Math.round(sup*(fr/100)):0);
   },0):0;
   const totalVat=taxYn?qt.items.reduce((s,it)=>{
     const sup=(it.qty||0)*(it.unitPrice||0);
-    const applyTax=((it.calc==='fee1'||it.calc==='fee2')&&qti.fee)||(it.calc==='delivery'&&qti.delivery)||(it.calc==='product'&&qti.product)||(!qti.fee&&!qti.delivery&&!qti.product);
+    const applyTax=(
+      ((it.calc==='fee1'||it.calc==='fee2')&&qti.fee) ||
+      (it.calc==='delivery'&&qti.delivery) ||
+      (it.calc==='product'&&qti.product) ||
+      (it.calc==='custom'&&(it.taxApply!==false)) ||
+      (!qti.fee&&!qti.delivery&&!qti.product)
+    );
     const fr=(it.calc==='product'&&applyTax)?(it.feeRate||10):0;
     const comm=applyTax?Math.round(sup*(fr/100)):0;
     return s+(applyTax?Math.round((sup+comm)*0.1):0);
@@ -7173,7 +7328,6 @@ function loadSheet(projId){
     SHEET_ROWS.sort((a,b)=>(Number(a.no)||0)-(Number(b.no)||0));
   }
   if(!SHEET_ROWS.length)SHEET_ROWS=[blankRow(1)];
-  window._SHEET_FILTER_TEXT='';
   renderSheet();
 }
 function blankRow(no){
@@ -7187,6 +7341,11 @@ function renderSheet(){
   const d=ld();
   const isAllProj=SHEET_PROJ==='__all__';
   const projMap={};if(isAllProj)d.projects.forEach(p=>{projMap[p.id]=p.name;});
+  // 필터 값 유지 (직전 DOM 또는 전역 변수 기준)
+  const prevText=(typeof document!=='undefined' && document.getElementById('sheet-text-filter') ? document.getElementById('sheet-text-filter').value : (window._SHEET_FILTER_TEXT||''));
+  const prevDate=(typeof document!=='undefined' && document.getElementById('sheet-date-filter') ? document.getElementById('sheet-date-filter').value : (window._SHEET_FILTER_DATE||''));
+  const prevRv=(typeof document!=='undefined' && document.getElementById('sheet-reviewtype-filter') ? document.getElementById('sheet-reviewtype-filter').value : (window._SHEET_FILTER_RVTYPE||''));
+  const prevProd=(typeof document!=='undefined' && document.getElementById('sheet-product-filter') ? document.getElementById('sheet-product-filter').value : (window._SHEET_FILTER_PRODUCT||''));
   // 스크롤·포커스 복원용 저장
   const outer=document.getElementById('sheet-outer-wrap');
   let savedScrollTop=0,savedScrollLeft=0,savedRi=null,savedCi=null;
@@ -7198,7 +7357,12 @@ function renderSheet(){
   }
   // 일자 필터 옵션
   const allDates=[...new Set(SHEET_ROWS.map(r=>r.purchaseDate).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
-  const dateOpts='<option value="">전체 날짜</option>'+allDates.map(d=>`<option value="${d}">${d}</option>`).join('');
+  const dateOpts='<option value="">전체 날짜</option>'+allDates.map(dt=>`<option value="${dt}" ${String(prevDate)===String(dt)?'selected':''}>${dt}</option>`).join('');
+  // 리뷰종류/상품명 필터 옵션
+  const allRv=[...new Set(SHEET_ROWS.map(r=>(r.reviewType||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  const rvOpts='<option value="">전체 리뷰종류</option>'+allRv.map(v=>`<option value="${escHtml(v)}" ${String(prevRv)===String(v)?'selected':''}>${escHtml(v)}</option>`).join('');
+  const allProd=[...new Set(SHEET_ROWS.map(r=>(r.product||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  const prodOpts='<option value="">전체 상품명</option>'+allProd.map(v=>`<option value="${escHtml(v)}" ${String(prevProd)===String(v)?'selected':''}>${escHtml(v)}</option>`).join('');
   const toolbar=`<div class="sheet-toolbar" style="flex-wrap:wrap;gap:5px">
     <button class="btn btn-xs btn-gray" onclick="selDeleteRows()">🗑 행 삭제</button>
     <button class="btn btn-xs btn-gray" onclick="selClearCells()">✕ 셀 초기화</button>
@@ -7207,10 +7371,18 @@ function renderSheet(){
     <button class="btn btn-xs" style="background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:5px;cursor:pointer;padding:3px 9px;font-size:11px;font-weight:700" onclick="openAddColModal()">＋ 열 추가</button>
     <div style="display:flex;align-items:center;gap:8px;margin-left:8px;flex-wrap:wrap">
       <span style="font-size:10px;color:var(--text2);font-weight:700">🔍 검색:</span>
-      <input type="text" id="sheet-text-filter" placeholder="닉네임·상품명·수취인 등" style="font-size:11px;padding:4px 8px;width:140px;border:1px solid var(--border);border-radius:4px;background:var(--card)" oninput="applySheetFilters()" />
+      <input type="text" id="sheet-text-filter" placeholder="닉네임·상품명·수취인 등" value="${escHtml(prevText||'')}" style="font-size:11px;padding:4px 8px;width:140px;border:1px solid var(--border);border-radius:4px;background:var(--card)" oninput="applySheetFilters()" />
       <span style="font-size:10px;color:var(--text2);font-weight:700">📅 날짜:</span>
       <select id="sheet-date-filter" style="font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card)" onchange="applySheetFilters()">
         ${dateOpts}
+      </select>
+      <span style="font-size:10px;color:var(--text2);font-weight:700">🧾 리뷰:</span>
+      <select id="sheet-reviewtype-filter" style="font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card);max-width:160px" onchange="applySheetFilters()">
+        ${rvOpts}
+      </select>
+      <span style="font-size:10px;color:var(--text2);font-weight:700">📦 상품:</span>
+      <select id="sheet-product-filter" style="font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card);max-width:180px" onchange="applySheetFilters()">
+        ${prodOpts}
       </select>
     </div>
     <span id="sel-info" style="font-size:10px;color:var(--text3);margin-left:auto">드래그 선택 → Del:초기화 | Ctrl+C/V:복붙 | 꾹 누르기:이동</span>
@@ -7241,7 +7413,8 @@ function renderSheet(){
   </tr>`).join('');
   document.getElementById('sheet-container').innerHTML=toolbar+`<div class="sheet-outer" id="sheet-outer-wrap" onmouseup="sheetMouseUp(event)"><table class="st" id="sheet-tbl" onmouseleave="sheetMouseUp(event)"><thead>${thead}</thead><tbody>${tbody}</tbody></table><button class="add-row" onclick="addSheetRow()">+ 행 추가</button></div>`;
   applySheetFilters();
-  if(outer){outer.scrollTop=savedScrollTop;outer.scrollLeft=savedScrollLeft;}
+  const newOuter=document.getElementById('sheet-outer-wrap');
+  if(newOuter){newOuter.scrollTop=savedScrollTop;newOuter.scrollLeft=savedScrollLeft;}
   if(savedRi!=null&&savedCi!=null){
     const cell=document.querySelector(`#sheet-tbl td[data-ri="${savedRi}"][data-ci="${savedCi}"]`);
     const inp=cell&&cell.querySelector('input,select');
@@ -7450,14 +7623,17 @@ document.addEventListener('keydown',e=>{
   if((e.ctrlKey||e.metaKey)&&e.key==='c'&&SEL_START&&document.activeElement.tagName!=='INPUT'&&document.activeElement.tagName!=='TEXTAREA'){
     const rng=getSelRange();if(!rng)return;
     const lines=[];
-    for(let ri=rng.r1;ri<=rng.r2;ri++){
+    const rowSrc=_sheetRowIndicesInRange(rng);
+    const rows=(rowSrc.list?rowSrc.list.length:(rng.r2-rng.r1+1));
+    for(let r=0;r<rows;r++){
+      const ri=(rowSrc.list?rowSrc.get(r):(rng.r1+r));
       const cells=[];
       for(let ci=rng.c1;ci<=rng.c2;ci++){
         if(ci<COLS.length)cells.push(SHEET_ROWS[ri][COLS[ci].k]||'');
       }
       lines.push(cells.join('\t'));
     }
-    navigator.clipboard.writeText(lines.join('\n')).then(()=>toast(`${rng.r2-rng.r1+1}행 복사됨`));
+    navigator.clipboard.writeText(lines.join('\n')).then(()=>toast(`${rows}행 복사됨`));
     e.preventDefault();
   }
   // Ctrl+V: 포커스된 셀이 없을 때 선택 셀에 붙여넣기 (필터 시 보이는 행에 채움)
@@ -7653,9 +7829,16 @@ function changeProjStatus(projId, newStatus){
 function applySheetFilters(){
   const dateSel=document.getElementById('sheet-date-filter');
   const textInp=document.getElementById('sheet-text-filter');
+  const rvSel=document.getElementById('sheet-reviewtype-filter');
+  const prodSel=document.getElementById('sheet-product-filter');
   const filterDate=dateSel?dateSel.value:'';
   const filterText=(textInp?textInp.value:'').trim().toLowerCase();
+  const filterRv=rvSel?rvSel.value:'';
+  const filterProd=prodSel?prodSel.value:'';
   if(textInp!=null)window._SHEET_FILTER_TEXT=filterText;
+  window._SHEET_FILTER_DATE=filterDate;
+  window._SHEET_FILTER_RVTYPE=filterRv;
+  window._SHEET_FILTER_PRODUCT=filterProd;
   const tbody=document.getElementById('sheet-tbl')?.querySelector('tbody');
   if(!tbody)return;
   function rowMatchesText(r){
@@ -7670,12 +7853,19 @@ function applySheetFilters(){
     const r=SHEET_ROWS[ri];
     if(!r){tr.style.display='';return;}
     const dateOk=!filterDate||r.purchaseDate===filterDate;
+    const rvOk=!filterRv||(String(r.reviewType||'').trim()===String(filterRv).trim());
+    const prodOk=!filterProd||(String(r.product||'').trim()===String(filterProd).trim());
     const textOk=rowMatchesText(r);
-    tr.style.display=(dateOk&&textOk)?'':'none';
+    tr.style.display=(dateOk&&rvOk&&prodOk&&textOk)?'':'none';
   });
-  const vis=SHEET_ROWS.filter(r=>(!filterDate||r.purchaseDate===filterDate)&&(filterText?rowMatchesText(r):true)).length;
+  const vis=SHEET_ROWS.filter(r=>
+    (!filterDate||r.purchaseDate===filterDate) &&
+    (!filterRv||(String(r.reviewType||'').trim()===String(filterRv).trim())) &&
+    (!filterProd||(String(r.product||'').trim()===String(filterProd).trim())) &&
+    (filterText?rowMatchesText(r):true)
+  ).length;
   const info=document.getElementById('sel-info');
-  if(info&&(filterDate||filterText))info.textContent=`필터 적용 — ${vis}건 표시`;
+  if(info&&(filterDate||filterText||filterRv||filterProd))info.textContent=`필터 적용 — ${vis}건 표시`;
   else if(info)info.textContent='드래그 선택 → Del:초기화 | Ctrl+C/V:복붙 | 꾹 누르기:이동';
 }
 function getVisibleSheetRowIndices(){
@@ -7683,9 +7873,13 @@ function getVisibleSheetRowIndices(){
   if(!tbody)return null;
   const dateSel=document.getElementById('sheet-date-filter');
   const textInp=document.getElementById('sheet-text-filter');
+  const rvSel=document.getElementById('sheet-reviewtype-filter');
+  const prodSel=document.getElementById('sheet-product-filter');
   const filterDate=dateSel?dateSel.value:'';
   const filterText=(textInp?textInp.value:'').trim().toLowerCase();
-  if(!filterDate&&!filterText)return null;
+  const filterRv=rvSel?rvSel.value:'';
+  const filterProd=prodSel?prodSel.value:'';
+  if(!filterDate&&!filterText&&!filterRv&&!filterProd)return null;
   const visible=[];
   tbody.querySelectorAll('tr[data-ri]').forEach(tr=>{
     if(tr.style.display!=='none')visible.push(parseInt(tr.getAttribute('data-ri'),10));
