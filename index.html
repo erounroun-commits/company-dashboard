@@ -7059,20 +7059,25 @@ function previewBulkUpload(input){
 
   const doProcess=(data,type)=>{
     try{
-      const wb = XLSX.read(data,{type:type, cellDates:false});
+      const wb = XLSX.read(data,{type:type, cellDates:false, cellNF:false});
 
-      // 1) 여러 시트 중 "실제 데이터가 있는 첫 시트"를 자동으로 선택
       let rawRows = [];
       let headerRowIndex = 0;
       let sheetNameUsed = '';
 
       const COLS_TO_CHECK = 30;
-      const getRows=(ws)=>XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
-      // 헤더로 쓸 수 있는 키워드 (이 중 2개 이상 있으면 그 행을 헤더로 인식)
+      const getRows=(ws,raw)=>{
+        return XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:raw!==false,blank:true});
+      };
       const HEADER_KEYWORDS = ['일자','구매날짜','상품명','닉네임','수취인','송장번호','리뷰URL','옵션','연락처','주소','상품금액','계좌번호','리뷰종류','프로젝트NO','프로젝트명','아이디'];
       const rowLooksLikeHeader=(row)=>{
         if(!row||!Array.isArray(row)) return false;
-        const str = row.slice(0,20).map(c=>String(c==null?'':c).trim()).join(' ');
+        const str = row.slice(0,20).map(c=>{
+          if(c==null||c===undefined) return '';
+          if(typeof c==='number') return String(c);
+          if(typeof c==='object'&&c instanceof Date) return c.toISOString?.()||'';
+          return String(c).trim();
+        }).join(' ');
         return HEADER_KEYWORDS.filter(kw=>str.includes(kw)).length >= 2;
       };
       const rowHasData=(row)=>{
@@ -7081,47 +7086,49 @@ function previewBulkUpload(input){
           const v=row[ci];
           if(v==null||v===undefined) continue;
           if(typeof v==='number'&&!isNaN(v)) return true;
+          if(v instanceof Date) return true;
+          if(typeof v==='object'&&v!==null&&String(v).trim()!=='') return true;
           if(String(v).trim()!=='') return true;
         }
         return false;
       };
 
-      for(const name of wb.SheetNames){
-        const ws = wb.Sheets[name];
-        const rows = getRows(ws);
-        if(!rows.length) continue;
-
-        // 1) 헤더 행 찾기: 키워드로 헤더 행 먼저 탐색 (최대 5행만 검사)
-        let foundHeaderIdx = -1;
-        for(let i=0;i<Math.min(5,rows.length);i++){
-          if(rowLooksLikeHeader(rows[i])){ foundHeaderIdx=i; break; }
-        }
-        if(foundHeaderIdx>=0){
-          headerRowIndex = foundHeaderIdx;
+      const tryFindSheet=(rawVal)=>{
+        rawRows=[]; headerRowIndex=0; sheetNameUsed='';
+        const get=(ws)=>getRows(ws,rawVal);
+        for(const name of wb.SheetNames){
+          const ws = wb.Sheets[name];
+          const rows = get(ws);
+          if(!rows.length) continue;
+          let foundHeaderIdx = -1;
+          for(let i=0;i<Math.min(5,rows.length);i++){
+            if(rowLooksLikeHeader(rows[i])){ foundHeaderIdx=i; break; }
+          }
+          if(foundHeaderIdx>=0){
+            headerRowIndex = foundHeaderIdx;
+            rawRows = rows;
+            sheetNameUsed = name;
+            return true;
+          }
+          let firstDataIdx = -1;
+          for(let i=0;i<rows.length;i++){
+            if(rowHasData(rows[i])){ firstDataIdx=i; break; }
+          }
+          if(firstDataIdx===-1) continue;
+          headerRowIndex = Math.max(0, firstDataIdx-1);
           rawRows = rows;
           sheetNameUsed = name;
-          break;
+          return true;
         }
-
-        // 2) 기존 방식: 데이터가 있는 첫 행의 바로 위를 헤더로
-        let firstDataIdx = -1;
-        for(let i=0;i<rows.length;i++){
-          if(rowHasData(rows[i])){ firstDataIdx=i; break; }
+        if(wb.SheetNames.length){
+          sheetNameUsed = wb.SheetNames[0];
+          rawRows = get(wb.Sheets[sheetNameUsed]);
         }
-        if(firstDataIdx===-1) continue;
-        headerRowIndex = Math.max(0, firstDataIdx-1);
-        rawRows = rows;
-        sheetNameUsed = name;
-        break;
-      }
+        return rawRows.length>0;
+      };
 
-      if(!rawRows.length&&wb.SheetNames.length){
-        sheetNameUsed = wb.SheetNames[0];
-        const ws = wb.Sheets[sheetNameUsed];
-        rawRows = getRows(ws);
-        headerRowIndex = 0;
-      }
-
+      if(!tryFindSheet(true))
+        tryFindSheet(false);
       if(!rawRows.length){
         toast('엑셀에서 데이터를 찾지 못했습니다. 시트 내용과 범위를 확인하세요.','error');
         return;
