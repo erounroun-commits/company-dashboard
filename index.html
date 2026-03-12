@@ -7067,6 +7067,7 @@ function previewBulkUpload(input){
 
       const COLS_TO_CHECK = 30;
       const getRows=(ws,raw,forceRange)=>{
+        if(!ws) return [];
         var opts={header:1,defval:'',raw:raw!==false,blank:true};
         var out=[];
         if(forceRange){
@@ -7074,10 +7075,10 @@ function previewBulkUpload(input){
           for(var r=0;r<ranges.length&&out.length===0;r++){
             try{ out=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:raw!==false,blank:true,range:ranges[r]})||[]; }catch(e){}
           }
-          if(out.length===0&&ws['!ref']) try{ out=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:raw!==false,blank:true,range:ws['!ref']})||[]; }catch(e){}
+          if(out.length===0&&ws&&ws['!ref']) try{ out=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:raw!==false,blank:true,range:ws['!ref']})||[]; }catch(e){}
         }
         if(out.length===0) try{ out=XLSX.utils.sheet_to_json(ws,opts)||[]; }catch(e){}
-        return out;
+        return out||[];
       };
       const HEADER_KEYWORDS = ['일자','구매날짜','상품명','닉네임','수취인','송장번호','리뷰URL','옵션','연락처','주소','상품금액','계좌번호','리뷰종류','프로젝트NO','프로젝트명','아이디'];
       const rowLooksLikeHeader=(row)=>{
@@ -7112,6 +7113,7 @@ function previewBulkUpload(input){
         const get=(ws)=>getRows(ws,rawVal,forceRange);
         for(const name of wb.SheetNames){
           const ws = wb.Sheets[name];
+          if(!ws) continue;
           const rows = get(ws);
           if(!rows.length) continue;
           let foundHeaderIdx = -1;
@@ -7142,8 +7144,9 @@ function previewBulkUpload(input){
           }
         }
         if(wb.SheetNames.length){
-          sheetNameUsed = wb.SheetNames[0];
-          rawRows = get(wb.Sheets[sheetNameUsed]);
+          var firstSheetName=wb.SheetNames[0];
+          var firstSheet=wb.Sheets[firstSheetName];
+          if(firstSheet){ sheetNameUsed=firstSheetName; rawRows=get(firstSheet); }
         }
         return rawRows.length>0;
       };
@@ -7153,8 +7156,10 @@ function previewBulkUpload(input){
       if(!rawRows.length){ tryFindSheet(false,true); }
       if(!rawRows.length&&wb.SheetNames.length){
         var firstWs=wb.Sheets[wb.SheetNames[0]];
-        rawRows=getRows(firstWs,true,true);
-        if(!rawRows.length) rawRows=getRows(firstWs,false,true);
+        if(firstWs){
+          rawRows=getRows(firstWs,true,true);
+          if(!rawRows.length) rawRows=getRows(firstWs,false,true);
+        }
         if(rawRows.length){
           sheetNameUsed=wb.SheetNames[0];
           var fhi=-1;
