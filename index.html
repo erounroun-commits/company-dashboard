@@ -9855,6 +9855,17 @@ function exportDsExcel(){
   </div>
 </div>
 
+<!-- ══ 견적서 미리보기 모달 (정산 현황에서 사용) ══ -->
+<div class="mo hidden" id="modal-qt-view">
+  <div class="md" style="max-width:920px;width:90vw;max-height:90vh;overflow:auto">
+    <div class="mt" style="display:flex;justify-content:space-between;align-items:center">
+      <span>📄 견적서 미리보기</span>
+      <button class="btn btn-xs btn-gray" onclick="closeMd('qt-view')">닫기</button>
+    </div>
+    <div id="qt-view-body" style="margin-top:10px"></div>
+  </div>
+</div>
+
 <!-- Firebase SDKs (CDN) -->
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-analytics-compat.js"></script>
