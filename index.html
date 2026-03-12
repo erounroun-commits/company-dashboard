@@ -2773,7 +2773,7 @@ function initDailyListKeys(container){
         var item=_dailyUndoStack.pop();
         var d=ld();
         var idx=d.records.findIndex(function(r){return r.id===item.recId;});
-        if(idx>=0){ d.records[idx][item.field]=item.prevVal; sv('rc',d.records); }
+        if(idx>=0){ d.records[idx][item.field]=item.prevVal; sv('rc',d.records); try{ scheduleRerender(); }catch(e){} }
         var wrap=document.getElementById('daily-table-wrap');
         if(wrap&&wrap.dataset.mode&&wrap.dataset.date) selectDailyDate(wrap.dataset.mode,wrap.dataset.cid||CUR_CLIENT,wrap.dataset.date);
         toast('실행 취소됨');
@@ -2832,6 +2832,7 @@ function initDailyListKeys(container){
     }
     sv('rc',d.records);
     if(wrap&&wrap.dataset.mode&&wrap.dataset.date) selectDailyDate(wrap.dataset.mode,wrap.dataset.cid||CUR_CLIENT,wrap.dataset.date);
+    try{ scheduleRerender(); }catch(e){}
     toast(updates.length+'개 셀 반영됨');
   });
 }
@@ -2862,6 +2863,7 @@ function onDailyCellBlur(td){
     const cid=wrap.dataset.cid||CUR_CLIENT;
     if(mode&&dateStr) selectDailyDate(mode,cid||null,dateStr);
   }
+  try{ scheduleRerender(); }catch(e){}
   toast('저장됨 (모든 화면에 반영)');
 }
 
@@ -5852,6 +5854,7 @@ function renameProject(projId){
     const opt2=Array.from(imp.options).find(o=>o.value===projId);
     if(opt2)opt2.textContent=name;
   }
+  try{ scheduleRerender(); }catch(e){}
   toast('프로젝트 이름이 수정되었습니다');
 }
 
@@ -6424,6 +6427,7 @@ function saveNewQuote(){
   closeNewQuoteForm();
   renderDetQuote();
   renderDetSettle();
+  try{ scheduleRerender(); }catch(e){}
   toast('견적서 저장 완료');
 }
 
