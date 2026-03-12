@@ -2525,7 +2525,21 @@ function selectDailyDate(mode,clientId,dateStr){
   const stoppedProjIds=new Set(projs.filter(p=>p.status==='진행중단').map(p=>p.id));
   const targetDate=purchaseDateToYYYYMMDD(dateStr)||dateStr;
   const stoppedDayRecs=allRecs.filter(r=>stoppedProjIds.has(r.projectId)&&(purchaseDateToYYYYMMDD(r.purchaseDate)===targetDate));
-  const dayRecs=allRecs.filter(r=>!stoppedProjIds.has(r.projectId)&&(purchaseDateToYYYYMMDD(r.purchaseDate)===targetDate));
+  let dayRecs=allRecs.filter(r=>!stoppedProjIds.has(r.projectId)&&(purchaseDateToYYYYMMDD(r.purchaseDate)===targetDate));
+  // 정렬: 프로젝트 순서(order→createdAt) → 같은 프로젝트 내 데이터입력(NO) 순
+  const projsSorted=projs.slice().sort((a,b)=>{
+    const ao=(typeof a.order==='number'?a.order:999999);
+    const bo=(typeof b.order==='number'?b.order:999999);
+    if(ao!==bo)return ao-bo;
+    return new Date(b.createdAt||0)-new Date(a.createdAt||0);
+  });
+  const projOrder={};projsSorted.forEach((p,i)=>{projOrder[p.id]=i;});
+  dayRecs=dayRecs.slice().sort((a,b)=>{
+    const pa=projOrder[a.projectId]!==undefined?projOrder[a.projectId]:999;
+    const pb=projOrder[b.projectId]!==undefined?projOrder[b.projectId]:999;
+    if(pa!==pb)return pa-pb;
+    return (Number(a.no)||0)-(Number(b.no)||0);
+  });
 
   const projMap={};projs.forEach(p=>{projMap[p.id]=p;});
 
@@ -2626,8 +2640,9 @@ function selectDailyDate(mode,clientId,dateStr){
     el.querySelectorAll('.daily-edit-cell').forEach(td=>{
       td.addEventListener('blur',function(){ onDailyCellBlur(this); });
     });
-    initDailyListKeys(el);
   }
+  // 로그인 사용자(관리자·일반) 모두 복붙/선택/삭제 등 키보드 동작 사용 가능하도록 항상 연결
+  initDailyListKeys(el);
 }
 
 var _dailyUndoStack=[];
@@ -2759,7 +2774,7 @@ function initDailyListKeys(container){
           var newVal=field==='amount'?0:'';
           if(_dailyUndoStack.length<_dailyUndoMax)_dailyUndoStack.push({recId:recId,field:field,prevVal:prev});
           d.records[idx][field]=newVal;
-          if(dateStr){ d.records[idx].purchaseDate=dateStr; d.records[idx].day=dateStr; }
+          if(dateStr){ d.records[idx].purchaseDate=dateStr; }
           any=true;
         }
         if(any){ sv('rc',d.records); }
@@ -2839,7 +2854,7 @@ function initDailyListKeys(container){
       var idx=d.records.findIndex(function(r){ return r.id===u.recId; });
       if(idx>=0){
         d.records[idx][u.field]=u.val;
-        if(dateStr){ d.records[idx].purchaseDate=dateStr; d.records[idx].day=dateStr; }
+        if(dateStr){ d.records[idx].purchaseDate=dateStr; }
       }
     }
     sv('rc',d.records);
@@ -2868,7 +2883,7 @@ function onDailyCellBlur(td){
   const dateStr=wrap?wrap.dataset.date:'';
   if(_dailyUndoStack.length<_dailyUndoMax) _dailyUndoStack.push({recId:recId,field:field,prevVal:prev});
   d.records[idx][field]=newVal;
-  if(dateStr){ d.records[idx].purchaseDate=dateStr; d.records[idx].day=dateStr; }
+  if(dateStr&&field!=='day'){ d.records[idx].purchaseDate=dateStr; }
   sv('rc',d.records);
   if(wrap){
     const mode=wrap.dataset.mode;
@@ -2993,13 +3008,12 @@ function buildCvDash(c,projs,d){
 
 function buildCvProjects(projs,d){
   if(!projs.length) return '<div style="text-align:center;padding:60px;color:var(--text3)">프로젝트가 없습니다</div>';
-  // 관리자 화면에서 설정한 order 기준으로 정렬
+  // order 우선, 같으면 최근 생성순(createdAt 내림차순)
   projs=projs.slice().sort(function(a,b){
     var ao=(typeof a.order==='number'?a.order:999999);
     var bo=(typeof b.order==='number'?b.order:999999);
     if(ao!==bo)return ao-bo;
-    var ac=a.createdAt||'';var bc=b.createdAt||'';
-    return String(ac).localeCompare(String(bc));
+    return new Date(b.createdAt||0)-new Date(a.createdAt||0);
   });
   let rows='';
   projs.forEach(function(p){
@@ -5023,8 +5037,10 @@ function renderOverview(){
     </div>`;
   }).join('')||'<div style="font-size:12px;color:var(--text3)">없음</div>';
 
+  // 프로젝트: 최근 생성순(createdAt 내림차순)
+  const ovProjSorted=[...d.projects].sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
   document.getElementById('ov-projects').innerHTML=`<table><thead><tr><th>프로젝트명</th><th>거래처</th><th>플랫폼</th><th>진행률</th><th>상태</th></tr></thead><tbody>
-    ${d.projects.map(p=>{
+    ${ovProjSorted.map(p=>{
       const rc=d.records.filter(r=>r.projectId===p.id);
       const rv=rc.filter(r=>r.reviewUrl).length,tt=p.total||rc.length||1,pp=~~((rv/tt)*100);
       const cl=d.clients.find(c=>c.id===p.clientId);
@@ -5077,7 +5093,7 @@ function openDetail(cid){
   // daily 탭은 lazy render on tab click
   const projs=d.projects.filter(p=>p.clientId===cid);
   const sel=document.getElementById('sheet-proj-sel');
-  sel.innerHTML='<option value="">선택하세요</option><option value="__new__">+ 신규 프로젝트 생성</option>'+projs.map(p=>`<option value="${p.id}">${p.name}</option>`).join('');
+  sel.innerHTML='<option value="">선택하세요</option><option value="__all__">[전체 프로젝트]</option><option value="__new__">+ 신규 프로젝트 생성</option>'+projs.map(p=>`<option value="${p.id}">${p.name}</option>`).join('');
   sel.value='';
   document.getElementById('sheet-container').innerHTML='<div style="text-align:center;padding:60px;color:var(--text3);font-size:13px">프로젝트를 선택하면 스프레드시트가 열립니다</div>';
   document.getElementById('imp-proj').innerHTML=projs.map(p=>`<option value="${p.id}">${p.name}</option>`).join('');
@@ -5096,7 +5112,7 @@ function showDTab(name){
   if(name==='input'){
     var d=ld();
     var projs=d.projects.filter(function(p){return p.clientId===CUR_CLIENT;});
-    if(typeof SHEET_PROJ!=='undefined'&&SHEET_PROJ&&projs.some(function(p){return p.id===SHEET_PROJ;}))loadSheet(SHEET_PROJ);
+    if(typeof SHEET_PROJ!=='undefined'&&SHEET_PROJ&&(SHEET_PROJ==='__all__'||projs.some(function(p){return p.id===SHEET_PROJ;})))loadSheet(SHEET_PROJ);
   }
    if(name==='alldata')renderDetAllData();
 }
@@ -5752,17 +5768,29 @@ function openContractEdit(){
 }
 
 function renderDetProjView(){
-  const d=ld(),projs=d.projects.filter(p=>p.clientId===CUR_CLIENT);
-  // 정렬: order → createdAt 기준
-  projs.sort((a,b)=>{
+  const d=ld();
+  let projs=d.projects.filter(p=>p.clientId===CUR_CLIENT);
+  // 정렬: order 우선, 같으면 최근 생성순(createdAt 내림차순)
+  projs=projs.slice().sort((a,b)=>{
     const ao=(typeof a.order==='number'?a.order:999999);
     const bo=(typeof b.order==='number'?b.order:999999);
     if(ao!==bo)return ao-bo;
-    const ac=a.createdAt||'';const bc=b.createdAt||'';
-    return String(ac).localeCompare(String(bc));
+    return new Date(b.createdAt||0)-new Date(a.createdAt||0);
   });
-  if(!projs.length){document.getElementById('dp-projview').innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">프로젝트 없음<br><button class="btn btn-blue btn-sm" style="margin-top:12px" onclick="showDTab(\'input\')">프로젝트 생성하기</button></div>';return;}
-  document.getElementById('dp-projview').innerHTML='<div style="display:flex;flex-direction:column;gap:12px">'+projs.map(p=>{
+  const filterStatus=document.getElementById('projview-filter-status');
+  const filterName=(document.getElementById('projview-filter-name')&&document.getElementById('projview-filter-name').value||'').trim().toLowerCase();
+  const filterStatusVal=filterStatus?filterStatus.value:'';
+  if(filterStatusVal)projs=projs.filter(p=>p.status===filterStatusVal);
+  if(filterName)projs=projs.filter(p=>(p.name||'').toLowerCase().includes(filterName));
+  const fullList=d.projects.filter(p=>p.clientId===CUR_CLIENT);
+  if(!fullList.length){document.getElementById('dp-projview').innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">프로젝트 없음<br><button class="btn btn-blue btn-sm" style="margin-top:12px" onclick="showDTab(\'input\')">프로젝트 생성하기</button></div>';return;}
+  const statusOpts='<option value="">전체 진행상태</option>'+PROJ_STATUSES.map(s=>'<option value="'+s+'"'+(filterStatusVal===s?' selected':'')+'>'+s+'</option>').join('');
+  const filterHtml='<div class="card" style="margin-bottom:12px"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
+    +'<span style="font-size:12px;font-weight:700;color:var(--text2)">필터</span>'
+    +'<select id="projview-filter-status" class="fs" style="font-size:12px;padding:5px 10px;min-width:180px" onchange="renderDetProjView()">'+statusOpts+'</select>'
+    +'<input type="text" id="projview-filter-name" class="fi" placeholder="프로젝트 이름 검색" value="'+(filterName?String(filterName).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):'')+'" style="font-size:12px;padding:5px 10px;min-width:160px" oninput="renderDetProjView()">'
+    +'</div></div>';
+  const listBody=projs.length?projs.map(p=>{
     const rc=d.records.filter(r=>r.projectId===p.id);
     const reqTotal=p.contractTotal||p.total||rc.length||0;
     const buyDone=rc.filter(r=>r.nickname||r.tracking).length; // 닉네임 있으면 구매완료
@@ -5778,9 +5806,11 @@ function renderDetProjView(){
           <div style="font-size:14px;font-weight:700">${p.name}</div>
           <div style="font-size:11px;color:var(--text2);margin-top:1px">${p.platform} · ${p.product}</div>
           </div>
-          ${CUR_ADMIN?`<div style="display:flex;flex-direction:column;gap:2px;font-size:10px;color:var(--text3)" onclick="event.stopPropagation()">
+          ${CUR_ADMIN?`<div style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text3)" onclick="event.stopPropagation()">
             <button class="btn btn-xs btn-gray" style="padding:2px 6px;font-size:10px" onclick="moveProjOrder('${p.id}',-1)">▲ 위로</button>
+            <span style="color:var(--border)">|</span>
             <button class="btn btn-xs btn-gray" style="padding:2px 6px;font-size:10px" onclick="moveProjOrder('${p.id}',1)">▼ 아래로</button>
+            <span style="color:var(--border)">|</span>
             <button class="btn btn-xs btn-gray" style="padding:2px 6px;font-size:10px" onclick="renameProject('${p.id}')">✏ 이름</button>
           </div>`:''}
         </div>
@@ -5807,7 +5837,8 @@ function renderDetProjView(){
         <div class="pb-wrap" style="height:5px"><div class="pb" style="width:${pp}%;height:5px;background:var(--accent)"></div></div>
       </div>
     </div>`;
-  }).join('')+'</div>';
+  }).join(''):'<div style="text-align:center;padding:40px;color:var(--text3)">검색 결과 없음</div>';
+  document.getElementById('dp-projview').innerHTML=filterHtml+'<div style="display:flex;flex-direction:column;gap:12px">'+listBody+'</div>';
 }
 
 function moveProjOrder(projId,dir){
@@ -5879,13 +5910,12 @@ function renderDetAllData(){
     el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">프로젝트가 없습니다</div>';
     return;
   }
-  // 프로젝트 정렬: order → createdAt
+  // 프로젝트 정렬: order 우선, 같으면 최근 생성순(createdAt 내림차순)
   const sortedProjs=projs.slice().sort((a,b)=>{
     const ao=(typeof a.order==='number'?a.order:999999);
     const bo=(typeof b.order==='number'?b.order:999999);
     if(ao!==bo)return ao-bo;
-    const ac=a.createdAt||'';const bc=b.createdAt||'';
-    return String(ac).localeCompare(String(bc));
+    return new Date(b.createdAt||0)-new Date(a.createdAt||0);
   });
   const projOrderIndex={};
   sortedProjs.forEach((p,i)=>{projOrderIndex[p.id]=i;});
@@ -7005,7 +7035,7 @@ function onSheetProjChange(){
     hide('new-proj-form');
     if(v){
       loadSheet(v);
-      if(delBtn)delBtn.style.display='inline-flex';
+      if(delBtn)delBtn.style.display=(v==='__all__'?'none':'inline-flex');
     } else {
       document.getElementById('sheet-container').innerHTML='<div style="text-align:center;padding:60px;color:var(--text3);font-size:13px">프로젝트를 선택하면 스프레드시트가 열립니다</div>';
       if(delBtn)delBtn.style.display='none';
@@ -7116,19 +7146,49 @@ function loadSheet(projId){
   SHEET_PROJ=projId;SHEET_DIRTY=false;
   loadExtraCols();COLS=getCOLS();
   const d=ld();
-  SHEET_ROWS=d.records.filter(r=>r.projectId===projId).map(r=>({...r}));
-  SHEET_ROWS.sort((a,b)=>(Number(a.no)||0)-(Number(b.no)||0));
+  if(projId==='__all__'){
+    const clientProjs=d.projects.filter(p=>p.clientId===CUR_CLIENT).slice().sort((a,b)=>{
+      const ao=(typeof a.order==='number'?a.order:999999);
+      const bo=(typeof b.order==='number'?b.order:999999);
+      if(ao!==bo)return ao-bo;
+      return new Date(b.createdAt||0)-new Date(a.createdAt||0);
+    });
+    const projOrder={};clientProjs.forEach((p,i)=>{projOrder[p.id]=i;});
+    SHEET_ROWS=d.records.filter(r=>projOrder[r.projectId]!==undefined).map(r=>({...r}));
+    SHEET_ROWS.sort((a,b)=>{
+      const pa=projOrder[a.projectId]!==undefined?projOrder[a.projectId]:999;
+      const pb=projOrder[b.projectId]!==undefined?projOrder[b.projectId]:999;
+      if(pa!==pb)return pa-pb;
+      return (Number(a.no)||0)-(Number(b.no)||0);
+    });
+  } else {
+    SHEET_ROWS=d.records.filter(r=>r.projectId===projId).map(r=>({...r}));
+    SHEET_ROWS.sort((a,b)=>(Number(a.no)||0)-(Number(b.no)||0));
+  }
   if(!SHEET_ROWS.length)SHEET_ROWS=[blankRow(1)];
   window._SHEET_FILTER_TEXT='';
   renderSheet();
 }
 function blankRow(no){
-  const base={id:gid(),projectId:SHEET_PROJ,no,day:'',purchaseDate:'',product:'',option:'',reviewType:'',nickname:'',receiver:'',email:'',address:'',phone:'',amount:'',reviewUrl:'',tracking:'',reviewDate:'',createdAt:new Date().toISOString()};
+  const pid=SHEET_PROJ==='__all__'?(ld().projects.find(p=>p.clientId===CUR_CLIENT)||{}).id:SHEET_PROJ;
+  const base={id:gid(),projectId:pid||'',no,day:'',purchaseDate:'',product:'',option:'',reviewType:'',nickname:'',receiver:'',email:'',address:'',phone:'',amount:'',reviewUrl:'',tracking:'',reviewDate:'',createdAt:new Date().toISOString()};
   EXTRA_COLS.forEach(ec=>{base[ec.k]='';});
   return base;
 }
 function renderSheet(){
   COLS=getCOLS(); // extra cols 동기화
+  const d=ld();
+  const isAllProj=SHEET_PROJ==='__all__';
+  const projMap={};if(isAllProj)d.projects.forEach(p=>{projMap[p.id]=p.name;});
+  // 스크롤·포커스 복원용 저장
+  const outer=document.getElementById('sheet-outer-wrap');
+  let savedScrollTop=0,savedScrollLeft=0,savedRi=null,savedCi=null;
+  if(outer){savedScrollTop=outer.scrollTop;savedScrollLeft=outer.scrollLeft;}
+  const active=document.activeElement;
+  if(active&&active.closest('#sheet-tbl')){
+    const td=active.closest('td[data-ri][data-ci]');
+    if(td){savedRi=parseInt(td.dataset.ri,10);savedCi=parseInt(td.dataset.ci,10);}
+  }
   // 일자 필터 옵션
   const allDates=[...new Set(SHEET_ROWS.map(r=>r.purchaseDate).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
   const dateOpts='<option value="">전체 날짜</option>'+allDates.map(d=>`<option value="${d}">${d}</option>`).join('');
@@ -7148,7 +7208,7 @@ function renderSheet(){
     </div>
     <span id="sel-info" style="font-size:10px;color:var(--text3);margin-left:auto">드래그 선택 → Del:초기화 | Ctrl+C/V:복붙 | 꾹 누르기:이동</span>
   </div>`;
-  const thead='<tr><th style="position:sticky;left:0;z-index:3;width:28px;min-width:28px;user-select:none">#</th>'+COLS.map((col,ci)=>{
+  const thead='<tr><th style="position:sticky;left:0;z-index:3;width:28px;min-width:28px;user-select:none">#</th>'+(isAllProj?'<th style="min-width:90px;white-space:nowrap">프로젝트</th>':'')+COLS.map((col,ci)=>{
     const canLeft=ci>0, canRight=ci<COLS.length-1;
     const moveHtml='<span style="display:inline-flex;gap:1px;margin-left:4px;vertical-align:middle">'
       +'<button title="왼쪽으로" style="font-size:9px;padding:0 3px;line-height:14px;border:1px solid var(--border);border-radius:3px;background:var(--bg2);cursor:pointer;opacity:'+(canLeft?1:0.25)+'" onclick="event.stopPropagation();moveCol('+ci+',-1)">◀</button>'
@@ -7159,6 +7219,7 @@ function renderSheet(){
   }).join('')+'<th style="width:32px"></th></tr>';
   const tbody=SHEET_ROWS.map((row,ri)=>`<tr data-ri="${ri}">
     <td class="rn" onmousedown="sheetRnClick(event,${ri})">${ri+1}</td>
+    ${isAllProj?`<td style="font-size:11px;color:var(--text2);white-space:nowrap">${(projMap[row.projectId]||'-').replace(/</g,'&lt;')}</td>`:''}
     ${COLS.map((col,ci)=>{
       const isSel=isCellSel(ri,ci);
       const cellStyle=isSel?'class="sel"':'';
@@ -7173,6 +7234,12 @@ function renderSheet(){
   </tr>`).join('');
   document.getElementById('sheet-container').innerHTML=toolbar+`<div class="sheet-outer" id="sheet-outer-wrap" onmouseup="sheetMouseUp(event)"><table class="st" id="sheet-tbl" onmouseleave="sheetMouseUp(event)"><thead>${thead}</thead><tbody>${tbody}</tbody></table><button class="add-row" onclick="addSheetRow()">+ 행 추가</button></div>`;
   applySheetFilters();
+  if(outer){outer.scrollTop=savedScrollTop;outer.scrollLeft=savedScrollLeft;}
+  if(savedRi!=null&&savedCi!=null){
+    const cell=document.querySelector(`#sheet-tbl td[data-ri="${savedRi}"][data-ci="${savedCi}"]`);
+    const inp=cell&&cell.querySelector('input,select');
+    if(inp){inp.focus();}
+  }
 }
 
 // ── 드래그 선택 ──
@@ -7326,7 +7393,7 @@ document.addEventListener('keydown',e=>{
     navigator.clipboard.writeText(lines.join('\n')).then(()=>toast(`${rng.r2-rng.r1+1}행 복사됨`));
     e.preventDefault();
   }
-  // Ctrl+V: 포커스된 셀이 없을 때 선택 셀에 붙여넣기
+  // Ctrl+V: 포커스된 셀이 없을 때 선택 셀에 붙여넣기 (필터 시 보이는 행에 채움)
   if((e.ctrlKey||e.metaKey)&&e.key==='v'&&SEL_START&&document.activeElement.tagName!=='INPUT'){
     e.preventDefault();
     navigator.clipboard.readText().then(text=>{
@@ -7334,10 +7401,17 @@ document.addEventListener('keydown',e=>{
       const rng=getSelRange();
       const lines=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n');
       if(lines.length&&lines[lines.length-1]==='')lines.pop();
+      const visibleIndices=getVisibleSheetRowIndices();
+      let startVisibleIdx=0;
+      if(visibleIndices&&visibleIndices.length){
+        startVisibleIdx=visibleIndices.indexOf(rng.r1);
+        if(startVisibleIdx<0){const next=visibleIndices.findIndex(ri=>ri>=rng.r1);startVisibleIdx=next>=0?next:0;}
+      }
       lines.forEach((line,li)=>{
-        const ri=rng.r1+li;
+        let ri;
+        if(visibleIndices&&startVisibleIdx+li<visibleIndices.length)ri=visibleIndices[startVisibleIdx+li];
+        else{ri=rng.r1+li;while(SHEET_ROWS.length<=ri)SHEET_ROWS.push(blankRow(SHEET_ROWS.length+1));}
         const cells=line.split('\t');
-        while(SHEET_ROWS.length<=ri)SHEET_ROWS.push(blankRow(SHEET_ROWS.length+1));
         cells.forEach((cell,ci)=>{
           const colIdx=rng.c1+ci;
           if(colIdx>=COLS.length)return;
@@ -7519,7 +7593,9 @@ function applySheetFilters(){
   if(!tbody)return;
   function rowMatchesText(r){
     if(!filterText)return true;
-    const str=[r.no,r.day,r.purchaseDate,r.product,r.option,r.reviewType,r.nickname,r.receiver,r.email,r.address,r.phone,r.amount,r.tracking,r.reviewUrl].filter(Boolean).map(String).join(' ').toLowerCase();
+    const projMap={};if(SHEET_PROJ==='__all__'){const d=ld();d.projects.forEach(p=>{projMap[p.id]=p.name;});}
+    const projName=SHEET_PROJ==='__all__'?(projMap[r.projectId]||''):'';
+    const str=[r.no,r.day,r.purchaseDate,r.product,r.option,r.reviewType,r.nickname,r.receiver,r.email,r.address,r.phone,r.amount,r.tracking,r.reviewUrl,projName].filter(Boolean).map(String).join(' ').toLowerCase();
     return str.indexOf(filterText)!==-1;
   }
   tbody.querySelectorAll('tr[data-ri]').forEach(tr=>{
@@ -7534,6 +7610,20 @@ function applySheetFilters(){
   const info=document.getElementById('sel-info');
   if(info&&(filterDate||filterText))info.textContent=`필터 적용 — ${vis}건 표시`;
   else if(info)info.textContent='드래그 선택 → Del:초기화 | Ctrl+C/V:복붙 | 꾹 누르기:이동';
+}
+function getVisibleSheetRowIndices(){
+  const tbody=document.getElementById('sheet-tbl')?.querySelector('tbody');
+  if(!tbody)return null;
+  const dateSel=document.getElementById('sheet-date-filter');
+  const textInp=document.getElementById('sheet-text-filter');
+  const filterDate=dateSel?dateSel.value:'';
+  const filterText=(textInp?textInp.value:'').trim().toLowerCase();
+  if(!filterDate&&!filterText)return null;
+  const visible=[];
+  tbody.querySelectorAll('tr[data-ri]').forEach(tr=>{
+    if(tr.style.display!=='none')visible.push(parseInt(tr.getAttribute('data-ri'),10));
+  });
+  return visible;
 }
 
 // ── 열 추가 모달 ──
@@ -7566,8 +7656,15 @@ function delExtraCol(ci){
 function saveSheet(){
   if(!SHEET_PROJ){toast('프로젝트를 선택하세요','error');return;}
   const d=ld();
-  const others=d.records.filter(r=>r.projectId!==SHEET_PROJ);
-  const nr=SHEET_ROWS.filter(r=>r.nickname||r.receiver||r.phone||r.product).map((r,i)=>({...r,projectId:SHEET_PROJ,no:i+1,amount:parseFloat(r.amount)||0}));
+  let others,nr;
+  if(SHEET_PROJ==='__all__'){
+    const clientProjIds=new Set(d.projects.filter(p=>p.clientId===CUR_CLIENT).map(p=>p.id));
+    others=d.records.filter(r=>!clientProjIds.has(r.projectId));
+    nr=SHEET_ROWS.filter(r=>r.nickname||r.receiver||r.phone||r.product).map((r,i)=>({...r,no:i+1,amount:parseFloat(r.amount)||0}));
+  } else {
+    others=d.records.filter(r=>r.projectId!==SHEET_PROJ);
+    nr=SHEET_ROWS.filter(r=>r.nickname||r.receiver||r.phone||r.product).map((r,i)=>({...r,projectId:SHEET_PROJ,no:i+1,amount:parseFloat(r.amount)||0}));
+  }
   sv('rc',[...others,...nr]);
   SHEET_DIRTY=false;
   const el=document.getElementById('sheet-dirty-ind');if(el){el.textContent='✓ 저장됨';el.style.color='var(--green)';}
@@ -7575,7 +7672,7 @@ function saveSheet(){
   toast(`${nr.length}건 저장 완료`);
 }
 
-// ── 1번: 붙여넣기 열 분리 (구매날짜 포함 text 그대로 표시) ──
+// ── 1번: 붙여넣기 열 분리 (필터 시 보이는 행에만 채움) ──
 function handlePaste(e,startRi,startKey){
   const text=e.clipboardData.getData('text');
   if(!text.includes('\t')&&!text.includes('\n'))return;
@@ -7584,14 +7681,20 @@ function handlePaste(e,startRi,startKey){
   if(startColIdx<0)return;
   const lines=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n');
   if(lines.length&&lines[lines.length-1]==='')lines.pop();
+  const visibleIndices=getVisibleSheetRowIndices();
+  let startVisibleIdx=0;
+  if(visibleIndices&&visibleIndices.length){
+    startVisibleIdx=visibleIndices.indexOf(startRi);
+    if(startVisibleIdx<0){const next=visibleIndices.findIndex(ri=>ri>=startRi);startVisibleIdx=next>=0?next:0;}
+  }
   lines.forEach((line,li)=>{
-    const ri=startRi+li;
+    let ri;
+    if(visibleIndices&&startVisibleIdx+li<visibleIndices.length)ri=visibleIndices[startVisibleIdx+li];
+    else{ri=startRi+li;while(SHEET_ROWS.length<=ri)SHEET_ROWS.push(blankRow(SHEET_ROWS.length+1));}
     const cells=line.split('\t');
-    while(SHEET_ROWS.length<=ri)SHEET_ROWS.push(blankRow(SHEET_ROWS.length+1));
     cells.forEach((cell,ci)=>{
       const colIdx=startColIdx+ci;
       if(colIdx>=COLS.length)return;
-      // 1번: 날짜 자동변환 없이 원문 그대로 저장
       const cellVal=cell.trim();
       const colKey=COLS[colIdx].k;
       SHEET_ROWS[ri][colKey]=colKey==='purchaseDate'?normPurchaseDate(cellVal):cellVal;
