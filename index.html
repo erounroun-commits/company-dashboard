@@ -6226,6 +6226,46 @@ let QT_EDIT_ID=null; // 편집 중인 견적서 id
 
 function renderDetQuote(){
   const d=ld(),c=d.clients.find(x=>x.id===CUR_CLIENT);if(!c)return;
+  // 거래처 정산에는 있는데 견적서 목록에는 없는 항목 보정
+  try{
+    const settlesForClient=stLd().filter(s=>s.clientId===CUR_CLIENT);
+    let quotesChanged=false;
+    const quotes=[...(d.quotes||[])];
+    const hasQuoteId=new Set(quotes.map(q=>q.id));
+    settlesForClient.forEach(s=>{
+      // qtId가 없거나, qtId는 있는데 해당 견적이 존재하지 않는 경우에만 보정
+      if(!s.qtId || !hasQuoteId.has(s.qtId)){
+        const qtId=s.qtId||gid();
+        const newQt={
+          id:qtId,
+          clientId:CUR_CLIENT,
+          date:s.date||new Date().toISOString().slice(0,10),
+          no:s.no||'',
+          toName:s.toName||c.name||'',
+          items:[],
+          taxYn:!!s.taxYn,
+          taxItems:{fee:!!s.taxFee,delivery:!!s.taxDel,product:!!s.taxProd},
+          settled:!!s.settled,
+          _recoveredFromSettle:true,
+          createdAt:new Date().toISOString()
+        };
+        quotes.push(newQt);
+        hasQuoteId.add(qtId);
+        // 정산 행에도 qtId 연결이 없었다면 채워줌
+        if(!s.qtId){
+          s.qtId=qtId;
+        }
+        quotesChanged=true;
+      }
+    });
+    if(quotesChanged){
+      sv('qt',quotes);
+      // stLd 캐시 갱신을 위해 다시 저장
+      stSv(stLd());
+      d.quotes=quotes;
+    }
+  }catch(e){ console.warn('renderDetQuote recover missing quotes err',e); }
+
   const myQuotes=(d.quotes||[]).filter(q=>q.clientId===CUR_CLIENT).sort((a,b)=>{
     const oa=a.order!=null?a.order:9999, ob=b.order!=null?b.order:9999;
     if(oa!==ob)return oa-ob;
@@ -9203,7 +9243,29 @@ function renderDsTable(rows, dateStr){
     wrap.innerHTML=`<div style="text-align:center;padding:50px;color:var(--text3)"><div style="font-size:28px;margin-bottom:10px">📭</div><div>${dateStr==='__all__'?'데이터 없음 (필터 확인)':dateStr+' 정산 내역 없음'}</div><div style="font-size:12px;margin-top:6px">+ 행 추가 버튼으로 입력하세요</div></div>`;
     return;
   }
-  wrap.innerHTML=`<table style="border-collapse:collapse;white-space:nowrap;font-size:11px;min-width:1700px">${thead}<tbody>${tbody}</tbody></table>`;
+  const tableHtml=`<table style="border-collapse:collapse;white-space:nowrap;font-size:11px;min-width:1700px">${thead}<tbody>${tbody}</tbody></table>`;
+  wrap.innerHTML=`
+    <div id="ds-daily-scroll-top" style="overflow-x:auto;overflow-y:hidden;margin-bottom:4px">
+      <div id="ds-daily-scroll-top-inner" style="height:1px"></div>
+    </div>
+    <div id="ds-daily-scroll-main" style="overflow-x:auto">
+      ${tableHtml}
+    </div>`;
+
+  // 상단/하단 스크롤 동기화
+  try{
+    const top=document.getElementById('ds-daily-scroll-top');
+    const topInner=document.getElementById('ds-daily-scroll-top-inner');
+    const main=document.getElementById('ds-daily-scroll-main');
+    const tbl=main.querySelector('table');
+    if(topInner&&tbl){
+      topInner.style.width=tbl.scrollWidth+'px';
+    }
+    if(top&&main){
+      top.onscroll=()=>{ main.scrollLeft=top.scrollLeft; };
+      main.onscroll=()=>{ top.scrollLeft=main.scrollLeft; };
+    }
+  }catch(e){ console.warn('ds daily scroll sync err',e); }
 }
 
 
@@ -9356,6 +9418,11 @@ function loadMonthlySettle(ym){
     totProdFee+=n(r.prodFee); totExpMgr+=n(r.expMgr);
     totProfitFee+=c2.profitFee; totProfitBox+=c2.profitBox;
   });
+  // 진행비 건수는 "일자별 수기 진행건수" 합계를 우선 사용
+  const manualTotalCnt=getMonthlyManualTotal(ym);
+  if(manualTotalCnt>0){
+    totFeeQty=manualTotalCnt;
+  }
   const totFeeBox=totFeeQty+totBoxQty; // 진행+택배 건수
   const totProdHalf=Math.round(totProdFee/2);
   const totFeeBoxAmt=totFeeAmt+totBoxAmt; // 진행비+택배 매출
