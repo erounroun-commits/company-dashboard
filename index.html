@@ -2582,7 +2582,7 @@ function selectDailyDate(mode,clientId,dateStr){
   // 로그인 사용자(관리자·일반) 화면(dp)에서는 수정 가능, 업체뷰(cv)는 조회만
   const isAdminEdit=mode!=='cv';
 
-  const dailyCols=[
+  const dailyColsBase=[
     {key:'_proj',label:'프로젝트',align:'left',ed:false},
     {key:'day',label:'일자',align:'left',ed:true},
     {key:'purchaseDate',label:'구매날짜',align:'left',ed:true},
@@ -2599,6 +2599,19 @@ function selectDailyDate(mode,clientId,dateStr){
     {key:'accountNo',label:'계좌번호',align:'left',ed:true},
     {key:'reviewUrl',label:'리뷰URL',align:'left',ed:true}
   ];
+  // 데이터 입력 시트에서 추가한 열(EXTRA_COLS)도 일별명단에서 함께 보여주기
+  let dailyCols=dailyColsBase.slice();
+  try{
+    const ui=uiColsLd();
+    const extra=(ui && Array.isArray(ui.extraCols))?ui.extraCols:[];
+    const extraForDaily=extra.map(ec=>({
+      key:ec.k,
+      label:ec.lb||ec.k,
+      align:'left',
+      ed:true,
+    }));
+    if(extraForDaily.length) dailyCols=dailyCols.concat(extraForDaily);
+  }catch(e){}
   const fmtVal=(r,key)=>{
     if(key==='_proj')return projMap[r.projectId]?.name||'—';
     if(key==='amount')return r.amount?fmtN(r.amount)+'원':'—';
