@@ -3882,8 +3882,18 @@ async function applyDepositMatches(){
   let count=0;
   const hist=[...depLd()];
   DEP_MATCHES.forEach((dep,i)=>{
-    if(!dep.matched)return;
     const cb=document.getElementById(`dep-apply-${i}`);
+    // 매칭은 되었지만 체크를 해제한 건 → 미매칭으로 되돌리기
+    if(dep.matched && cb && !cb.checked){
+      dep.matched=false;
+      delete dep.stId;
+      delete dep.clientName;
+      delete dep.stDate;
+      delete dep.stTotal;
+      dep.matchNote='체크 해제';
+      return;
+    }
+    if(!dep.matched)return;
     if(cb&&!cb.checked)return;
     const settles=[...stLd()];
     const idx=settles.findIndex(s=>s.id===dep.stId);
@@ -3932,10 +3942,14 @@ async function applyDepositMatches(){
     const qset=new Set(current.filter(s=>s.settled&&s.qtId).map(s=>s.qtId));
     if(qset.size){
       const nextQuotes=(d.quotes||[]).map(q=>qset.has(q.id)?({...q,settled:true}):q);
+      // 견적서가 아직 메모리/캐시에만 있고 Firestore 동기 전이라면,
+      // 최소한 로컬 저장은 유지하되, 삭제는 절대 하지 않는다.
       await sv('qt', nextQuotes);
     }
   }
   toast(`${count}건 정산완료 처리됨`,'success');
+  // 체크 해제 등 반영 후 화면/미매칭 상태 재계산
+  renderDepositResult();
   if(count>0){renderSettleAll();}
   renderDepositHistory();
   // 매칭된 항목 제거, 미매칭만 남김
@@ -4384,9 +4398,19 @@ async function setSettleTaxIssued(stId,checked){
   const idx=settles.findIndex(s=>s.id===stId);
   if(idx===-1)return;
   settles[idx].taxIssued=!!checked;
+  // 발행 메모는 별도 필드(taxMemo)에 저장 (없으면 빈 문자열)
+  if(!settles[idx].taxMemo) settles[idx].taxMemo='';
   await stSv(settles);
   renderSettleAll();
   toast(checked?'세금계산서 발행 여부: Y':'세금계산서 발행 여부: N');
+}
+
+async function setSettleTaxMemo(stId,memo){
+  const settles=[...stLd()];
+  const idx=settles.findIndex(s=>s.id===stId);
+  if(idx===-1)return;
+  settles[idx].taxMemo=(memo||'').trim();
+  await stSv(settles);
 }
 
 function renderSettleAll(){
@@ -4465,6 +4489,15 @@ function renderSettleAll(){
         ?`<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:11px"><input type="checkbox" ${s.taxIssued?'checked':''} onchange="setSettleTaxIssued('${s.id}',this.checked)" onclick="event.stopPropagation()">${s.taxIssued?'Y':'N'}</label>`
         :'—'}
     </td>
+    <td style="text-align:center;min-width:150px" title="발행 관련 메모 (예: 사업자등록증 미수령)">
+      ${s.taxYn
+        ?`<input type="text" value="${(s.taxMemo||'').replace(/"/g,'&quot;')}"
+            onchange="setSettleTaxMemo('${s.id}',this.value)"
+            onclick="event.stopPropagation()"
+            placeholder="예: 사업자등록증 미수령"
+            style="width:140px;font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);box-sizing:border-box">`
+        :'<span style="font-size:11px;color:var(--text3)">-</span>'}
+    </td>
     <td style="padding:9px 14px;text-align:center;font-size:11px">
       ${s.depositDate
         ?`<div style="color:#065f46;font-weight:700">${s.depositDate}</div>
@@ -4491,9 +4524,10 @@ function renderSettleAll(){
     <thead><tr>
       <th>#</th><th>견적일자</th><th>거래처</th><th>수신처</th><th>견적번호</th><th>항목요약</th>
       <th style="text-align:right">합계금액</th><th style="text-align:center">세금계산서</th><th style="text-align:center">발행여부</th>
+      <th style="text-align:center">발행 메모</th>
       <th style="text-align:center">입금 정보</th><th style="text-align:center">정산상태</th><th style="text-align:center">삭제</th>
     </tr></thead>
-    <tbody>${tbody||'<tr><td colspan="12" style="text-align:center;padding:40px;color:var(--text3)">정산 내역이 없습니다</td></tr>'}</tbody>
+    <tbody>${tbody||'<tr><td colspan="13" style="text-align:center;padding:40px;color:var(--text3)">정산 내역이 없습니다</td></tr>'}</tbody>
   </table>`;
 }
 
@@ -4525,17 +4559,13 @@ async function markSettleDoneAll(stId){
 
 // 거래처 정산 - 행 삭제
 async function delSettleRow(stId){
-  if(!confirm('이 정산 내역을 삭제하시겠습니까?\n연결된 견적서도 함께 삭제됩니다.')) return;
+  if(!confirm('이 정산 내역을 삭제하시겠습니까?\n연결된 견적서는 보존되며, 필요 시 거래처 화면에서 직접 삭제할 수 있습니다.')) return;
   // wv_st 삭제
   let settles=[...stLd()];
   const st=settles.find(s=>s.id===stId);
   settles=settles.filter(s=>s.id!==stId);
   await stSv(settles);
-  // 연결 견적서(quotes) 완전 삭제
-  if(st?.qtId){
-    const d=ld();
-    await sv('qt',d.quotes.filter(q=>q.id!==st.qtId));
-  }
+  // 견적서는 더 이상 자동 삭제하지 않음 (보존)
   // wv_dep 참조 해제
   let deps=[...depLd()];
   deps.forEach(d=>{if(d.stId===stId){d.stId=null;d.matched=false;}});
@@ -6794,17 +6824,9 @@ function delQt(qtId){
   // 견적서 삭제
   d.quotes=d.quotes.filter(q=>q.id!==qtId);
   sv('qt',d.quotes);
-  // 연결된 거래처 정산(wv_st) 삭제
-  try{
-    let settles=[...stLd()];
-    settles=settles.filter(s=>s.qtId!==qtId);
-    stSv(settles);
-  }catch(e){console.warn('delQt settle sync err',e);}
-  // 연결된 일/월 정산(dailySettleRows) 삭제
-  try{
-    const dsArr=dsLd().filter(r=>r.qtId!==qtId);
-    dsSv(dsArr);
-  }catch(e){console.warn('delQt ds sync err',e);}
+  // 연결된 거래처 정산(wv_st)은 자동 삭제하지 않고, 정산 화면에 남겨둔다.
+  // (필요 시 관리자 > 거래처 정산 탭에서 개별 삭제)
+  // 일/월 정산(dailySettleRows)에서도 해당 qtId는 보존
   renderDetQuote();renderDetSettle();
   try{ scheduleRerender(); }catch(e){}
   toast('삭제됨');
@@ -8682,15 +8704,25 @@ function renderDsDashboard(){
   all.forEach(r=>{
     if(!r.date)return;
     const ym=r.date.slice(0,7);
-    if(!byMonth[ym])byMonth[ym]={sales:0,profit:0,feeQty:0,boxQty:0,feeAmt:0,boxAmt:0,expMgr:0,prodFee:0};
+    if(!byMonth[ym])byMonth[ym]={sales:0,profit:0,profitFee:0,profitBox:0,feeQty:0,boxQty:0,feeAmt:0,boxAmt:0,expMgr:0,prodFee:0};
     const c2=dsCalc(r); const n=v=>Number(v)||0;
     byMonth[ym].sales+=c2.totalSales; byMonth[ym].profit+=c2.profit;
+    byMonth[ym].profitFee+=c2.profitFee; byMonth[ym].profitBox+=c2.profitBox;
     byMonth[ym].feeQty+=n(r.feeQty); byMonth[ym].boxQty+=n(r.boxQty);
     byMonth[ym].feeAmt+=n(r.feeAmt); byMonth[ym].boxAmt+=n(r.boxAmt);
     byMonth[ym].expMgr+=n(r.expMgr); byMonth[ym].prodFee+=n(r.prodFee);
   });
 
   const months=Object.keys(byMonth).sort();
+
+  // 월별 진행건수 수기 입력값이 있으면 그래프/요약에 우선 반영
+  months.forEach(m=>{
+    const manualTotal=getMonthlyManualTotal(m);
+    if(manualTotal>0){
+      byMonth[m].feeQty=manualTotal;
+    }
+  });
+
   const labels=months.map(m=>m.slice(2).replace('-','/'));
 
   // ── 꺾은선: 월별 건수 ─────────────────────────────────
@@ -8725,7 +8757,7 @@ function renderDsDashboard(){
   const profitArr=months.map(m=>byMonth[m].profit);
   const mgrArr=months.map(m=>byMonth[m].expMgr);
   const feeAmtArr=months.map(m=>byMonth[m].feeAmt);
-  const boxAmtArr=months.map(m=>byMonth[m].boxAmt);
+  const boxAmtArr=months.map(m=>byMonth[m].profitBox);
 
   if(_dsChartRev){_dsChartRev.destroy();_dsChartRev=null;}
   const ctx2=document.getElementById('ds-chart-revenue');
@@ -8739,7 +8771,7 @@ function renderDsDashboard(){
           {type:'bar',label:'순수익 총합',data:profitArr,backgroundColor:'rgba(16,185,129,.6)',yAxisID:'y',order:2},
           {type:'bar',label:'임반장 수수료',data:mgrArr,backgroundColor:'rgba(239,68,68,.5)',yAxisID:'y',order:2},
           {type:'line',label:'진행매출',data:feeAmtArr,borderColor:'#818cf8',backgroundColor:'transparent',tension:0.3,pointRadius:4,pointBackgroundColor:'#818cf8',yAxisID:'y',order:1},
-          {type:'line',label:'택배매출',data:boxAmtArr,borderColor:'#fbbf24',backgroundColor:'transparent',tension:0.3,pointRadius:4,pointBackgroundColor:'#fbbf24',yAxisID:'y',order:1},
+          {type:'line',label:'택배 순수익',data:boxAmtArr,borderColor:'#fbbf24',backgroundColor:'transparent',tension:0.3,pointRadius:4,pointBackgroundColor:'#fbbf24',yAxisID:'y',order:1},
         ]
       },
       options:{
@@ -8924,10 +8956,7 @@ function showDsTab(name){
   if(name==='monthly') loadMonthlySettle(document.getElementById('ds-month-input').value);
   if(name==='daily'){
     syncAllDsRowsFromSettle();
-    const today=getKSTDate();
-    const inp=document.getElementById('ds-date-input');
-    if(inp)inp.value=today;
-    loadDailySettle(today);
+    loadDailyAll();
   }
   if(name==='expense') {
     const mf=document.getElementById('exp-month-filter');
@@ -9090,11 +9119,14 @@ function renderDsTable(rows, dateStr){
 
   // 2행 헤더
   const GFee='rgba(99,102,241,.13)',GProd='rgba(16,185,129,.12)',GBox='rgba(245,158,11,.13)',GExp='rgba(239,68,68,.10)',GProfit='rgba(16,185,129,.18)';
-  const TH=(txt,rs,cs,bg)=>`<th rowspan="${rs||1}" colspan="${cs||1}" style="background:${bg||'var(--bg2)'};border:1px solid var(--border);padding:5px 6px;font-size:11px;font-weight:700;color:var(--text2);text-align:center;white-space:nowrap;position:sticky;top:0;z-index:2">${txt}</th>`;
+  const TH=(txt,rs,cs,bg,extra)=>`<th rowspan="${rs||1}" colspan="${cs||1}" style="background:${bg||'var(--bg2)'};border:1px solid var(--border);padding:5px 6px;font-size:11px;font-weight:700;color:var(--text2);text-align:center;white-space:nowrap;position:sticky;top:0;z-index:2;${extra||''}">${txt}</th>`;
 
   const thead=`<thead>
     <tr>
-      ${TH('정산<br>여부',2)} ${TH('안내일자',2)} ${TH('업체명',2)} ${TH('입금일자',2)} ${TH('입금명',2)}
+      ${TH('정산<br>여부',2,1,null,'left:0;min-width:70px;background:var(--bg2);z-index:4')}
+      ${TH('안내일자',2,1,null,'left:70px;min-width:110px;background:var(--bg2);z-index:4')}
+      ${TH('업체명',2,1,null,'left:180px;min-width:160px;background:var(--bg2);z-index:4')}
+      ${TH('입금일자',2)} ${TH('입금명',2)}
       ${TH('진행비',1,3,GFee)} ${TH('상품값',1,3,GProd)} ${TH('택배대행',1,3,GBox)}
       ${TH('총안내액',2)} ${TH('매출총액',2)}
       ${TH('지출',1,4,GExp)}
@@ -9119,24 +9151,24 @@ function renderDsTable(rows, dateStr){
       style="background:${autoCalc?'transparent':'transparent'};border:none;color:var(--text);font-size:11px;font-family:var(--font);width:100%;outline:none;text-align:${isText?'left':'right'};min-width:${isText?'76':'50'}px">`;
   
   // 자동계산 결과 셀 (읽기전용 + 강조)
-  const calcCell=(v,bg,col)=>`<td style="border:1px solid var(--border);padding:4px 7px;text-align:right;font-size:11px;font-weight:700;color:${col||'var(--accent)'};background:${bg||'transparent'};white-space:nowrap">${v!==''&&v!==null&&v!==undefined?Number(v).toLocaleString():''}</td>`;
-  const profitCell=(v)=>{const neg=Number(v)<0;return `<td style="border:1px solid var(--border);padding:4px 7px;text-align:right;font-size:11px;font-weight:800;color:${neg?'#ef4444':'#10b981'};white-space:nowrap">${Number(v).toLocaleString()}</td>`;};
-  const TD=(content,bg)=>`<td style="border:1px solid var(--border);padding:3px 5px;background:${bg||'transparent'}">${content}</td>`;
+  const calcCell=(v,bg,col,role)=>`<td data-role="${role||''}" style="border:1px solid var(--border);padding:4px 7px;text-align:right;font-size:11px;font-weight:700;color:${col||'var(--accent)'};background:${bg||'transparent'};white-space:nowrap">${v!==''&&v!==null&&v!==undefined?Number(v).toLocaleString():''}</td>`;
+  const profitCell=(v,role)=>{const neg=Number(v)<0;return `<td data-role="${role||''}" style="border:1px solid var(--border);padding:4px 7px;text-align:right;font-size:11px;font-weight:800;color:${neg?'#ef4444':'#10b981'};white-space:nowrap">${Number(v).toLocaleString()}</td>`;};
+  const TD=(content,bg,extra)=>`<td style="border:1px solid var(--border);padding:3px 5px;background:${bg||'transparent'};${extra||''}">${content}</td>`;
 
   let tbody='';
   rows.forEach((r,i)=>{
     const c2=dsCalc(r);
     tbody+=`<tr data-row-id="${r.id}">
-      <td style="border:1px solid var(--border);text-align:center;padding:3px"><input type="checkbox" ${r.paid?'checked':''} data-id="${r.id}" data-f="paid" onchange="dsPaidChange(this)" style="cursor:pointer;width:13px;height:13px"></td>
-      ${TD(inp(r.id,'date',r.date,true))}
-      ${TD(inp(r.id,'clientName',r.clientName,true))}
+      <td style="border:1px solid var(--border);text-align:center;padding:3px;position:sticky;left:0;z-index:3;background:var(--card);min-width:70px"><input type="checkbox" ${r.paid?'checked':''} data-id="${r.id}" data-f="paid" onchange="dsPaidChange(this)" style="cursor:pointer;width:13px;height:13px"></td>
+      ${TD(inp(r.id,'date',r.date,true),null,'position:sticky;left:70px;z-index:3;background:var(--card);min-width:110px')}
+      ${TD(inp(r.id,'clientName',r.clientName,true),null,'position:sticky;left:180px;z-index:3;background:var(--card);min-width:160px')}
       ${TD(inp(r.id,'payDate',r.payDate,true))}
       ${TD(inp(r.id,'payName',r.payName,true))}
       ${TD(inp(r.id,'feeQty',r.feeQty),GFee)} ${TD(inp(r.id,'feeAmt',r.feeAmt),GFee)} ${TD(inp(r.id,'feeTax',r.feeTax),GFee)}
       ${TD(inp(r.id,'prodAmt',r.prodAmt),GProd)} ${TD(inp(r.id,'prodFee',r.prodFee),GProd)} ${TD(inp(r.id,'prodTax',r.prodTax),GProd)}
       ${TD(inp(r.id,'boxQty',r.boxQty),GBox)} ${TD(inp(r.id,'boxAmt',r.boxAmt),GBox)} ${TD(inp(r.id,'boxTax',r.boxTax),GBox)}
-      ${calcCell(c2.totalGuide,'','var(--text2)')}
-      ${calcCell(c2.totalRev,'')}
+      ${calcCell(c2.totalGuide,'','var(--text2)','totalGuide')}
+      ${calcCell(c2.totalRev,'','var(--accent)','totalRev')}
       ${TD(inp(r.id,'expReview',r.expReview),GExp)}
       <td style="border:1px solid var(--border);padding:3px 5px;background:${GExp}">
         <input type="number" value="${c2.expBox||''}" data-id="${r.id}" data-f="expBoxOverride" onchange="dsFieldChange(this)"
@@ -9144,8 +9176,8 @@ function renderDsTable(rows, dateStr){
           placeholder="${c2.expBox||''}">
       </td>
       ${TD(inp(r.id,'expMgr',r.expMgr),GExp)}
-      ${calcCell(c2.totalExp,'','#ef4444')}
-      ${profitCell(c2.profitFee)} ${profitCell(c2.profitBox)} ${profitCell(c2.profitProd)} ${profitCell(-c2.expMgr)} ${profitCell(c2.profit)}
+      ${calcCell(c2.totalExp,'','#ef4444','totalExp')}
+      ${profitCell(c2.profitFee,'profitFee')} ${profitCell(c2.profitBox,'profitBox')} ${profitCell(c2.profitProd,'profitProd')} ${profitCell(-c2.expMgr,'profitMgr')} ${profitCell(c2.profit,'profitTotal')}
       ${TD(inp(r.id,'memo',r.memo,true))}
       <td style="border:1px solid var(--border);text-align:center;padding:3px"><button class="btn btn-red btn-xs" onclick="delDsRow('${r.id}')">✕</button></td>
     </tr>`;
@@ -9189,7 +9221,6 @@ function dsFieldChange(el){
   const c2=dsCalc(row);
   const tr=el.closest('tr');
   if(!tr)return;
-  const tds=tr.querySelectorAll('td');
   // 지출(택배비) 자동계산값 placeholder 갱신 (index 17 = 택배비 input td)
   if(field==='boxQty'||field==='expBoxOverride'){
     const boxInp=tr.querySelector('[data-f="expBoxOverride"]');
@@ -9198,13 +9229,28 @@ function dsFieldChange(el){
       if(!boxInp.value)boxInp.value=''; // 빈 상태 유지, placeholder로 표시
     }
   }
-  // 총안내액[15], 매출총액[16], 지출합계[20], 순수익5개[21-25]
-  const setCalc=(i,v,col)=>{if(tds[i]){tds[i].textContent=v!==''&&v!=null?Number(v).toLocaleString():'';if(col)tds[i].style.color=col;}};
-  const setProfit=(i,v)=>{if(tds[i]){tds[i].textContent=Number(v).toLocaleString();tds[i].style.color=Number(v)<0?'#ef4444':'#10b981';}};
-  setCalc(15,c2.totalGuide,'var(--text2)');
-  setCalc(16,c2.totalRev,'var(--accent)');
-  setCalc(20,c2.totalExp,'#ef4444');
-  setProfit(21,c2.profitFee); setProfit(22,c2.profitBox); setProfit(23,c2.profitProd); setProfit(24,-c2.expMgr); setProfit(25,c2.profit);
+  const setCalcByRole=(role,v,col)=>{
+    const td=tr.querySelector(`td[data-role="${role}"]`);
+    if(td){
+      td.textContent=v!==''&&v!=null?Number(v).toLocaleString():'';
+      if(col)td.style.color=col;
+    }
+  };
+  const setProfitByRole=(role,v)=>{
+    const td=tr.querySelector(`td[data-role="${role}"]`);
+    if(td){
+      td.textContent=Number(v).toLocaleString();
+      td.style.color=Number(v)<0?'#ef4444':'#10b981';
+    }
+  };
+  setCalcByRole('totalGuide',c2.totalGuide,'var(--text2)');
+  setCalcByRole('totalRev',c2.totalRev,'var(--accent)');
+  setCalcByRole('totalExp',c2.totalExp,'#ef4444');
+  setProfitByRole('profitFee',c2.profitFee);
+  setProfitByRole('profitBox',c2.profitBox);
+  setProfitByRole('profitProd',c2.profitProd);
+  setProfitByRole('profitMgr',-c2.expMgr);
+  setProfitByRole('profitTotal',c2.profit);
   DS_DIRTY=true;
 }
 
@@ -9302,11 +9348,13 @@ function loadMonthlySettle(ym){
   // ── 전체 집계 ──────────────────────────────────────────
   let totSales=0,totRev=0,totExp=0,totProfit=0;
   let totFeeQty=0,totFeeAmt=0,totBoxQty=0,totBoxAmt=0,totProdFee=0,totExpMgr=0;
+  let totProfitFee=0,totProfitBox=0;
   all.forEach(r=>{
     const c2=dsCalc(r); const n=v=>Number(v)||0;
     totSales+=c2.totalSales; totRev+=c2.totalRev; totExp+=c2.totalExp; totProfit+=c2.profit;
     totFeeQty+=n(r.feeQty); totFeeAmt+=n(r.feeAmt); totBoxQty+=n(r.boxQty); totBoxAmt+=n(r.boxAmt);
     totProdFee+=n(r.prodFee); totExpMgr+=n(r.expMgr);
+    totProfitFee+=c2.profitFee; totProfitBox+=c2.profitBox;
   });
   const totFeeBox=totFeeQty+totBoxQty; // 진행+택배 건수
   const totProdHalf=Math.round(totProdFee/2);
@@ -9343,9 +9391,9 @@ function loadMonthlySettle(ym){
       </td>
     </tr></thead>
     <tbody>
-      <tr><td style="${cellH}">진행비</td>${highlight(totFeeAmt)}</tr>
-      <tr><td style="${cellH}">택배비</td>${highlight(totBoxAmt)}</tr>
-      <tr><td style="${cellH}">상품비수수료</td>${highlight(totProdHalf)}</tr>
+      <tr><td style="${cellH}">진행비 순수익</td>${highlight(totProfitFee)}</tr>
+      <tr><td style="${cellH}">택배 순수익</td>${highlight(totProfitBox)}</tr>
+      <tr><td style="${cellH}">상품비 수수료</td>${highlight(totProdHalf)}</tr>
       <tr><td style="${cellH}">임반장수수료</td><td style="${cellS};color:#ef4444;font-weight:700">${totExpMgr.toLocaleString()}</td></tr>
     </tbody>
   </table>`;
