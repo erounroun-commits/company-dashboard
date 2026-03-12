@@ -1565,7 +1565,14 @@ function scheduleRerender(){
     try{ renderClients(); }catch(e){}
     try{ renderExportPage(); }catch(e){}
     try{
-      if(CUR_CLIENT){
+      // 여러 사용자가 동시 작업 시, 편집 중인 상태에서 화면이 갑자기 바뀌거나 작업이 날아가지 않도록
+      // 데이터 입력 미저장(SHEET_DIRTY)이거나 거래처 상세 안에서 입력 중이면 상세 패널은 다시 그리지 않음
+      const detailEl=document.getElementById('cl-detail');
+      const activeEl=document.activeElement;
+      const isEditingInDetail=detailEl&&activeEl&&detailEl.contains(activeEl)&&
+        (activeEl.tagName==='INPUT'||activeEl.tagName==='TEXTAREA'||activeEl.tagName==='SELECT'||activeEl.isContentEditable);
+      const skipDetailRerender=(typeof SHEET_DIRTY==='boolean'&&SHEET_DIRTY)||isEditingInDetail;
+      if(CUR_CLIENT&&!skipDetailRerender){
         renderDetDash();renderDetProjView();renderDetQuote();renderDetSettle();
         const d=ld(); const c=d.clients.find(x=>x.id===CUR_CLIENT);
         if(c) renderInfoForm(c);
@@ -5595,7 +5602,7 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
     +'<div style="width:100%">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">구매완료</span></span><span style="font-size:14px;font-weight:800;color:#22c55e">'+fmtN(purchaseDone)+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#7c3aed;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">리뷰완료</span></span><span style="font-size:14px;font-weight:800;color:#7c3aed">'+fmtN(rev)+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
-    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#f59e0b;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">미완료</span></span><span style="font-size:14px;font-weight:800;color:#f59e0b">'+fmtN(tot-rev)+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#f59e0b;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">미완료</span></span><span style="font-size:14px;font-weight:800;color:#f59e0b">'+fmtN(Math.max(0,purchaseDone-rev))+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
     +'</div></div></div>'
 
     // ③ 구매일정
