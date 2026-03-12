@@ -2240,7 +2240,6 @@ function doLogin(){
     updateAdminUI();
     hide('login-screen');
     show('app');
-    seed();
     initApp();
     try{
       const active = document.querySelector('.page.active')?.id || '';
@@ -7067,15 +7066,22 @@ function previewBulkUpload(input){
       let headerRowIndex = 0;
       let sheetNameUsed = '';
 
-      const COLS_TO_CHECK = 25;
+      const COLS_TO_CHECK = 30;
+      const getRows=(ws)=>XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
+
       for(const name of wb.SheetNames){
         const ws = wb.Sheets[name];
-        const rows = XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
+        const rows = getRows(ws);
         if(!rows.length) continue;
 
         let firstDataIdx = -1;
         for(let i=0;i<rows.length;i++){
-          const hasAny=[...Array(COLS_TO_CHECK)].some((_,ci)=>String(rows[i][ci]??'').trim()!=='');
+          const hasAny=[...Array(COLS_TO_CHECK)].some((_,ci)=> {
+            const v=rows[i][ci];
+            if(v==null||v===undefined) return false;
+            if(typeof v==='number'&&!isNaN(v)) return true;
+            return String(v).trim()!=='';
+          });
           if(hasAny){ firstDataIdx=i; break; }
         }
         if(firstDataIdx===-1) continue;
@@ -7086,13 +7092,11 @@ function previewBulkUpload(input){
         break;
       }
 
-      if(!rawRows.length){
-        sheetNameUsed = wb.SheetNames[0]||'';
+      if(!rawRows.length&&wb.SheetNames.length){
+        sheetNameUsed = wb.SheetNames[0];
         const ws = wb.Sheets[sheetNameUsed];
-        if(ws){
-          rawRows = XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
-          headerRowIndex = 0;
-        }
+        rawRows = getRows(ws);
+        headerRowIndex = 0;
       }
 
       if(!rawRows.length){
@@ -7103,19 +7107,24 @@ function previewBulkUpload(input){
       let allDataRows = [];
       for(let i=headerRowIndex+1;i<rawRows.length;i++){
         const rr = rawRows[i];
-        const hasAny=[...Array(COLS_TO_CHECK)].some((_,ci)=>String(rr[ci]??'').trim()!=='');
+        const hasAny=[...Array(COLS_TO_CHECK)].some((_,ci)=> {
+          const v=rr[ci];
+          if(v==null||v===undefined) return false;
+          if(typeof v==='number'&&!isNaN(v)) return true;
+          return String(v).trim()!=='';
+        });
         if(!hasAny) continue;
         allDataRows.push({rr,lineNo:i+1});
       }
 
-      if(!allDataRows.length&&rawRows.length>1){
+      if(!allDataRows.length&&rawRows.length>=2){
         headerRowIndex = 0;
         allDataRows = [];
         for(let i=1;i<rawRows.length;i++) allDataRows.push({rr:rawRows[i],lineNo:i+1});
       }
 
       if(!allDataRows.length){
-        toast('데이터 행이 비어 있습니다. 2행부터 데이터가 있는지 확인하세요. (A=프로젝트명, B=NO, C=일자, D=구매날짜 …)','error');
+        toast('데이터 행이 비어 있습니다. 1행은 헤더, 2행부터 데이터가 있는지 확인하세요. (A=프로젝트명, B=일차/NO, C=일자, D=구매날짜 …)','error');
         return;
       }
 
@@ -7126,7 +7135,7 @@ function previewBulkUpload(input){
       const projMap={};
       let lastProjName='기본 프로젝트'; // 프로젝트명 셀이 비어있으면 위 행 값 유지
 
-      allDataRows.forEach(({rr})=>{
+      allDataRows.forEach(({rr,lineNo})=>{
         // A열 프로젝트명: 비어있으면 마지막 값 유지 (병합셀 대응)
         const projCell=String(rr[0]??'').trim();
         if(projCell) lastProjName=projCell;
@@ -7142,11 +7151,20 @@ function previewBulkUpload(input){
           return parseFloat(s)||0;
         };
 
+        // B열이 '일차'(1일차-1) 형식이면 B=day, no=행번호 / 아니면 B=no, C=day
+        const bVal=cell(1);
+        const cVal=cell(2);
+        const dVal=cell(3);
+        const bIsDay=String(bVal).includes('일차');
+        const noVal=bIsDay ? String(lineNo) : bVal;
+        const dayVal=bIsDay ? bVal : cVal;
+        const purchaseVal=dVal||cVal;
+
         const rec={
           id:           gid(),
-          no:           cell(1),
-          day:          cell(2),
-          purchaseDate: cell(3),
+          no:           noVal,
+          day:          dayVal,
+          purchaseDate: purchaseVal,
           product:      cell(4),
           option:       cell(5),
           reviewType:   cell(6),
@@ -7411,8 +7429,6 @@ function toast(msg,t='success'){
 }
 window.addEventListener('load',()=>{
   if(checkRoute()) return;
-  // 항상 로그인 먼저
-  seed();
   show('login-screen');
   setTimeout(()=>document.getElementById('login-id')?.focus(),100);
 });
