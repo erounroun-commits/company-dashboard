@@ -2002,15 +2002,27 @@ async function sv(key, value){
     });
     await batch.commit();
   }else if(key==='qt'){
+    // 견적서는 전체 삭제/재삽입 대신 변경분만 반영하여 Firestore 쿼터 사용을 줄인다
+    const prev=Array.isArray(QUOTES_CACHE)?QUOTES_CACHE.slice():[];
     QUOTES_CACHE = value.slice();
     const col=db.collection('quotes');
     const snap=await col.get();
-    const batch=db.batch();
-    snap.forEach(doc=>batch.delete(doc.ref));
+    const existingIds=new Set();
+    snap.forEach(doc=>existingIds.add(doc.id));
+    const nextIds=new Set();
     QUOTES_CACHE.forEach(q=>{
-      const id=q.id||db.collection('quotes').doc().id;
-      const data={...q,id};
-      batch.set(col.doc(id),data);
+      if(!q.id) q.id=col.doc().id;
+      nextIds.add(q.id);
+    });
+    const batch=db.batch();
+    // 삭제 필요한 것만 삭제
+    existingIds.forEach(id=>{
+      if(!nextIds.has(id)) batch.delete(col.doc(id));
+    });
+    // 추가/수정은 모두 set(merge:false)
+    QUOTES_CACHE.forEach(q=>{
+      const data={...q,id:q.id};
+      batch.set(col.doc(q.id),data);
     });
     await batch.commit();
   }else if(key==='st'){
