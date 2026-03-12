@@ -7046,11 +7046,11 @@ function previewBulkUpload(input){
     const y=d.getUTCFullYear(),m=String(d.getUTCMonth()+1).padStart(2,'0'),dd=String(d.getUTCDate()).padStart(2,'0');
     return `${y}-${m}-${dd}`;
   };
-  // 셀 값 → 문자열 변환: 날짜 시리얼이면 YYYY-MM-DD로, 나머지는 그대로
+  // 셀 값 → 문자열 변환: 날짜 시리얼이면 YYYY-MM-DD로, 나머지는 그대로 (SheetJS 셀 객체 .v/.w 지원)
   const cellStr=(rawVal)=>{
     if(rawVal===''||rawVal===null||rawVal===undefined) return '';
+    if(typeof rawVal==='object'&&rawVal!==null&&('v' in rawVal||'w' in rawVal)) rawVal=rawVal.w!=null?rawVal.w:rawVal.v;
     if(typeof rawVal==='number'){
-      // 날짜 시리얼 범위: 36526(2000-01-01) ~ 73050(2099-12-31)
       if(rawVal>=36526&&rawVal<=73050&&Number.isInteger(rawVal)) return xlSerialToDate(rawVal);
       return String(rawVal).trim();
     }
@@ -7066,8 +7066,18 @@ function previewBulkUpload(input){
       let sheetNameUsed = '';
 
       const COLS_TO_CHECK = 30;
-      const getRows=(ws,raw)=>{
-        return XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:raw!==false,blank:true});
+      const getRows=(ws,raw,forceRange)=>{
+        var opts={header:1,defval:'',raw:raw!==false,blank:true};
+        var out=[];
+        if(forceRange){
+          var ranges=['A1:P500','A1:Z1000','A1:P1000'];
+          for(var r=0;r<ranges.length&&out.length===0;r++){
+            try{ out=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:raw!==false,blank:true,range:ranges[r]})||[]; }catch(e){}
+          }
+          if(out.length===0&&ws['!ref']) try{ out=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:raw!==false,blank:true,range:ws['!ref']})||[]; }catch(e){}
+        }
+        if(out.length===0) try{ out=XLSX.utils.sheet_to_json(ws,opts)||[]; }catch(e){}
+        return out;
       };
       const HEADER_KEYWORDS = ['일자','구매날짜','상품명','닉네임','수취인','송장번호','리뷰URL','옵션','연락처','주소','상품금액','계좌번호','리뷰종류','프로젝트NO','프로젝트명','아이디'];
       const rowLooksLikeHeader=(row)=>{
@@ -7076,6 +7086,7 @@ function previewBulkUpload(input){
           if(c==null||c===undefined) return '';
           if(typeof c==='number') return String(c);
           if(typeof c==='object'&&c instanceof Date) return c.toISOString?.()||'';
+          if(typeof c==='object'&&('v' in c||'w' in c)) return String(c.w!=null?c.w:c.v).trim();
           return String(c).trim();
         }).join(' ');
         return HEADER_KEYWORDS.filter(kw=>str.includes(kw)).length >= 2;
@@ -7083,19 +7094,22 @@ function previewBulkUpload(input){
       const rowHasData=(row)=>{
         if(!row||!Array.isArray(row)) return false;
         for(let ci=0;ci<Math.max(16,COLS_TO_CHECK);ci++){
-          const v=row[ci];
+          var v=row[ci];
           if(v==null||v===undefined) continue;
           if(typeof v==='number'&&!isNaN(v)) return true;
           if(v instanceof Date) return true;
-          if(typeof v==='object'&&v!==null&&String(v).trim()!=='') return true;
+          if(typeof v==='object'&&v!==null){
+            if(v.v!==undefined||v.w!==undefined) return true;
+            if(String(v).trim()!=='') return true;
+          }
           if(String(v).trim()!=='') return true;
         }
         return false;
       };
 
-      const tryFindSheet=(rawVal)=>{
+      const tryFindSheet=(rawVal,forceRange)=>{
         rawRows=[]; headerRowIndex=0; sheetNameUsed='';
-        const get=(ws)=>getRows(ws,rawVal);
+        const get=(ws)=>getRows(ws,rawVal,forceRange);
         for(const name of wb.SheetNames){
           const ws = wb.Sheets[name];
           const rows = get(ws);
@@ -7114,11 +7128,18 @@ function previewBulkUpload(input){
           for(let i=0;i<rows.length;i++){
             if(rowHasData(rows[i])){ firstDataIdx=i; break; }
           }
-          if(firstDataIdx===-1) continue;
-          headerRowIndex = Math.max(0, firstDataIdx-1);
-          rawRows = rows;
-          sheetNameUsed = name;
-          return true;
+          if(firstDataIdx>=0){
+            headerRowIndex = Math.max(0, firstDataIdx-1);
+            rawRows = rows;
+            sheetNameUsed = name;
+            return true;
+          }
+          if(rows.length>=2){
+            headerRowIndex = 0;
+            rawRows = rows;
+            sheetNameUsed = name;
+            return true;
+          }
         }
         if(wb.SheetNames.length){
           sheetNameUsed = wb.SheetNames[0];
@@ -7127,8 +7148,29 @@ function previewBulkUpload(input){
         return rawRows.length>0;
       };
 
-      if(!tryFindSheet(true))
-        tryFindSheet(false);
+      if(!tryFindSheet(true)) tryFindSheet(false);
+      if(!rawRows.length){ tryFindSheet(true,true); }
+      if(!rawRows.length){ tryFindSheet(false,true); }
+      if(!rawRows.length&&wb.SheetNames.length){
+        var firstWs=wb.Sheets[wb.SheetNames[0]];
+        rawRows=getRows(firstWs,true,true);
+        if(!rawRows.length) rawRows=getRows(firstWs,false,true);
+        if(rawRows.length){
+          sheetNameUsed=wb.SheetNames[0];
+          var fhi=-1;
+          for(var ri=0;ri<Math.min(5,rawRows.length);ri++){
+            if(rowLooksLikeHeader(rawRows[ri])){ fhi=ri; break; }
+          }
+          if(fhi>=0) headerRowIndex=fhi;
+          else{
+            var fdi=-1;
+            for(ri=0;ri<rawRows.length;ri++){
+              if(rowHasData(rawRows[ri])){ fdi=ri; break; }
+            }
+            headerRowIndex=fdi>=0?Math.max(0,fdi-1):0;
+          }
+        }
+      }
       if(!rawRows.length){
         toast('엑셀에서 데이터를 찾지 못했습니다. 시트 내용과 범위를 확인하세요.','error');
         return;
@@ -7169,18 +7211,16 @@ function previewBulkUpload(input){
       let lastProjName='기본 프로젝트'; // 프로젝트명 셀이 비어있으면 위 행 값 유지
 
       allDataRows.forEach(({rr,lineNo})=>{
-        // A열 프로젝트명: 비어있으면 마지막 값 유지 (병합셀 대응)
-        const projCell=String(rr[0]??'').trim();
+        const projCell=cellStr(rr[0]);
         if(projCell) lastProjName=projCell;
         const projName=lastProjName;
 
-        // 각 컬럼 파싱 헬퍼 — 날짜 시리얼 자동변환 포함
         const cell=(ci)=>cellStr(rr[ci]);
-        // 숫자 컬럼 헬퍼
         const numCell=(ci)=>{
-          const rv=rr[ci];
+          var rv=rr[ci];
+          if(rv!=null&&typeof rv==='object'&&('v' in rv||'w' in rv)) rv=rv.v!=null?rv.v:rv.w;
           if(typeof rv==='number') return rv;
-          const s=String(rr[ci]??'').replace(/[^0-9.-]/g,'');
+          var s=String(rv!=null?rv:'').replace(/[^0-9.-]/g,'');
           return parseFloat(s)||0;
         };
 
