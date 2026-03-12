@@ -2583,17 +2583,47 @@ function initDailyListKeys(container){
   if(!tbl)return;
   tbl.addEventListener('keydown',function(e){
     var cell=e.target.closest('.daily-edit-cell');
-    if(!cell)return;
     if(e.key==='Delete'||e.key==='Backspace'){
       var sel=window.getSelection();
-      if(sel.toString().trim()!==''){
+      var range=sel.rangeCount?sel.getRangeAt(0):null;
+      var cellsToClear=[];
+      if(range){
+        tbl.querySelectorAll('.daily-edit-cell').forEach(function(td){
+          if(range.intersectsNode(td))cellsToClear.push(td);
+        });
+      }
+      if(cellsToClear.length>0){
         e.preventDefault();
-        document.execCommand('delete',false,null);
-      }else if(cell.textContent.trim()===''){
-        e.preventDefault();
+        var d=ld();
+        var any=false;
+        for(var i=0;i<cellsToClear.length;i++){
+          var td=cellsToClear[i];
+          var recId=td.dataset.recordId, field=td.dataset.field;
+          if(!recId||!field)continue;
+          var idx=d.records.findIndex(function(r){return r.id===recId;});
+          if(idx<0)continue;
+          var prev=d.records[idx][field];
+          var newVal=field==='amount'?0:'';
+          if(_dailyUndoStack.length<_dailyUndoMax)_dailyUndoStack.push({recId:recId,field:field,prevVal:prev});
+          d.records[idx][field]=newVal;
+          any=true;
+        }
+        if(any){ sv('rc',d.records); }
+        var wrap=document.getElementById('daily-table-wrap');
+        if(wrap&&wrap.dataset.mode&&wrap.dataset.date){ selectDailyDate(wrap.dataset.mode,wrap.dataset.cid||CUR_CLIENT,wrap.dataset.date); }
+        toast(cellsToClear.length+'개 셀 삭제됨');
+      }else if(cell){
+        var sel2=window.getSelection();
+        if(sel2.toString().trim()!==''){
+          e.preventDefault();
+          document.execCommand('delete',false,null);
+        }else if(cell.textContent.trim()===''){
+          e.preventDefault();
+        }
       }
       return;
     }
+    if(!cell)return;
     if(e.ctrlKey||e.metaKey){
       if(e.key==='z'){
         e.preventDefault();
@@ -6744,7 +6774,9 @@ function loadSheet(projId){
   loadExtraCols();COLS=getCOLS();
   const d=ld();
   SHEET_ROWS=d.records.filter(r=>r.projectId===projId).map(r=>({...r}));
+  SHEET_ROWS.sort((a,b)=>(Number(a.no)||0)-(Number(b.no)||0));
   if(!SHEET_ROWS.length)SHEET_ROWS=[blankRow(1)];
+  window._SHEET_FILTER_TEXT='';
   renderSheet();
 }
 function blankRow(no){
@@ -6763,9 +6795,11 @@ function renderSheet(){
     <button class="btn btn-xs btn-gray" onclick="selInsertAbove()">↑ 위 삽입</button>
     <button class="btn btn-xs btn-gray" onclick="selInsertBelow()">↓ 아래 삽입</button>
     <button class="btn btn-xs" style="background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:5px;cursor:pointer;padding:3px 9px;font-size:11px;font-weight:700" onclick="openAddColModal()">＋ 열 추가</button>
-    <div style="display:flex;align-items:center;gap:5px;margin-left:8px">
+    <div style="display:flex;align-items:center;gap:8px;margin-left:8px;flex-wrap:wrap">
+      <span style="font-size:10px;color:var(--text2);font-weight:700">🔍 검색:</span>
+      <input type="text" id="sheet-text-filter" placeholder="닉네임·상품명·수취인 등" style="font-size:11px;padding:4px 8px;width:140px;border:1px solid var(--border);border-radius:4px;background:var(--card)" oninput="applySheetFilters()" />
       <span style="font-size:10px;color:var(--text2);font-weight:700">📅 날짜:</span>
-      <select id="sheet-date-filter" style="font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card)" onchange="applySheetDateFilter()">
+      <select id="sheet-date-filter" style="font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card)" onchange="applySheetFilters()">
         ${dateOpts}
       </select>
     </div>
@@ -6780,8 +6814,7 @@ function renderSheet(){
     const delBtn=col.fixed?'':'<button class="btn btn-xs btn-red" style="padding:1px 4px;margin-left:2px;font-size:9px" onclick="delExtraCol('+ci+')">✕</button>';
     return '<th style="min-width:'+col.w+'px;white-space:nowrap;user-select:none">'+col.lb+moveHtml+delBtn+'</th>';
   }).join('')+'<th style="width:32px"></th></tr>';
-  window._SHEET_FILTER_DATE=''; // 초기화
-  const tbody=SHEET_ROWS.map((row,ri)=>`<tr>
+  const tbody=SHEET_ROWS.map((row,ri)=>`<tr data-ri="${ri}">
     <td class="rn" onmousedown="sheetRnClick(event,${ri})">${ri+1}</td>
     ${COLS.map((col,ci)=>{
       const isSel=isCellSel(ri,ci);
@@ -6796,6 +6829,7 @@ function renderSheet(){
     <td><button class="btn btn-xs btn-red" onclick="delRow(${ri})">✕</button></td>
   </tr>`).join('');
   document.getElementById('sheet-container').innerHTML=toolbar+`<div class="sheet-outer" id="sheet-outer-wrap" onmouseup="sheetMouseUp(event)"><table class="st" id="sheet-tbl" onmouseleave="sheetMouseUp(event)"><thead>${thead}</thead><tbody>${tbody}</tbody></table><button class="add-row" onclick="addSheetRow()">+ 행 추가</button></div>`;
+  applySheetFilters();
 }
 
 // ── 드래그 선택 ──
@@ -7132,20 +7166,30 @@ function changeProjStatus(projId, newStatus){
   toast('상태 변경: '+projStatusLabel(newStatus));
 }
 // ── 스프레드시트 날짜 필터 ──
-function applySheetDateFilter(){
-  const sel=document.getElementById('sheet-date-filter');
-  const filterDate=sel?sel.value:'';
-  window._SHEET_FILTER_DATE=filterDate;
+function applySheetFilters(){
+  const dateSel=document.getElementById('sheet-date-filter');
+  const textInp=document.getElementById('sheet-text-filter');
+  const filterDate=dateSel?dateSel.value:'';
+  const filterText=(textInp?textInp.value:'').trim().toLowerCase();
+  if(textInp!=null)window._SHEET_FILTER_TEXT=filterText;
   const tbody=document.getElementById('sheet-tbl')?.querySelector('tbody');
   if(!tbody)return;
-  tbody.querySelectorAll('tr').forEach((tr,ri)=>{
+  function rowMatchesText(r){
+    if(!filterText)return true;
+    const str=[r.no,r.day,r.purchaseDate,r.product,r.option,r.reviewType,r.nickname,r.receiver,r.email,r.address,r.phone,r.amount,r.tracking,r.reviewUrl].filter(Boolean).map(String).join(' ').toLowerCase();
+    return str.indexOf(filterText)!==-1;
+  }
+  tbody.querySelectorAll('tr[data-ri]').forEach(tr=>{
+    const ri=parseInt(tr.getAttribute('data-ri'),10);
     const r=SHEET_ROWS[ri];
-    if(!r)return;
-    tr.style.display=(!filterDate||r.purchaseDate===filterDate)?'':'none';
+    if(!r){tr.style.display='';return;}
+    const dateOk=!filterDate||r.purchaseDate===filterDate;
+    const textOk=rowMatchesText(r);
+    tr.style.display=(dateOk&&textOk)?'':'none';
   });
-  const vis=SHEET_ROWS.filter(r=>!filterDate||r.purchaseDate===filterDate).length;
+  const vis=SHEET_ROWS.filter(r=>(!filterDate||r.purchaseDate===filterDate)&&(filterText?rowMatchesText(r):true)).length;
   const info=document.getElementById('sel-info');
-  if(info&&filterDate)info.textContent=`📅 ${filterDate} 필터 적용 — ${vis}건 표시`;
+  if(info&&(filterDate||filterText))info.textContent=`필터 적용 — ${vis}건 표시`;
   else if(info)info.textContent='드래그 선택 → Del:초기화 | Ctrl+C/V:복붙 | 꾹 누르기:이동';
 }
 
