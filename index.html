@@ -2650,7 +2650,9 @@ function selectDailyDate(mode,clientId,dateStr){
       const val=col.key==='_proj'?(proj?.name||'—'):fmtVal(r,col.key);
       const displayVal=col.key==='reviewUrl'&&r.reviewUrl?'<a href="'+r.reviewUrl+'" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent)">링크</a>':(col.key==='amount'?val:escHtml(val));
       const editable=isAdminEdit&&col.ed;
-      const style='padding:7px 10px;text-align:'+col.align+';font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      const style='padding:7px 10px;text-align:'+col.align+';font-size:11px;max-width:260px;'+(mode==='cv'
+        ?'white-space:normal;'
+        :'overflow:hidden;text-overflow:ellipsis;white-space:nowrap');
       const cls=editable?'daily-cell daily-edit-cell':'daily-cell';
       cells+=editable
         ?`<td class="${cls}" style="${style}" data-record-id="${r.id}" data-field="${col.key}" contenteditable="true" title="클릭 후 수정">${displayVal}</td>`
@@ -6731,7 +6733,20 @@ function markQtSettled(qtId){
 function delQt(qtId){
   if(!confirm('견적서를 삭제하시겠습니까?'))return;
   const d=ld();
-  sv('qt',d.quotes.filter(q=>q.id!==qtId));
+  // 견적서 삭제
+  d.quotes=d.quotes.filter(q=>q.id!==qtId);
+  sv('qt',d.quotes);
+  // 연결된 거래처 정산(wv_st) 삭제
+  try{
+    let settles=[...stLd()];
+    settles=settles.filter(s=>s.qtId!==qtId);
+    stSv(settles);
+  }catch(e){console.warn('delQt settle sync err',e);}
+  // 연결된 일/월 정산(dailySettleRows) 삭제
+  try{
+    const dsArr=dsLd().filter(r=>r.qtId!==qtId);
+    dsSv(dsArr);
+  }catch(e){console.warn('delQt ds sync err',e);}
   renderDetQuote();renderDetSettle();
   toast('삭제됨');
 }
@@ -7313,7 +7328,7 @@ const BASE_COLS=[
   {k:'address', lb:'주소',       w:188, t:'text', fixed:true},
   {k:'phone',   lb:'연락처',     w:113, t:'text', fixed:true},
   {k:'amount',  lb:'상품금액',   w:80,  t:'num',  fixed:true},
-  {k:'tracking',lb:'송장번호',   w:130, t:'text', fixed:true},
+  {k:'tracking',lb:'송장번호(CJ대한통운)',   w:150, t:'text', fixed:true},
   {k:'reviewUrl',lb:'리뷰URL',   w:150, t:'text', fixed:true},
 ];
 // EXTRA_COLS: 사용자가 동적으로 추가한 열 (localStorage 저장)
@@ -7426,8 +7441,17 @@ function renderSheet(){
     const td=active.closest('td[data-ri][data-ci]');
     if(td){savedRi=parseInt(td.dataset.ri,10);savedCi=parseInt(td.dataset.ci,10);}
   }
-  // 일자 필터 옵션
-  const allDates=[...new Set(SHEET_ROWS.map(r=>r.purchaseDate).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  // 일자 필터 옵션 (구매날짜 서식 통일: YYYY-MM-DD)
+  const dateSet=new Set();
+  SHEET_ROWS.forEach(r=>{
+    const norm=normPurchaseDate(r.purchaseDate);
+    if(norm){
+      dateSet.add(norm);
+      // 기존 데이터가 2026.3.13 등이어도 메모리 상에서는 통일
+      r.purchaseDate=norm;
+    }
+  });
+  const allDates=[...dateSet].sort((a,b)=>a.localeCompare(b));
   const dateOpts='<option value="">전체 날짜</option>'+allDates.map(dt=>`<option value="${dt}" ${String(prevDate)===String(dt)?'selected':''}>${dt}</option>`).join('');
   // 리뷰종류/상품명 필터 옵션
   const allRv=[...new Set(SHEET_ROWS.map(r=>(r.reviewType||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
@@ -7924,14 +7948,15 @@ function applySheetFilters(){
     const ri=parseInt(tr.getAttribute('data-ri'),10);
     const r=SHEET_ROWS[ri];
     if(!r){tr.style.display='';return;}
-    const dateOk=!filterDate||r.purchaseDate===filterDate;
+    const dNorm=normPurchaseDate(r.purchaseDate);
+    const dateOk=!filterDate||dNorm===filterDate;
     const rvOk=!filterRv||(String(r.reviewType||'').trim()===String(filterRv).trim());
     const prodOk=!filterProd||(String(r.product||'').trim()===String(filterProd).trim());
     const textOk=rowMatchesText(r);
     tr.style.display=(dateOk&&rvOk&&prodOk&&textOk)?'':'none';
   });
   const vis=SHEET_ROWS.filter(r=>
-    (!filterDate||r.purchaseDate===filterDate) &&
+    (!filterDate||normPurchaseDate(r.purchaseDate)===filterDate) &&
     (!filterRv||(String(r.reviewType||'').trim()===String(filterRv).trim())) &&
     (!filterProd||(String(r.product||'').trim()===String(filterProd).trim())) &&
     (filterText?rowMatchesText(r):true)
