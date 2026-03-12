@@ -2609,14 +2609,54 @@ function initDailyListKeys(container){
     }
   });
   tbl.addEventListener('paste',function(e){
-    var cell=e.target.closest('.daily-edit-cell');
-    if(!cell){return;}
+    var startCell=e.target.closest('.daily-edit-cell');
+    if(!startCell){return;}
     e.preventDefault();
     var text=(e.clipboardData||window.clipboardData).getData('text/plain');
-    if(text==null)text='';
-    text=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n');
-    var firstCell=text.split(/\n/)[0].split(/\t/)[0];
-    document.execCommand('insertText',false,firstCell);
+    if(!text||!text.trim())return;
+    text=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').trim();
+    var rows=text.split(/\n/).map(function(row){ return row.split(/\t/); });
+    if(!rows.length)return;
+    var tr=startCell.closest('tr');
+    var tbody=tbl.tBodies[0];
+    if(!tbody)return;
+    var startRow=Array.prototype.indexOf.call(tbody.rows,tr);
+    var startCol=Array.prototype.indexOf.call(tr.cells,startCell);
+    if(startRow<0||startCol<0)return;
+    var updates=[];
+    var rowCount=tbody.rows.length;
+    var colCount=tr.cells.length;
+    for(var r=0;r<rows.length;r++){
+      var row=rows[r];
+      for(var c=0;c<row.length;c++){
+        var targetRow=startRow+r;
+        var targetCol=startCol+c;
+        if(targetRow>=rowCount||targetCol>=colCount)continue;
+        var targetTr=tbody.rows[targetRow];
+        var targetTd=targetTr.cells[targetCol];
+        if(!targetTd||!targetTd.classList.contains('daily-edit-cell'))continue;
+        var recId=targetTd.dataset.recordId;
+        var field=targetTd.dataset.field;
+        if(!recId||!field)continue;
+        var val=(row[c]!=null?String(row[c]):'').trim();
+        if(field==='amount'){
+          var num=parseInt(val.replace(/[원,\s]/g,''),10);
+          val=isNaN(num)?0:num;
+        }
+        updates.push({recId:recId,field:field,val:val});
+      }
+    }
+    if(updates.length===0)return;
+    var d=ld();
+    for(var i=0;i<updates.length;i++){
+      var u=updates[i];
+      var idx=d.records.findIndex(function(r){ return r.id===u.recId; });
+      if(idx>=0) d.records[idx][u.field]=u.val;
+    }
+    sv('rc',d.records);
+    var wrap=document.getElementById('daily-table-wrap');
+    if(wrap&&wrap.dataset.mode&&wrap.dataset.date) selectDailyDate(wrap.dataset.mode,wrap.dataset.cid||CUR_CLIENT,wrap.dataset.date);
+    toast(updates.length+'개 셀 반영됨');
   });
 }
 
