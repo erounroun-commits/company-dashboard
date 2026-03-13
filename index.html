@@ -6177,7 +6177,7 @@ function renderDetAllData(){
     ];
     return '<tr>'+cells.map((v,i)=>{
       const align=(i===1||i===12)?'right':'left';
-      return '<td style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;text-align:'+align+'">'+escHtml(String(v))+'</td>';
+      return '<td style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;text-align:'+align+';white-space:nowrap">'+escHtml(String(v))+'</td>';
     }).join('')+'</tr>';
   }).join('');
   const totalTxt=keyword?`총 ${filteredRecs.length}건 (검색 결과)`:`총 ${sortedRecs.length}건`;
@@ -6280,13 +6280,25 @@ function renderDetQuote(){
       // qtId가 없거나, qtId는 있는데 해당 견적이 존재하지 않는 경우에만 보정
       if(!s.qtId || !hasQuoteId.has(s.qtId)){
         const qtId=s.qtId||gid();
+        const totalAmt=Number(s.total)||0;
+        const recoveredItems=totalAmt>0?[{
+          id:gid(),
+          typeIdx:0,
+          label:'정산 내역 합계',
+          calc:'custom',
+          qty:1,
+          unitPrice:totalAmt,
+          feeRate:0,
+          taxApply:false,
+          memo:'(정산 데이터에서 복구됨)'
+        }]:[];
         const newQt={
           id:qtId,
           clientId:CUR_CLIENT,
           date:s.date||new Date().toISOString().slice(0,10),
           no:s.no||'',
           toName:s.toName||c.name||'',
-          items:[],
+          items:recoveredItems,
           taxYn:!!s.taxYn,
           taxItems:{fee:!!s.taxFee,delivery:!!s.taxDel,product:!!s.taxProd},
           settled:!!s.settled,
