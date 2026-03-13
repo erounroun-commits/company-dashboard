@@ -1488,7 +1488,8 @@ let COMPANY_EXP_CACHE = [];
 // 월별 수기 진행건수/메모 캐시 (Firestore 연동) — 기존 localStorage(wv_monthly_cnt) 대체
 let MONTHLY_CNT_CACHE = {};
 // 시트 UI 열설정 캐시 (Firestore 연동) — 기존 localStorage(wv_extra_cols / wv_col_order) 대체
-let UI_COLS_CACHE = {extraCols:[], colOrder:[]};
+// 시트 UI 열설정 캐시 (거래처별 저장) — 기존: 전역 설정
+let UI_COLS_CACHE = {};
 
 const ld=()=>({
   clients: CLIENTS_CACHE,
@@ -1919,12 +1920,20 @@ async function loadUiColsFromFirestore(){
     }
   }catch(e){}
 }
-function uiColsLd(){ return UI_COLS_CACHE || {extraCols:[], colOrder:[]}; }
-function uiColsSv(extraCols, colOrder){
-  UI_COLS_CACHE = {extraCols: Array.isArray(extraCols)?extraCols:[], colOrder: Array.isArray(colOrder)?colOrder:[]};
+function uiColsLd(clientId){
+  const key=clientId||CUR_CLIENT||'_global';
+  const cfg = (UI_COLS_CACHE && UI_COLS_CACHE[key]) || {extraCols:[], colOrder:[]};
+  return {extraCols:Array.isArray(cfg.extraCols)?cfg.extraCols:[], colOrder:Array.isArray(cfg.colOrder)?cfg.colOrder:[]};
+}
+function uiColsSv(extraCols, colOrder, clientId){
+  const key=clientId||CUR_CLIENT||'_global';
+  const safeExtra=Array.isArray(extraCols)?extraCols:[];
+  const safeOrder=Array.isArray(colOrder)?colOrder:[];
+  UI_COLS_CACHE = UI_COLS_CACHE && typeof UI_COLS_CACHE==='object'?UI_COLS_CACHE:{};
+  UI_COLS_CACHE[key]={extraCols:safeExtra, colOrder:safeOrder};
   try{
     if(typeof db!=='undefined'){
-      db.collection('settings').doc('uiCols').set(UI_COLS_CACHE,{merge:true}).catch(console.error);
+      db.collection('settings').doc('uiCols').set({[key]:UI_COLS_CACHE[key]},{merge:true}).catch(console.error);
     }
   }catch(e){}
 }
@@ -4476,7 +4485,7 @@ function renderSettleAll(){
     <td style="text-align:right;font-weight:700;color:var(--accent)">${fmtN(s.total)}원</td>
     <td style="text-align:center;min-width:80px">
       ${s.taxYn
-        ?'<span class="badge bg" style="font-size:10px">발행</span>'
+        ?`<span class="badge bg" style="font-size:10px;cursor:pointer" ondblclick="openSettleQuote('${s.qtId||''}')">발행</span>`
         :'<span class="badge bgr" style="font-size:10px">미발행</span>'}
     </td>
     <td style="text-align:center;min-width:70px" title="실제 세금계산서 발행 여부 (관리자 체크)">
@@ -7512,12 +7521,12 @@ const BASE_COLS=[
 let EXTRA_COLS=[];
 let COL_ORDER=[]; // 전체 열 순서 (키 배열)
 function loadExtraCols(){
-  const u = uiColsLd();
+  const u = uiColsLd(CUR_CLIENT);
   EXTRA_COLS = Array.isArray(u.extraCols)?u.extraCols:[];
   COL_ORDER = Array.isArray(u.colOrder)?u.colOrder:[];
 }
 function saveExtraCols(){
-  uiColsSv(EXTRA_COLS, COL_ORDER);
+  uiColsSv(EXTRA_COLS, COL_ORDER, CUR_CLIENT);
 }
 function getCOLS(){
   const all=[...BASE_COLS,...EXTRA_COLS];
