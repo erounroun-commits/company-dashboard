@@ -1983,6 +1983,35 @@ async function deleteClientCascadeFirestore(cid){
   await db.collection('clients').doc(cid).delete();
 }
 
+// Firestore undefined 필드 정제 (Firestore는 undefined 를 허용하지 않음)
+function cleanForFirestore(val){
+  // 완전 undefined 인 값: 키에서 제거해야 할 대상
+  if(val===undefined) return {__skip:true};
+  // 배열: 원소별로 정제 (undefined 는 null 로 치환)
+  if(Array.isArray(val)){
+    return val.map(v=>{
+      const cleaned=cleanForFirestore(v);
+      if(cleaned && cleaned.__skip) return null;
+      return cleaned;
+    });
+  }
+  // Date, Timestamp 등 특수 객체는 그대로 둔다
+  if(val && typeof val==='object'){
+    // Firestore Timestamp 추정: toDate 메서드 보유
+    if(typeof val.toDate==='function') return val;
+    // 일반 객체: 각 키 정제
+    const out={};
+    Object.keys(val).forEach(k=>{
+      const cleaned=cleanForFirestore(val[k]);
+      if(cleaned && cleaned.__skip) return;
+      out[k]=cleaned;
+    });
+    return out;
+  }
+  // 숫자/문자열/null/불린 등은 그대로
+  return val;
+}
+
 // Firestore에 개별 키별로 저장하던 helper 대체
 async function sv(key, value){
   if(typeof db === 'undefined'){return;}
@@ -2042,8 +2071,9 @@ async function sv(key, value){
     });
     // 추가/수정은 모두 set(merge:false)
     QUOTES_CACHE.forEach(q=>{
-      const data={...q,id:q.id};
-      batch.set(col.doc(q.id),data);
+      // Firestore는 undefined 값을 허용하지 않으므로, 안전하게 정제
+      const cleaned=cleanForFirestore({...q,id:q.id});
+      batch.set(col.doc(cleaned.id),cleaned);
     });
     await batch.commit();
   }else if(key==='st'){
