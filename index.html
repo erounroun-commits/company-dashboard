@@ -2411,6 +2411,19 @@ async function refreshAllData(){
     toast('새로고침 중 오류가 발생했습니다: '+e.message,'error');
   }
 }
+
+// 관리자 화면에서 현재 보고 있는 거래처와 동일한 업체 링크(CLIENT VIEW)가 열려 있다면,
+// 견적서/정산 변경 시 업체뷰도 즉시 새로고침해서 연동되도록 보조 함수
+function _syncClientViewIfSameClient(){
+  try{
+    if(!CV_CURRENT_CODE||!CUR_CLIENT)return;
+    const d=ld();
+    const cl=d.clients.find(x=>x.id===CUR_CLIENT);
+    if(cl && cl.code===CV_CURRENT_CODE){
+      refreshClientViewFromServer();
+    }
+  }catch(e){}
+}
 // ════════════════════════════════════════
 // 일별 명단 탭 (수정 4) — 구매날짜 → YYYY-MM-DD 통일 (프로젝트별/데이터관리와 동일 인식)
 // ════════════════════════════════════════
@@ -6667,6 +6680,8 @@ function saveQuoteForm(){
     // 정산/일월정산 반영
     updateSettleFromQuote(qt);
     syncQtToDailySettle(qt);
+    // 업체 링크 화면도 같은 거래처를 보고 있다면 즉시 동기화
+    _syncClientViewIfSameClient();
     closeNewQuoteForm();
     renderDetQuote();renderDetSettle();
     try{ scheduleRerender(); }catch(e){}
@@ -6874,6 +6889,8 @@ function saveNewQuote(){
   addToSettle(qt);
   // 일/월 정산 자동 연동
   syncQtToDailySettle(qt);
+  // 업체 링크 화면도 같은 거래처를 보고 있다면 즉시 동기화
+  _syncClientViewIfSameClient();
   closeNewQuoteForm();
   renderDetQuote();
   renderDetSettle();
