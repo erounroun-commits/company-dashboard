@@ -5486,6 +5486,19 @@ function renderDetSettle(){
   const quoteOrder={};
   (d.quotes||[]).forEach(q=>{ quoteOrder[q.id]=q.order!=null?q.order:9999; });
   const settles=stLd().filter(s=>s.clientId===CUR_CLIENT)
+    .map(s=>{
+      // 견적이 연결되어 있으면, 항상 견적서 금액(calcQtTotal)로 강제 동기화
+      if(s.qtId){
+        const qt=(d.quotes||[]).find(q=>q.id===s.qtId);
+        if(qt){
+          const syncedTotal=calcQtTotal(qt);
+          if(s.total!==syncedTotal){
+            s={...s,total:syncedTotal};
+          }
+        }
+      }
+      return s;
+    })
     .sort((a,b)=>{
       const oa=quoteOrder[a.qtId]!=null?quoteOrder[a.qtId]:9999, ob=quoteOrder[b.qtId]!=null?quoteOrder[b.qtId]:9999;
       if(oa!==ob)return oa-ob;
