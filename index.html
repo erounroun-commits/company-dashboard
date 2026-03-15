@@ -294,9 +294,20 @@ tr:last-child td{border-bottom:none;}
   /* 토스트 위치 조정 */
   #toast{right:12px;left:12px;bottom:16px;}
 }
+
+/* 거래처 링크(#view-...)로 접속 시 로그인 화면 숨김 */
+body.client-view-link #login-screen{
+  display:none;
+}
 </style>
 </head>
 <body>
+<script>
+  // 거래처 전용 링크로 접속 시 초기 로그인 화면이 잠깐 보이지 않도록 처리
+  if(location.hash && location.hash.startsWith('#view-')){
+    document.body.classList.add('client-view-link');
+  }
+</script>
 <div id="toast"></div>
 
 <!-- ══ LOGIN ══ -->
@@ -2518,6 +2529,9 @@ function renderDailyPanel(mode, clientId){
     +'<span style="font-size:11px;color:var(--text2)">날짜:</span>'
     +'<input type="date" class="fi" id="daily-custom-'+_m+'" data-mode="'+_m+'" style="font-size:12px;padding:5px 8px;width:150px" onchange="handleDailySel(this)">'
     +'</div></div>'
+    +(_m==='cv'
+       ?'<div style="font-size:11px;color:var(--text3);margin:4px 0 10px 2px">데이터가 갑자기 가려지면, 다른 탭을 눌렀다가 다시 <b>일별 명단</b> 탭을 눌러주세요.</div>'
+       :'')
     +'<div id="daily-result-'+_m+'"></div>'
     +'</div>';
 
@@ -6065,6 +6079,7 @@ function renderDetProjView(){
     const notDone=rc.length-rvDone;
     const pp=reqTotal>0?~~((rvDone/reqTotal)*100):0;
     const statusColor=badgeClass(p.status)==='bgr'?'#ef4444':badgeClass(p.status)==='bg'?'#22c55e':'var(--border)';
+    const escMemo=(p.memo||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     return `<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh)" data-entity-type="project" data-entity-id="${p.id}" oncontextmenu="showChangeLogContext('project','${p.id}',event)">
       <!-- 헤더: 프로젝트명 + 명단 보기 -->
       <div style="padding:12px 18px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);cursor:pointer" onclick="showProjDetailModal('${p.id}')">
@@ -6102,10 +6117,35 @@ function renderDetProjView(){
           <div style="text-align:center"><div style="font-size:9px;color:var(--text3);font-weight:600;margin-bottom:2px">진행율</div><div style="font-size:17px;font-weight:800;color:var(--accent)">${pp}%</div></div>
         </div>
         <div class="pb-wrap" style="height:5px"><div class="pb" style="width:${pp}%;height:5px;background:var(--accent)"></div></div>
+        <div style="margin-top:10px;font-size:11px;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+          <div style="font-weight:600">프로젝트 메모</div>
+          <div style="display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap">
+            <textarea id="proj-memo-${p.id}" style="flex:1;min-width:220px;min-height:46px;font-size:11px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);resize:vertical" placeholder="이 프로젝트에 대한 메모를 남겨주세요. (거래처/내부 공유용)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();saveProjMemo('${p.id}');}">${escMemo}</textarea>
+            <button class="btn btn-sm btn-gray" style="font-size:11px;white-space:nowrap" onclick="saveProjMemo('${p.id}')">메모 저장</button>
+          </div>
+        </div>
       </div>
     </div>`;
   }).join(''):'<div style="text-align:center;padding:40px;color:var(--text3)">검색 결과 없음</div>';
   document.getElementById('dp-projview').innerHTML=filterHtml+'<div style="display:flex;flex-direction:column;gap:12px">'+listBody+'</div>';
+}
+
+// 프로젝트 메모 저장 (거래처 - 프로젝트별 보기)
+function saveProjMemo(projId){
+  const ta=document.getElementById('proj-memo-'+projId);
+  if(!ta)return;
+  const val=ta.value.trim();
+  const d=ld();
+  const idx=d.projects.findIndex(p=>p.id===projId);
+  if(idx<0)return;
+  const prev={...d.projects[idx]};
+  d.projects[idx].memo=val;
+  sv('pr',d.projects);
+  const changes=diffProject(prev,d.projects[idx]);
+  if(Object.keys(changes).length){
+    logChange('project', d.projects[idx].id, changes, {screen:'client-detail', action:'memo-save'});
+  }
+  toast('프로젝트 메모가 저장되었습니다');
 }
 
 function moveProjOrder(projId,dir){
@@ -8288,10 +8328,26 @@ function saveSheet(){
   if(SHEET_PROJ==='__all__'){
     const clientProjIds=new Set(d.projects.filter(p=>p.clientId===CUR_CLIENT).map(p=>p.id));
     others=d.records.filter(r=>!clientProjIds.has(r.projectId));
-    nr=SHEET_ROWS.filter(r=>r.nickname||r.receiver||r.phone||r.product).map((r,i)=>({...r,no:i+1,amount:parseFloat(r.amount)||0}));
+    nr=SHEET_ROWS
+      .filter(r=>r.nickname||r.receiver||r.phone||r.product)
+      .map((r,i)=>{
+        const rawAmt=r.amount;
+        const numAmt=typeof rawAmt==='number'
+          ? rawAmt
+          : parseFloat(String(rawAmt||'').replace(/[^0-9.-]/g,''))||0;
+        return {...r,no:i+1,amount:numAmt};
+      });
   } else {
     others=d.records.filter(r=>r.projectId!==SHEET_PROJ);
-    nr=SHEET_ROWS.filter(r=>r.nickname||r.receiver||r.phone||r.product).map((r,i)=>({...r,projectId:SHEET_PROJ,no:i+1,amount:parseFloat(r.amount)||0}));
+    nr=SHEET_ROWS
+      .filter(r=>r.nickname||r.receiver||r.phone||r.product)
+      .map((r,i)=>{
+        const rawAmt=r.amount;
+        const numAmt=typeof rawAmt==='number'
+          ? rawAmt
+          : parseFloat(String(rawAmt||'').replace(/[^0-9.-]/g,''))||0;
+        return {...r,projectId:SHEET_PROJ,no:i+1,amount:numAmt};
+      });
   }
   sv('rc',[...others,...nr]);
   SHEET_DIRTY=false;
