@@ -299,6 +299,12 @@ tr:last-child td{border-bottom:none;}
 body.client-view-link #login-screen{
   display:none;
 }
+/* 거래처 링크 로딩 중 표시 (화면 나오기 전까지) */
+#client-view-loading{display:none;position:fixed;inset:0;background:linear-gradient(135deg,#fdf8f0,#e8e2d8);z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:12px;}
+body.client-view-link #client-view-loading{display:flex;}
+body.client-view-link.client-view-ready #client-view-loading{display:none;}
+#client-view-loading .loading-text{font-size:18px;font-weight:700;color:var(--accent);}
+#client-view-loading .loading-sub{font-size:13px;color:var(--text2);}
 </style>
 </head>
 <body>
@@ -309,6 +315,12 @@ body.client-view-link #login-screen{
   }
 </script>
 <div id="toast"></div>
+
+<!-- 거래처 링크 로딩 (화면 나오기 전까지 표시) -->
+<div id="client-view-loading">
+  <div class="loading-text">로딩중입니다</div>
+  <div class="loading-sub">잠시만 기다려 주세요.</div>
+</div>
 
 <!-- ══ LOGIN ══ -->
 <div id="login-screen">
@@ -2365,6 +2377,7 @@ function checkRoute(){
 window.addEventListener('hashchange',()=>{
   if(checkRoute())return;
   hide('client-screen');
+  document.body.classList.remove('client-view-link','client-view-ready');
   show('app'); // 항상 앱으로 돌아감
 });
 
@@ -2379,6 +2392,7 @@ async function showClientView(code){
   CV_CURRENT_CODE=code;
   hide('login-screen');hide('app');show('client-screen');
   refreshClientView();
+  document.body.classList.add('client-view-ready'); // 로딩 메시지 숨김
 }
 function refreshClientView(){
   if(!CV_CURRENT_CODE)return;
