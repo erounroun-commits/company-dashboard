@@ -3824,8 +3824,22 @@ function _parseDepWb(wb,fname){
   }
 
   // ── 헤더/컬럼 위치 자동 감지 ─────────────────────────────
-  const header=strRows[0]||[];
   const norm=h=>String(h||'').trim().toLowerCase();
+
+  // 헤더 행 찾기: "거래일시" 또는 "거래내용" + "입금" 텍스트가 있는 첫 행
+  let headerRowIdx=0;
+  for(let i=0;i<strRows.length;i++){
+    const row=strRows[i]||[];
+    const hasDate=row.some(h=>norm(h).includes('거래일시')||norm(h).includes('일자'));
+    const hasContent=row.some(h=>norm(h).includes('거래내용'));
+    const hasAmt=row.some(h=>norm(h).includes('입금')&&!norm(h).includes('입금자'));
+    if(hasDate && hasContent && hasAmt){
+      headerRowIdx=i;
+      break;
+    }
+  }
+
+  const header=strRows[headerRowIdx]||[];
 
   // NO 컬럼 (번호)
   let colNo=0;
@@ -3856,9 +3870,9 @@ function _parseDepWb(wb,fname){
   });
 
   // 헤더 행 건너뜀 여부 판단
-  let start=0;
-  const h0=norm(rawRows[0][colNo]);
-  if(h0==='no'||h0==='번호'||isNaN(Number(h0))) start=1;
+  let start=headerRowIdx;
+  const h0=norm(rawRows[headerRowIdx][colNo]);
+  if(h0==='no'||h0==='번호'||isNaN(Number(h0))) start=headerRowIdx+1;
 
   for(let i=start;i<rawRows.length;i++){
     const rr=rawRows[i];  // raw (숫자/날짜형)
