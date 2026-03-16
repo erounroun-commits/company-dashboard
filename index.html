@@ -10241,12 +10241,14 @@ function doDsImport(){
       const shName=wb.SheetNames.includes('일매출기록')?'일매출기록':wb.SheetNames[0];
       const ws=wb.Sheets[shName];
       const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
-      // 헤더: 4행(index3) / 데이터: 5행부터 (index4~)
-      // idx: 1=입금여부, 2=일자(엑셀날짜숫자), 3=업체명, 4=입금일자, 5=입금명
-      //      6=건수(진행비), 7=총액(진행비), 8=부가세(진행비)
-      //      9=상품값, 10=수수료, 11=부가세
-      //      12=건수(택배), 13=총액(택배), 14=부가세(택배)
-      //      16=매출총액, 17=리뷰비, 18=택배비, 19=임반장수수료, 25=순수익, 26=memo
+      // 컬럼 인덱스(0-based):
+      // 1=입금여부(A열은 사용 안 함), 2=일자(엑셀날짜숫자), 3=업체명, 4=입금일자, 5=입금명
+      // 6=건수(진행비), 7=총액(진행비), 8=부가세(진행비)
+      // 9=상품값, 10=수수료, 11=부가세
+      // 12=건수(택배), 13=총액(택배), 14=부가세(택배)
+      // 15=총 안내액(현재 미사용), 16=매출총액(현재 미사용)
+      // 17=리뷰비, 18=택배비, 19=임반장수수료(사용자 엑셀 Q,R,S열 기준)
+      // 25=순수익(현재 미사용), 26=memo
       const baseDate=new Date(Date.UTC(1899,11,30));
       const parseExcelDate=(v)=>{
         if(!v)return '';
@@ -10260,7 +10262,20 @@ function doDsImport(){
       const existArr=dsLd();
       const existKeys=new Set(existArr.map(r=>r.date+'|'+r.clientName+'|'+(r.feeAmt||'')));
 
-      rows.slice(5).forEach(r=>{
+      // 실제 데이터 시작 행은 "일자+업체명"이 유효하게 채워진 첫 행부터로 자동 감지
+      let startIdx=0;
+      for(let i=0;i<rows.length;i++){
+        const r=rows[i];
+        if(!r)continue;
+        const dateStr=parseExcelDate(r[2]);
+        const clientName=String(r[3]||'').trim();
+        if(dateStr && /^\d{4}-\d{2}-\d{2}/.test(dateStr) && clientName && clientName!=='업체명'){
+          startIdx=i;
+          break;
+        }
+      }
+
+      rows.slice(startIdx).forEach(r=>{
         if(!r[2]||!r[3])return;
         const dateStr=parseExcelDate(r[2]);
         if(!dateStr||!/^\d{4}-\d{2}-\d{2}/.test(dateStr))return;
@@ -10276,7 +10291,8 @@ function doDsImport(){
           feeQty:Number(r[6])||'', feeAmt:Number(r[7])||'', feeTax:Number(r[8])||'',
           prodAmt:Number(r[9])||'', prodFee:Number(r[10])||'', prodTax:Number(r[11])||'',
           boxQty:Number(r[12])||'', boxAmt:Number(r[13])||'', boxTax:Number(r[14])||'',
-          expReview:Number(r[17])||'', expBox:Number(r[18])||'', expMgr:Number(r[19])||'',
+          // 사용자 엑셀: Q=리뷰비, R=택배비, S=임반장 수수료
+          expReview:Number(r[16])||'', expBox:Number(r[17])||'', expMgr:Number(r[18])||'',
           memo:String(r[26]||'').trim(), bankTxId:''
         };
         existArr.push(newRow);
