@@ -3918,16 +3918,34 @@ function _parseDepWb(wb,fname){
   matchDeposits();
 }
 
-// 날짜 파싱 헬퍼
+// 날짜 파싱 헬퍼 (입금 내역용)
 function parseDateStr(s){
-  if(!s)return new Date().toISOString().slice(0,10);
+  if(s===null||s===undefined||s==='')return new Date().toISOString().slice(0,10);
+  // 엑셀 날짜 시리얼(숫자) 처리
+  if(typeof s==='number'){
+    const base=new Date(Date.UTC(1899,11,30));
+    const d=new Date(base.getTime()+s*86400000);
+    return d.toISOString().slice(0,10);
+  }
   const clean=String(s).trim();
-  // yyyy-mm-dd, yyyy.mm.dd, yyyy/mm/dd
+  // "2026.03.12 18:52:15" 같이 날짜+시간이면 앞 10자리만 사용
+  const head10=clean.slice(0,10).replace(/[\/.]/g,'-');
+  if(/^\d{4}-\d{2}-\d{2}$/.test(head10))return head10;
+  // yyyy-mm-dd, yyyy.mm.dd, yyyy/mm/dd 가 문자열 어디에나 포함된 경우
   let m=clean.match(/(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/);
   if(m)return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
   // mm/dd or m/d (현재 연도)
   m=clean.match(/^(\d{1,2})[\/\-.](\d{1,2})$/);
   if(m)return `${new Date().getFullYear()}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  // 마지막 수단: 숫자만 뽑아 8자리 이상이면 YYYYMMDD로 가정
+  const digits=clean.replace(/\D/g,'');
+  if(digits.length>=8){
+    const y=digits.slice(0,4);
+    const mo=digits.slice(4,6);
+    const d2=digits.slice(6,8);
+    return `${y}-${mo}-${d2}`;
+  }
+  // 그래도 못 알아냈으면 오늘 날짜
   return new Date().toISOString().slice(0,10);
 }
 
