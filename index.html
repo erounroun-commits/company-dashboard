@@ -3907,12 +3907,8 @@ function _parseDepWb(wb,fname){
     if(n==='no'||n==='번호') colNo=idx;
   });
 
-  // 거래일시 컬럼 (날짜/시간)
-  let colDate=1;
-  header.forEach((h,idx)=>{
-    const n=norm(h);
-    if(n.includes('거래일시')||n.includes('일자')) colDate=idx;
-  });
+  // 거래일시 컬럼 (날짜/시간) — 템플릿 기준으로 B열(1) 고정 사용
+  const colDate=1;
 
   // 거래내용 컬럼
   let colContent=2;
