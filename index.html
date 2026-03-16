@@ -4047,8 +4047,6 @@ async function applyDepositMatches(){
       const d=ld();
       const qi=d.quotes.findIndex(q=>q.id===settles[idx].qtId);
       if(qi>=0){d.quotes[qi].settled=true;}
-      // ★ 일/월 정산 동기화 (입금일자, 입금명, 정산여부)
-      syncDsRowFromSettle(dep.stId);
       count++;
     }
     // 입금내역 저장
@@ -4087,6 +4085,8 @@ async function applyDepositMatches(){
       // 최소한 로컬 저장은 유지하되, 삭제는 절대 하지 않는다.
       await sv('qt', nextQuotes);
     }
+    // 거래처 정산 → 일/월 정산 전체 동기화 (입금일자/입금명/정산여부)
+    try{ syncAllDsRowsFromSettle(); }catch(e){ console.warn('syncAllDsRowsFromSettle after deposit match err',e); }
   }
   toast(`${count}건 정산완료 처리됨`,'success');
   // 체크 해제 등 반영 후 화면/미매칭 상태 재계산
