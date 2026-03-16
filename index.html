@@ -1374,6 +1374,7 @@ async function saveUsers(arr){
 // 하위호환 ADMINS (로그인 검증용)
 const ADMINS=null; // 더 이상 사용 안 함
 let CUR_ADMIN=null,CUR_CLIENT=null,SHEET_PROJ=null,SHEET_ROWS=[],SHEET_DIRTY=false,IMP_DATA=[],PEND_RECS=[];
+let _sheetFilterTimer=null;
 
 // ─────────────────────────────────────────────────────────────
 // 변경 이력 로깅 (changeLogs) - 거래처/프로젝트
@@ -1583,6 +1584,24 @@ function scheduleRerender(){
   if(_renderTimer) return;
   _renderTimer = setTimeout(()=>{
     _renderTimer = null;
+    try{
+      // 동시에 여러 사용자가 수정할 때, 내 화면에서 입력/편집 중이면
+      // Firestore 실시간 변경으로 인한 강제 리렌더를 최대한 막아서
+      // 작업하던 내용이 튀거나 날아가지 않도록 보호
+      const activeEl=document.activeElement;
+      const isTyping=activeEl&&(
+        activeEl.tagName==='INPUT'
+        ||activeEl.tagName==='TEXTAREA'
+        ||activeEl.tagName==='SELECT'
+        ||activeEl.isContentEditable
+      );
+      if((typeof SHEET_DIRTY==='boolean'&&SHEET_DIRTY) || isTyping){
+        // 데이터 입력 시트에 미저장 데이터가 있거나,
+        // 어떤 입력 요소든 포커스가 잡혀 있으면
+        // 이번 스냅샷에 대한 전체 리렌더는 건너뛴다.
+        return;
+      }
+    }catch(e){}
     try{
       const clientScreen=document.getElementById('client-screen');
       if(clientScreen&&!clientScreen.classList.contains('hidden')&&CV_CURRENT_CODE){
@@ -3440,6 +3459,25 @@ function badgeClass(s){
   return 'by';
 }
 const PROJ_STATUSES=['시작전','진행중','진행중단','구매진행완료(리뷰 업로드 대기)','프로젝트 종료(리뷰 모두 업로드 완료)'];
+// 프로젝트 자동 진행상태 계산 (거래처 - 프로젝트별 보기)
+function computeProjAutoStatus(reqTotal,buyDone,rvDone){
+  const total = reqTotal||0;
+  const buy = buyDone||0;
+  const rv = rvDone||0;
+  // 1) 시작전: 총요청/구매완료/리뷰 모두 0 이거나, 총요청>0 이지만 아직 구매가 전혀 없을 때
+  if(total===0 && buy===0 && rv===0) return '시작전';
+  if(total>0 && buy===0 && rv===0) return '시작전';
+  // 5) 프로젝트 종료: 총요청 = 구매완료 = 리뷰완료
+  if(total>0 && buy===total && rv===total) return '프로젝트 종료(리뷰 모두 업로드 완료)';
+  // 4) 구매진행완료(리뷰 업로드 대기): 총요청 = 구매완료, 리뷰는 일부/전체 미완료
+  if(total>0 && buy===total && rv<total) return '구매진행완료(리뷰 업로드 대기)';
+  // 2) 진행중: 총요청 대비 구매완료가 일부 진행 중
+  if(total>0 && buy>0 && buy<total) return '진행중';
+  // 예외: 총요청이 0인데 구매완료가 존재하는 경우도 진행중으로 처리
+  if(total===0 && buy>0) return '진행중';
+  // 나머지는 기본적으로 시작전으로 처리
+  return '시작전';
+}
 function projStatusLabel(s){
   // 짧은 표시용
   if(s==='구매진행완료(리뷰 업로드 대기)')return '구매완료/리뷰대기';
@@ -6085,14 +6123,30 @@ function renderDetProjView(){
     +'<select id="projview-filter-status" class="fs" style="font-size:12px;padding:5px 10px;min-width:180px" onchange="renderDetProjView()">'+statusOpts+'</select>'
     +'<input type="text" id="projview-filter-name" class="fi" placeholder="프로젝트 이름 검색" value="'+(filterName?String(filterName).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):'')+'" style="font-size:12px;padding:5px 10px;min-width:160px" oninput="renderDetProjView()">'
     +'</div></div>';
+  let autoChanged=false;
   const listBody=projs.length?projs.map(p=>{
     const rc=d.records.filter(r=>r.projectId===p.id);
     const reqTotal=p.contractTotal||p.total||rc.length||0;
     const buyDone=rc.filter(r=>r.nickname||r.tracking).length; // 닉네임 있으면 구매완료
     const rvDone=rc.filter(r=>r.reviewUrl).length;
     const notDone=rc.length-rvDone;
+    // 자동 진행상태 계산 (단, 사용자가 수동으로 잠근(statusManual) 프로젝트는 유지)
+    let status=p.status||'';
+    if(p.statusManual){
+      // 수동 설정값 유지
+      if(!status){
+        status=computeProjAutoStatus(reqTotal,buyDone,rvDone);
+      }
+    }else{
+      const autoStatus=computeProjAutoStatus(reqTotal,buyDone,rvDone);
+      if(autoStatus && autoStatus!==status){
+        status=autoStatus;
+        p.status=autoStatus;
+        autoChanged=true;
+      }
+    }
     const pp=reqTotal>0?~~((rvDone/reqTotal)*100):0;
-    const statusColor=badgeClass(p.status)==='bgr'?'#ef4444':badgeClass(p.status)==='bg'?'#22c55e':'var(--border)';
+    const statusColor=badgeClass(status)==='bgr'?'#ef4444':badgeClass(status)==='bg'?'#22c55e':'var(--border)';
     const escMemo=(p.memo||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     return `<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh)" data-entity-type="project" data-entity-id="${p.id}" oncontextmenu="showChangeLogContext('project','${p.id}',event)">
       <!-- 헤더: 프로젝트명 + 명단 보기 -->
@@ -6116,7 +6170,7 @@ function renderDetProjView(){
       <div style="padding:8px 18px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap" onclick="event.stopPropagation()">
         <span style="font-size:11px;color:var(--text2);font-weight:600;flex-shrink:0">진행 상태:</span>
         <select style="font-size:11px;padding:3px 8px;border-radius:6px;border:2px solid ${statusColor};background:var(--card);cursor:pointer;font-weight:600" onchange="changeProjStatus('${p.id}',this.value)">
-          ${PROJ_STATUSES.map(s=>'<option value="'+s+'"'+(s===p.status?' selected':'')+'>'+s+'</option>').join('')}
+          ${PROJ_STATUSES.map(s=>'<option value="'+s+'"'+(s===status?' selected':'')+'>'+s+'</option>').join('')}
         </select>
         ${p.statusReason?`<span style="font-size:11px;color:#b91c1c;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;padding:2px 8px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.statusReason}">💬 ${p.statusReason}</span>`:''}
         ${p.statusChangedAt?`<span style="font-size:10px;color:var(--text3)">${p.statusChangedAt} 변경</span>`:''}
@@ -6141,6 +6195,9 @@ function renderDetProjView(){
       </div>
     </div>`;
   }).join(''):'<div style="text-align:center;padding:40px;color:var(--text3)">검색 결과 없음</div>';
+  if(autoChanged){
+    sv('pr',d.projects);
+  }
   document.getElementById('dp-projview').innerHTML=filterHtml+'<div style="display:flex;flex-direction:column;gap:12px">'+listBody+'</div>';
 }
 
@@ -6555,7 +6612,7 @@ function renderDetQuote(){
     html+=`<div style="font-size:10px;color:var(--text3);margin-bottom:8px">⋮⋮ 드래그하여 순서 변경</div>`;
     myQuotes.forEach(q=>{
       const settled=q.settled||false;
-      const collapsed=q.collapsed!==false;
+      const collapsed=!!q.collapsed;
       html+=`<div class="qt-card-dragover-target" data-quote-id="${q.id}" style="background:var(--card);border:1px solid ${settled?'#86efac':'var(--border)'};border-radius:12px;margin-bottom:10px;overflow:hidden;box-shadow:var(--sh)" ondragover="event.preventDefault();this.classList.add('qt-card-dragover')" ondragleave="this.classList.remove('qt-card-dragover')" ondrop="qtDrop(event)">
         <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;background:${settled?'#f0fdf4':'var(--bg2)'}" onclick="toggleQt('${q.id}')">
           <div style="display:flex;align-items:center;gap:10px">
@@ -7778,17 +7835,17 @@ function renderSheet(){
     <button class="btn btn-xs" style="background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:5px;cursor:pointer;padding:3px 9px;font-size:11px;font-weight:700" onclick="openAddColModal()">＋ 열 추가</button>
     <div style="display:flex;align-items:center;gap:8px;margin-left:8px;flex-wrap:wrap">
       <span style="font-size:10px;color:var(--text2);font-weight:700">🔍 검색:</span>
-      <input type="text" id="sheet-text-filter" placeholder="닉네임·상품명·수취인 등" value="${escHtml(prevText||'')}" style="font-size:11px;padding:4px 8px;width:140px;border:1px solid var(--border);border-radius:4px;background:var(--card)" oninput="applySheetFilters()" />
+      <input type="text" id="sheet-text-filter" placeholder="닉네임·상품명·수취인 등" value="${escHtml(prevText||'')}" style="font-size:11px;padding:4px 8px;width:140px;border:1px solid var(--border);border-radius:4px;background:var(--card)" oninput="applySheetFiltersDebounced()" />
       <span style="font-size:10px;color:var(--text2);font-weight:700">📅 날짜:</span>
-      <select id="sheet-date-filter" style="font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card)" onchange="applySheetFilters()">
+      <select id="sheet-date-filter" style="font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card)" onchange="applySheetFiltersDebounced()">
         ${dateOpts}
       </select>
       <span style="font-size:10px;color:var(--text2);font-weight:700">🧾 리뷰:</span>
-      <select id="sheet-reviewtype-filter" style="font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card);max-width:160px" onchange="applySheetFilters()">
+      <select id="sheet-reviewtype-filter" style="font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card);max-width:160px" onchange="applySheetFiltersDebounced()">
         ${rvOpts}
       </select>
       <span style="font-size:10px;color:var(--text2);font-weight:700">📦 상품:</span>
-      <select id="sheet-product-filter" style="font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card);max-width:180px" onchange="applySheetFilters()">
+      <select id="sheet-product-filter" style="font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card);max-width:180px" onchange="applySheetFiltersDebounced()">
         ${prodOpts}
       </select>
       <button class="btn btn-xs btn-gray" style="margin-left:4px" onclick="resetSheetFilters()">필터 초기화</button>
@@ -8140,6 +8197,13 @@ function onSCBlur(el){
   }
 }
 function markDirty(){SHEET_DIRTY=true;const el=document.getElementById('sheet-dirty-ind');if(el){el.textContent='● 미저장';el.style.color='var(--yellow)';}}
+function applySheetFiltersDebounced(){
+  if(_sheetFilterTimer){clearTimeout(_sheetFilterTimer);}
+  _sheetFilterTimer=setTimeout(function(){
+    _sheetFilterTimer=null;
+    applySheetFilters();
+  },120);
+}
 function addSheetRow(){
   if(!SHEET_PROJ){toast('프로젝트를 선택하세요','error');return;}
   SHEET_ROWS.push(blankRow(SHEET_ROWS.length+1));markDirty();renderSheet();
@@ -8222,6 +8286,8 @@ function changeProjStatus(projId, newStatus){
     if(reason===null)return;
   }
   d.projects[idx].status=newStatus;
+  // 사용자가 드롭다운에서 선택한 상태이므로, 이후에는 자동 계산에 의해 덮어쓰지 않도록 플래그 설정
+  d.projects[idx].statusManual=true;
   d.projects[idx].statusReason=reason.trim();
   d.projects[idx].statusChangedAt=getKSTDate();
   sv('pr', d.projects); // 프로젝트 배열 저장
