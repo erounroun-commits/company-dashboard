@@ -586,10 +586,12 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
         <div class="card" style="margin-bottom:16px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
             <div style="font-size:13px;font-weight:700">🎯 매칭 결과</div>
-            <div style="display:flex;gap:8px">
-              <button class="btn btn-green btn-sm" onclick="applyDepositMatches()">✅ 선택 항목 정산완료 처리</button>
-              <button class="btn btn-blue btn-sm" onclick="downloadMatchedExcel()">📥 매칭결과 엑셀 저장</button>
-            </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-gray btn-sm" onclick="deleteSelectedDepMatches()">🗑 선택 삭제</button>
+            <button class="btn btn-gray btn-sm" onclick="deleteAllDepMatches()">🗑 전체 삭제</button>
+            <button class="btn btn-green btn-sm" onclick="applyDepositMatches()">✅ 선택 항목 정산완료 처리</button>
+            <button class="btn btn-blue btn-sm" onclick="downloadMatchedExcel()">📥 매칭결과 엑셀 저장</button>
+          </div>
           </div>
           <div id="dep-match-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px"></div>
           <div class="tw" id="dep-match-table"></div>
@@ -4031,6 +4033,7 @@ function renderDepositResult(){
   const tableEl=document.getElementById('dep-match-table');
   if(tableEl)tableEl.innerHTML=`<table>
     <thead><tr>
+      <th style="text-align:center"><input type="checkbox" id="dep-match-check-all" onclick="toggleDepMatchAll(this)"></th>
       <th style="text-align:center">NO</th>
       <th>거래일시</th>
       <th>거래내용</th>
@@ -4041,6 +4044,7 @@ function renderDepositResult(){
       <th style="text-align:center">정산처리</th>
     </tr></thead>
     <tbody>${DEP_MATCHES.map((dep,i)=>`<tr style="background:${dep.matched?'#f0fdf4':dep.amount?'#fff7f7':''}">
+      <td style="text-align:center"><input type="checkbox" class="dep-match-check" data-idx="${i}"></td>
       <td style="text-align:center;color:var(--text3);font-size:11px">${dep.no||i+1}</td>
       <td style="font-size:11px;white-space:nowrap">${dep.rawDate||dep.date||'—'}</td>
       <td style="font-size:11px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${dep.content||''}">${dep.content||'—'}</td>
@@ -4083,6 +4087,38 @@ function onDepManualSelect(depIdx,stId){
   dep.stDate=st.date;dep.stTotal=st.total;dep.matchNote='수동 지정';
   renderDepositResult();
   toast('수동 매칭됨: '+(cl?.name||''));
+}
+
+function toggleDepMatchAll(cb){
+  const checked=cb && cb.checked;
+  document.querySelectorAll('.dep-match-check').forEach(el=>{el.checked=checked;});
+}
+
+function deleteSelectedDepMatches(){
+  const indices=[];
+  document.querySelectorAll('.dep-match-check').forEach(el=>{
+    if(el.checked){
+      const idx=parseInt(el.dataset.idx,10);
+      if(!isNaN(idx))indices.push(idx);
+    }
+  });
+  if(!indices.length){toast('삭제할 항목을 선택하세요','warn');return;}
+  if(!confirm(`선택한 ${indices.length}건을 매칭 결과에서 삭제하시겠습니까?`))return;
+  DEP_MATCHES=DEP_MATCHES.filter((_,i)=>!indices.includes(i));
+  if(!DEP_MATCHES.length){
+    const zone=document.getElementById('dep-result');
+    if(zone)zone.style.display='none';
+  }
+  renderDepositResult();
+}
+
+function deleteAllDepMatches(){
+  if(!DEP_MATCHES.length){toast('삭제할 매칭 결과가 없습니다','warn');return;}
+  if(!confirm('현재 매칭 결과를 모두 삭제하시겠습니까?'))return;
+  DEP_MATCHES=[];
+  const zone=document.getElementById('dep-result');
+  if(zone)zone.style.display='none';
+  renderDepositResult();
 }
 
 async function applyDepositMatches(){
