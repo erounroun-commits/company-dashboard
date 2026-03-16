@@ -6308,7 +6308,13 @@ function savePaymentMethod(method){
 
 let PAY_EDIT_ROWS=[];
 function openPaymentModal(){
-  const d=ld(),c=d.clients.find(x=>x.id===CUR_CLIENT);
+  const d=ld();
+  let c=null;
+  if(CUR_CLIENT){
+    c=d.clients.find(x=>x.id===CUR_CLIENT);
+  }else if(typeof CV_CURRENT_CODE!=='undefined' && CV_CURRENT_CODE){
+    c=d.clients.find(x=>x.code===CV_CURRENT_CODE);
+  }
   if(!c){toast('거래처를 먼저 선택하세요','error');return;}
   const rows=Array.isArray(c.payments)?c.payments:[];
   PAY_EDIT_ROWS=rows.map(r=>({
@@ -6360,7 +6366,12 @@ function delPayRow(idx){
   renderPaymentTable();
 }
 function savePayments(){
-  const d=ld();const idx=d.clients.findIndex(x=>x.id===CUR_CLIENT);if(idx<0){toast('거래처를 찾을 수 없습니다','error');return;}
+  const d=ld();
+  let idx=d.clients.findIndex(x=>x.id===CUR_CLIENT);
+  if(idx<0 && typeof CV_CURRENT_CODE!=='undefined' && CV_CURRENT_CODE){
+    idx=d.clients.findIndex(x=>x.code===CV_CURRENT_CODE);
+  }
+  if(idx<0){toast('거래처를 찾을 수 없습니다','error');return;}
   const rows=PAY_EDIT_ROWS.map(r=>({
     id:r.id||gid(),
     platform:(r.platform||'').trim(),
@@ -6374,7 +6385,13 @@ function savePayments(){
   toast('결제 현황이 저장되었습니다');
 }
 function exportPaymentsExcel(){
-  const d=ld(),c=d.clients.find(x=>x.id===CUR_CLIENT);
+  const d=ld();
+  let c=null;
+  if(CUR_CLIENT){
+    c=d.clients.find(x=>x.id===CUR_CLIENT);
+  }else if(typeof CV_CURRENT_CODE!=='undefined' && CV_CURRENT_CODE){
+    c=d.clients.find(x=>x.code===CV_CURRENT_CODE);
+  }
   if(!c){toast('거래처를 먼저 선택하세요','error');return;}
   const rows=Array.isArray(c.payments)?c.payments:[];
   if(!rows.length){toast('저장된 결제 내역이 없습니다','error');return;}
