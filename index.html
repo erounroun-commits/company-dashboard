@@ -3811,43 +3811,77 @@ function processDepFile(file){
 }
 
 function _parseDepWb(wb,fname){
-  // ★ 컬럼: A(0)=NO / B(1)=거래일시 / C(2)=거래내용 / D(3)=입금 / E(4)=해당일자 / F(5)=업체명
+  // 기본 가정: 첫 번째 시트 사용
   const ws=wb.Sheets[wb.SheetNames[0]];
   // raw:true 로 읽어서 숫자/날짜 원형 보존, 별도 포맷
   const rawRows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
   const strRows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false});
   DEP_PARSED=[];
 
-  // 헤더 행 건너뜀 (1행이 NO/거래일시 같은 텍스트면 헤더)
-  let start=0;
-  if(rawRows.length>0){
-    const h0=String(rawRows[0][0]||'').trim().toLowerCase();
-    const h3=String(rawRows[0][3]||'').trim().toLowerCase();
-    if(h0==='no'||h0==='번호'||h3==='입금'||h3==='입금액'||isNaN(Number(h0))) start=1;
+  if(!rawRows.length){
+    toast('엑셀에 데이터가 없습니다.','error');
+    return;
   }
+
+  // ── 헤더/컬럼 위치 자동 감지 ─────────────────────────────
+  const header=strRows[0]||[];
+  const norm=h=>String(h||'').trim().toLowerCase();
+
+  // NO 컬럼 (번호)
+  let colNo=0;
+  header.forEach((h,idx)=>{
+    const n=norm(h);
+    if(n==='no'||n==='번호') colNo=idx;
+  });
+
+  // 거래일시 컬럼 (날짜/시간)
+  let colDate=1;
+  header.forEach((h,idx)=>{
+    const n=norm(h);
+    if(n.includes('거래일시')||n.includes('일자')) colDate=idx;
+  });
+
+  // 거래내용 컬럼
+  let colContent=2;
+  header.forEach((h,idx)=>{
+    const n=norm(h);
+    if(n.includes('거래내용')) colContent=idx;
+  });
+
+  // 입금 금액 컬럼 (헤더에 '입금' 또는 '입금액')
+  let colAmt=3;
+  header.forEach((h,idx)=>{
+    const n=norm(h);
+    if(n.includes('입금')&& !n.includes('입금자')) colAmt=idx;
+  });
+
+  // 헤더 행 건너뜀 여부 판단
+  let start=0;
+  const h0=norm(rawRows[0][colNo]);
+  if(h0==='no'||h0==='번호'||isNaN(Number(h0))) start=1;
 
   for(let i=start;i<rawRows.length;i++){
     const rr=rawRows[i];  // raw (숫자/날짜형)
     const rs=strRows[i];  // string (포맷된 텍스트)
+    if(!rr && !rs) continue;
 
-    // B열: 거래일시
-    const rawDate=String(rs[1]||rr[1]||'').trim();
-    // C열: 거래내용
-    const content=String(rs[2]||rr[2]||'').trim();
-    // D열: 입금 — raw숫자 우선, 없으면 문자열 파싱
+    const rawDate=String((rs&&rs[colDate])||(rr&&rr[colDate])||'').trim();
+    const content=String((rs&&rs[colContent])||(rr&&rr[colContent])||'').trim();
+
+    // 입금 금액: raw 숫자 우선, 없으면 문자열에서 숫자만 추출
     let amt=0;
-    const dRaw=rr[3];
-    const dStr=String(rs[3]||'').trim();
-    if(typeof dRaw==='number'&&dRaw>0){
+    const dRaw=rr?rr[colAmt]:undefined;
+    const dStr=String((rs&&rs[colAmt])||'').trim();
+    if(typeof dRaw==='number'&&Math.abs(dRaw)>0){
       amt=Math.round(dRaw);
     } else if(dStr){
-      amt=parseInt(dStr.replace(/[^0-9]/g,''))||0;
+      amt=parseInt(dStr.replace(/[^0-9\-]/g,''))||0;
     }
 
     if(!rawDate&&!amt) continue; // 완전 빈 행
     if(!amt) continue;           // 입금액 없는 행
 
-    const noVal=String(rs[0]||rr[0]||i-start+1).trim();
+    const noVal=String((rs&&rs[colNo])||(rr&&rr[colNo])||i-start+1).trim();
     const dateStr=parseDateStr(rawDate);
 
     DEP_PARSED.push({
@@ -3859,7 +3893,7 @@ function _parseDepWb(wb,fname){
   }
 
   if(!DEP_PARSED.length){
-    toast('입금 데이터를 찾을 수 없습니다. D열(입금)에 숫자가 있는지 확인하세요.','error');
+    toast('입금 데이터를 찾을 수 없습니다. "입금" 금액 열에 숫자가 있는지 확인하세요.','error');
     return;
   }
   const info=document.getElementById('dep-file-info');
