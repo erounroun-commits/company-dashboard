@@ -1375,6 +1375,7 @@ async function saveUsers(arr){
 const ADMINS=null; // 더 이상 사용 안 함
 let CUR_ADMIN=null,CUR_CLIENT=null,SHEET_PROJ=null,SHEET_ROWS=[],SHEET_DIRTY=false,IMP_DATA=[],PEND_RECS=[];
 let _sheetFilterTimer=null;
+let _ALLDATA_FILTER_TIMER=null,_ALLDATA_FILTER_COMPOSING=false;
 
 // ─────────────────────────────────────────────────────────────
 // 변경 이력 로깅 (changeLogs) - 거래처/프로젝트
@@ -6352,7 +6353,7 @@ function renderDetAllData(){
     '<div class="card" style="margin-bottom:12px">'+
       '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
         '<div style="font-size:12px;font-weight:700;color:var(--text2)">📚 전체 데이터 보기</div>'+
-        '<input id="alldata-filter" class="fi" style="max-width:220px;font-size:11px;padding:4px 8px" placeholder="수취인명 검색..." value="'+escHtml(keyword)+'" oninput="renderDetAllData()">'+
+        '<input id="alldata-filter" class="fi" style="max-width:260px;font-size:11px;padding:4px 8px" placeholder="수취인명 검색..." value="'+escHtml(keyword)+'" oninput="onAllDataFilterInput(event)" oncompositionstart="_ALLDATA_FILTER_COMPOSING=true" oncompositionend="_ALLDATA_FILTER_COMPOSING=false;onAllDataFilterInput(event)">'+
         '<span style="font-size:11px;color:var(--text3)">'+totalTxt+'</span>'+
       '</div>'+
     '</div>'+
@@ -6436,6 +6437,12 @@ let QT_ITEMS={}; // 임시 항목 상태 {qtId:[{type,label,qty,unitPrice,memo}]
 let QT_EDIT_ID=null; // 편집 중인 견적서 id
 
 function renderDetQuote(){
+  // 견적서 신규/수정 모달이 열려 있을 때는,
+  // 사용자가 작성 중인 내용을 건드리지 않도록 리스트 리렌더를 건너뛴다.
+  const qtModal=document.getElementById('modal-quote-new');
+  if(qtModal && !qtModal.classList.contains('hidden')){
+    return;
+  }
   const d=ld(),c=d.clients.find(x=>x.id===CUR_CLIENT);if(!c)return;
   // 거래처 정산에는 있는데 견적서 목록에는 없는 항목 보정
   try{
@@ -6837,6 +6844,7 @@ function saveQuoteForm(){
     // 업체 링크 화면도 같은 거래처를 보고 있다면 즉시 동기화
     _syncClientViewIfSameClient();
     closeNewQuoteForm();
+    // 현재 브라우저에서는 폼을 닫은 뒤에만 견적/정산 화면을 다시 그림
     renderDetQuote();renderDetSettle();
     try{ scheduleRerender(); }catch(e){}
     toast('견적서 수정 완료');
@@ -8204,6 +8212,16 @@ function applySheetFiltersDebounced(){
     applySheetFilters();
   },120);
 }
+
+function onAllDataFilterInput(ev){
+  // 한글/일본어 등 IME 조합 중에는 필터 재렌더를 지연
+  if(_ALLDATA_FILTER_COMPOSING)return;
+  if(_ALLDATA_FILTER_TIMER){clearTimeout(_ALLDATA_FILTER_TIMER);}
+  _ALLDATA_FILTER_TIMER=setTimeout(function(){
+    _ALLDATA_FILTER_TIMER=null;
+    renderDetAllData();
+  },140);
+}
 function addSheetRow(){
   if(!SHEET_PROJ){toast('프로젝트를 선택하세요','error');return;}
   SHEET_ROWS.push(blankRow(SHEET_ROWS.length+1));markDirty();renderSheet();
@@ -8429,11 +8447,22 @@ function saveSheet(){
         return {...r,projectId:SHEET_PROJ,no:i+1,amount:numAmt};
       });
   }
-  sv('rc',[...others,...nr]);
-  SHEET_DIRTY=false;
-  const el=document.getElementById('sheet-dirty-ind');if(el){el.textContent='✓ 저장됨';el.style.color='var(--green)';}
-  renderOverview();renderDetDash();renderDetProjView();
-  toast(`${nr.length}건 저장 완료`);
+  // 저장은 비동기로 처리하되, 저장 중에는 추가 저장 요청을 막기 위해 버튼 비활성화
+  const saveBtn=document.querySelector('#dp-input .btn.btn-green.btn-sm[onclick="saveSheet()"]');
+  if(saveBtn){saveBtn.disabled=true;saveBtn.textContent='저장 중...';}
+  sv('rc',[...others,...nr]).then(()=>{
+    SHEET_DIRTY=false;
+    const el=document.getElementById('sheet-dirty-ind');if(el){el.textContent='✓ 저장됨';el.style.color='var(--green)';}
+    // 저장 후에는 현재 거래처 관련 화면만 최소한으로 갱신
+    try{renderDetDash();}catch(e){}
+    try{renderDetProjView();}catch(e){}
+    toast(`${nr.length}건 저장 완료`);
+  }).catch(e=>{
+    console.error(e);
+    toast('저장 중 오류가 발생했습니다: '+e.message,'error');
+  }).finally(()=>{
+    if(saveBtn){saveBtn.disabled=false;saveBtn.textContent='💾 저장';}
+  });
 }
 
 // ── 1번: 붙여넣기 열 분리 (필터 시 보이는 행에만 채움) ──
