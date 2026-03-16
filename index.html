@@ -2083,15 +2083,37 @@ async function sv(key, value){
     });
     await batch.commit();
   }else if(key==='rc'){
+    // records는 전체 삭제/재삽입 대신,
+    // 이전 스냅샷과 비교하여 변경/삭제된 것만 최소한으로 반영
+    const prev=Array.isArray(RECORDS_CACHE)?RECORDS_CACHE.slice():[];
     RECORDS_CACHE = value.slice();
     const col=db.collection('records');
     const snap=await col.get();
-    const batch=db.batch();
-    snap.forEach(doc=>batch.delete(doc.ref));
+    const existingIds=new Set();
+    snap.forEach(doc=>existingIds.add(doc.id));
+    // id 부여 및 다음 상태 id 집합 계산
+    const nextIds=new Set();
     RECORDS_CACHE.forEach(r=>{
-      const id=r.id||db.collection('records').doc().id;
-      const data={...r,id};
-      batch.set(col.doc(id),data);
+      if(!r.id) r.id=col.doc().id;
+      nextIds.add(r.id);
+    });
+    const prevMap={};
+    prev.forEach(r=>{
+      if(r.id) prevMap[r.id]=cleanForFirestore({...r,id:r.id});
+    });
+    const batch=db.batch();
+    // 삭제: 이전에 있었지만 지금은 없는 id만 삭제
+    existingIds.forEach(id=>{
+      if(!nextIds.has(id)) batch.delete(col.doc(id));
+    });
+    // 추가/수정: 내용이 바뀐 경우에만 set
+    RECORDS_CACHE.forEach(r=>{
+      const cleaned=cleanForFirestore({...r,id:r.id});
+      const prevClean=prevMap[r.id];
+      const changed=!prevClean || JSON.stringify(prevClean)!==JSON.stringify(cleaned);
+      if(changed){
+        batch.set(col.doc(cleaned.id),cleaned);
+      }
     });
     await batch.commit();
   }else if(key==='qt'){
@@ -6319,9 +6341,7 @@ function renderDetAllData(){
     const nb=Number(b.no)||0;
     return na-nb;
   });
-  const filteredRecs=keyword
-    ?sortedRecs.filter(r=>String(r.receiver||'').toLowerCase().includes(keyword))
-    :sortedRecs;
+  const filteredRecs=sortedRecs;
   const headers=['프로젝트','NO','일자','구매날짜','품명','옵션','리뷰종류','닉네임','수취인','아이디','주소','연락처','상품금액','송장번호(CJ대한통운)','계좌번호','리뷰URL'];
   const rowsHtml=filteredRecs.map(r=>{
     const p=projMap[r.projectId];
@@ -6345,7 +6365,8 @@ function renderDetAllData(){
     ];
     return '<tr>'+cells.map((v,i)=>{
       const align=(i===1||i===12)?'right':'left';
-      return '<td style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;text-align:'+align+';white-space:nowrap">'+escHtml(String(v))+'</td>';
+      const extraAttr=(i===8)?' data-col="receiver"':'';
+      return '<td'+extraAttr+' style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;text-align:'+align+';white-space:nowrap">'+escHtml(String(v))+'</td>';
     }).join('')+'</tr>';
   }).join('');
   const totalTxt=keyword?`총 ${filteredRecs.length}건 (검색 결과)`:`총 ${sortedRecs.length}건`;
@@ -6353,16 +6374,18 @@ function renderDetAllData(){
     '<div class="card" style="margin-bottom:12px">'+
       '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
         '<div style="font-size:12px;font-weight:700;color:var(--text2)">📚 전체 데이터 보기</div>'+
-        '<input id="alldata-filter" class="fi" style="max-width:260px;font-size:11px;padding:4px 8px" placeholder="수취인명 검색..." value="'+escHtml(keyword)+'" oninput="onAllDataFilterInput(event)" oncompositionstart="_ALLDATA_FILTER_COMPOSING=true" oncompositionend="_ALLDATA_FILTER_COMPOSING=false;onAllDataFilterInput(event)">'+
-        '<span style="font-size:11px;color:var(--text3)">'+totalTxt+'</span>'+
+        '<input id="alldata-filter" class="fi" style="max-width:260px;font-size:11px;padding:4px 8px" placeholder="수취인명 검색..." value="'+escHtml(keyword)+'" oninput="filterDetAllData()" oncompositionstart="window._ALLDATA_FILTER_COMPOSING=true" oncompositionend="window._ALLDATA_FILTER_COMPOSING=false;filterDetAllData()">'+
+        '<span id="alldata-total" style="font-size:11px;color:var(--text3)">'+totalTxt+'</span>'+
       '</div>'+
     '</div>'+
     '<div class="card" style="padding:0;overflow:auto">'+
       '<table style="width:100%;border-collapse:collapse;font-size:12px">'+
         '<thead><tr>'+headers.map(h=>'<th style="position:sticky;top:0;background:var(--bg2);border-bottom:1px solid var(--border);padding:7px 8px;font-size:11px;text-align:left;white-space:nowrap">'+h+'</th>').join('')+'</tr></thead>'+
-        '<tbody>'+rowsHtml+'</tbody>'+
+        '<tbody id="alldata-tbody">'+rowsHtml+'</tbody>'+
       '</table>'+
     '</div>';
+  // 초기 렌더 시에도 기존 검색어가 있으면 필터 반영
+  if(keyword){ try{ filterDetAllData(); }catch(e){} }
 }
 
 function showProjDetailModal(projId){
@@ -6435,12 +6458,12 @@ function showProjDetailModal(projId){
 // ════════════════════════════════════════════
 let QT_ITEMS={}; // 임시 항목 상태 {qtId:[{type,label,qty,unitPrice,memo}]}
 let QT_EDIT_ID=null; // 편집 중인 견적서 id
+let QT_FORM_OPEN=false; // 견적서 작성/수정 폼 열림 여부 (다른 사용자 변경으로 인한 리렌더 차단용)
 
 function renderDetQuote(){
-  // 견적서 신규/수정 모달이 열려 있을 때는,
-  // 사용자가 작성 중인 내용을 건드리지 않도록 리스트 리렌더를 건너뛴다.
-  const qtModal=document.getElementById('modal-quote-new');
-  if(qtModal && !qtModal.classList.contains('hidden')){
+  // 견적서 작성/수정 폼이 열려 있을 때는
+  // 사용자가 입력 중인 내용을 건드리지 않도록 리스트 리렌더를 건너뛴다.
+  if(QT_FORM_OPEN){
     return;
   }
   const d=ld(),c=d.clients.find(x=>x.id===CUR_CLIENT);if(!c)return;
@@ -6718,6 +6741,7 @@ function openNewQuoteForm(){
     });
   }
   renderQtNewItems();
+  QT_FORM_OPEN=true;
   show('qt-new-form');
   // 견적번호 자동생성
   const d=ld();
@@ -6728,6 +6752,7 @@ function closeNewQuoteForm(){
   hide('qt-new-form');
   QT_NEW_ITEMS=[];
   QT_EDIT_ID=null;
+  QT_FORM_OPEN=false;
   const hid=document.getElementById('qn-edit-id');if(hid)hid.value='';
   const ttl=document.getElementById('qn-form-title');if(ttl)ttl.textContent='✏️ 견적서 작성';
 }
@@ -6774,6 +6799,7 @@ function openEditQuoteForm(qtId){
   }
   document.getElementById('qn-notes').value=qt.notes||'';
   renderQtNewItems();
+  QT_FORM_OPEN=true;
   show('qt-new-form');
   // 폼으로 스크롤
   setTimeout(()=>{ try{ document.getElementById('qt-new-form')?.scrollIntoView({behavior:'smooth',block:'start'}); }catch(e){} },20);
@@ -8213,14 +8239,31 @@ function applySheetFiltersDebounced(){
   },120);
 }
 
-function onAllDataFilterInput(ev){
-  // 한글/일본어 등 IME 조합 중에는 필터 재렌더를 지연
-  if(_ALLDATA_FILTER_COMPOSING)return;
-  if(_ALLDATA_FILTER_TIMER){clearTimeout(_ALLDATA_FILTER_TIMER);}
-  _ALLDATA_FILTER_TIMER=setTimeout(function(){
-    _ALLDATA_FILTER_TIMER=null;
-    renderDetAllData();
-  },140);
+function filterDetAllData(){
+  const inp=document.getElementById('alldata-filter');
+  const kw=(inp?inp.value:'').trim().toLowerCase();
+  const tbody=document.getElementById('alldata-tbody');
+  if(!tbody)return;
+  // 한글 IME 조합 중에는 실제 필터 적용을 조금 지연
+  if(window._ALLDATA_FILTER_COMPOSING){
+    if(_ALLDATA_FILTER_TIMER){clearTimeout(_ALLDATA_FILTER_TIMER);}
+    _ALLDATA_FILTER_TIMER=setTimeout(()=>{window._ALLDATA_FILTER_COMPOSING=false;filterDetAllData();},160);
+    return;
+  }
+  let visibleCount=0;
+  const rows=Array.from(tbody.querySelectorAll('tr'));
+  rows.forEach(tr=>{
+    const recvCell=tr.querySelector('td[data-col="receiver"]');
+    const text=(recvCell?recvCell.textContent:'').trim().toLowerCase();
+    const show=!kw || text.includes(kw);
+    tr.style.display=show?'':'none';
+    if(show)visibleCount++;
+  });
+  const totalSpan=document.getElementById('alldata-total');
+  if(totalSpan){
+    const total=rows.length;
+    totalSpan.textContent=kw?`총 ${visibleCount}건 (검색 결과)`:`총 ${total}건`;
+  }
 }
 function addSheetRow(){
   if(!SHEET_PROJ){toast('프로젝트를 선택하세요','error');return;}
