@@ -1270,6 +1270,20 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
   </div>
 </div>
 
+<div class="mo hidden" id="modal-missing-review">
+  <div class="md md-xl" style="height:90vh">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-shrink:0">
+      <div class="mt" style="margin:0" id="mr-title"></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-green btn-sm" onclick="exportMissingReviewXlsx()">📥 엑셀 저장</button>
+        <button class="btn btn-gray btn-sm" onclick="closeMd('missing-review')">닫기</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap;flex-shrink:0" id="mr-stats"></div>
+    <div id="mr-table" style="overflow:auto;flex:1;min-height:0;border:1px solid var(--border);border-radius:10px"></div>
+  </div>
+</div>
+
 <script>
 
 // ─── KST(한국 표준시) 날짜 유틸 ───────────────────
@@ -6045,7 +6059,9 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
   const tot=allRecs.length;
   const contractType=(c&&c.contractType==='건별결제')?'건별결제':'숫자입력';
   const contractTotal=(c&&c.contractTotal!==undefined&&c.contractTotal!==null)?Number(c.contractTotal):projs.reduce((a,p)=>a+(p.contractTotal||p.total||0),0);
-  const purchaseDone=allRecs.filter(r=>r.nickname||r.tracking).length; // 닉네임 있으면 구매완료
+  const prevPurchaseDone=(c&&c.prevPurchaseDone!=null)?Number(c.prevPurchaseDone):0;
+  const purchaseDoneAuto=allRecs.filter(r=>r.nickname||r.tracking).length; // 닉네임 있으면 구매완료
+  const purchaseDone=purchaseDoneAuto+prevPurchaseDone;
   const isPerItem=contractType==='건별결제';
   const remaining=isPerItem?null:Math.max(0,contractTotal-purchaseDone);
   const paymentMethod=c?.paymentMethod||'계좌이체';
@@ -6095,6 +6111,15 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
   const remainingHtml=isPerItem
     ?'<span style="font-size:14px;font-weight:800;color:var(--text3)">—</span>'
     :('<span style="font-size:14px;font-weight:800;color:'+(remaining>0?'#ef4444':'#22c55e')+'">'+fmtN(remaining)+'<small style="font-size:9px;color:var(--text3)">건</small></span>');
+  const prevBuyInput=isPerItem?'':(
+    '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)">'+
+      '<span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#94a3b8;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">기존 구매완료</span></span>'+
+      (isAdmin
+        ?('<input type="number" min="0" value="'+prevPurchaseDone+'" style="width:70px;font-size:12px;font-weight:800;text-align:right;padding:2px 6px;border:1px solid #94a3b8;border-radius:6px" onchange="savePrevPurchaseDone(this.value)" onblur="savePrevPurchaseDone(this.value)" title="기존 구매완료 수량(수기)"> <small style="font-size:9px;color:var(--text3)">건</small>')
+        :('<span style="font-size:14px;font-weight:800;color:#94a3b8">'+fmtN(prevPurchaseDone)+'<small style="font-size:9px;color:var(--text3)">건</small></span>')
+      )+
+    '</div>'
+  );
   const result=warnHtml
     // ── 3열 가로 레이아웃: 계약현황 | 진행현황 | 구매일정 ──
     +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:18px;align-items:start">'
@@ -6107,7 +6132,8 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
     +'<canvas id="donut-c-'+uid+'" width="100" height="100"></canvas>'
     +'<div style="width:100%">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#0891b2;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">선계약</span></span>'+contractValueHtml+'</div>'
-    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">구매완료</span></span><span style="font-size:14px;font-weight:800;color:#22c55e">'+fmtN(purchaseDone)+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
+    +prevBuyInput
+    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">구매완료(합계)</span></span><span style="font-size:14px;font-weight:800;color:#22c55e">'+fmtN(purchaseDone)+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:'+(isPerItem?'var(--border)':(remaining>0?'#ef4444':'#22c55e'))+';display:inline-block"></span><span style="font-size:11px;color:var(--text2)">잔여</span></span>'+remainingHtml+'</div>'
     +'</div></div></div>'
 
@@ -6298,6 +6324,15 @@ function saveContractTotal(val){
   d.clients[idx].contractType='숫자입력';
   sv('cl',d.clients);
   toast('선계약 수량 저장: '+fmtN(numVal)+'건');
+}
+function savePrevPurchaseDone(val){
+  const d=ld();const idx=d.clients.findIndex(x=>x.id===CUR_CLIENT);if(idx<0)return;
+  const n=parseInt(val,10);
+  const numVal=isNaN(n)||n<0?0:n;
+  d.clients[idx].prevPurchaseDone=numVal;
+  sv('cl',d.clients);
+  try{ renderDetDash(); }catch(e){}
+  toast('기존 구매완료 수량 저장: '+fmtN(numVal)+'건');
 }
 function savePaymentMethod(method){
   const d=ld();const idx=d.clients.findIndex(x=>x.id===CUR_CLIENT);if(idx<0)return;
@@ -6518,7 +6553,7 @@ function renderDetProjView(){
           <div style="text-align:center"><div style="font-size:9px;color:var(--text3);font-weight:600;margin-bottom:2px">총 요청</div><div style="font-size:17px;font-weight:800;color:var(--accent)">${reqTotal}</div></div>
           <div style="text-align:center"><div style="font-size:9px;color:var(--text3);font-weight:600;margin-bottom:2px">구매완료</div><div style="font-size:17px;font-weight:800;color:var(--green)">${buyDone}</div></div>
           <div style="text-align:center"><div style="font-size:9px;color:var(--text3);font-weight:600;margin-bottom:2px">리뷰완료</div><div style="font-size:17px;font-weight:800;color:#7c3aed">${rvDone}</div></div>
-          <div style="text-align:center"><div style="font-size:9px;color:var(--text3);font-weight:600;margin-bottom:2px">미완료</div><div style="font-size:17px;font-weight:800;color:var(--yellow)">${notDone}</div></div>
+          <div style="text-align:center;cursor:${notDone>0?'pointer':'default'}" ondblclick="if(${notDone}>0)openMissingReviewModal('${p.id}')"><div style="font-size:9px;color:var(--text3);font-weight:600;margin-bottom:2px">미완료</div><div style="font-size:17px;font-weight:800;color:var(--yellow)">${notDone}</div></div>
           <div style="text-align:center"><div style="font-size:9px;color:var(--text3);font-weight:600;margin-bottom:2px">진행율</div><div style="font-size:17px;font-weight:800;color:var(--accent)">${pp}%</div></div>
         </div>
         <div class="pb-wrap" style="height:5px"><div class="pb" style="width:${pp}%;height:5px;background:var(--accent)"></div></div>
@@ -7042,7 +7077,7 @@ function openNewQuoteForm(){
   const ttl=document.getElementById('qn-form-title');if(ttl)ttl.textContent='✏️ 견적서 작성';
   const _d=ld(),_cl=_d.clients.find(x=>x.id===CUR_CLIENT);
   const _types=getQtTypeList(_cl);
-  QT_NEW_ITEMS=[{id:gid(),typeIdx:0,label:_types[0].label,calc:_types[0].calc,qty:1,unitPrice:_types[0].defaultPrice||0,feeRate:_types[0].feeRate||0,memo:''}];
+  QT_NEW_ITEMS=[{id:gid(),typeIdx:0,label:_types[0].label,calc:_types[0].calc,qty:1,unitPrice:_types[0].defaultPrice||0,feeRate:_types[0].feeRate||0,memo:'',productName:''}];
   // 세금계산서 상태 초기화
   const taxEl=document.getElementById('qn-tax-yn');if(taxEl)taxEl.checked=_cl?.taxYn||false;
   const taxWrap=document.getElementById('qn-tax-items');
@@ -7095,21 +7130,29 @@ function openEditQuoteForm(qtId){
   setQtTaxItem('del', !!ti.delivery);
   setQtTaxItem('prod', !!ti.product);
   // 항목
-  QT_NEW_ITEMS=(qt.items||[]).map(it=>({
-    id:it.id||gid(),
-    typeIdx: (it.typeIdx!=null?it.typeIdx:0),
-    label: it.label||'',
-    calc: it.calc||'custom',
-    qty: parseFloat(it.qty)||0,
-    unitPrice: parseFloat(it.unitPrice)||0,
-    feeRate: parseFloat(it.feeRate)||0,
-    taxApply: (it.calc==='custom' ? (it.taxApply!==false) : it.taxApply),
-    memo: it.memo||'',
-  }));
+  QT_NEW_ITEMS=(qt.items||[]).map(it=>{
+    let productName=it.productName||'';
+    if(!productName && (it.calc==='product'||String(it.label||'').startsWith('상품금액'))){
+      const m=String(it.label||'').match(/^상품금액\((.*)\)$/);
+      if(m) productName=m[1]||'';
+    }
+    return {
+      id:it.id||gid(),
+      typeIdx: (it.typeIdx!=null?it.typeIdx:0),
+      label: it.label||'',
+      calc: it.calc||'custom',
+      qty: parseFloat(it.qty)||0,
+      unitPrice: parseFloat(it.unitPrice)||0,
+      feeRate: parseFloat(it.feeRate)||0,
+      taxApply: (it.calc==='custom' ? (it.taxApply!==false) : it.taxApply),
+      memo: it.memo||'',
+      productName,
+    };
+  });
   if(!QT_NEW_ITEMS.length){
     const cl=d.clients.find(x=>x.id===CUR_CLIENT);
     const types=getQtTypeList(cl);
-    QT_NEW_ITEMS=[{id:gid(),typeIdx:0,label:types[0].label,calc:types[0].calc,qty:1,unitPrice:types[0].defaultPrice||0,feeRate:types[0].feeRate||0,memo:''}];
+    QT_NEW_ITEMS=[{id:gid(),typeIdx:0,label:types[0].label,calc:types[0].calc,qty:1,unitPrice:types[0].defaultPrice||0,feeRate:types[0].feeRate||0,memo:'',productName:''}];
   }
   document.getElementById('qn-notes').value=qt.notes||'';
   renderQtNewItems();
@@ -7157,7 +7200,18 @@ function saveQuoteForm(){
   if(!QT_NEW_ITEMS.length){toast('견적 항목을 1개 이상 추가하세요','error');return;}
   const taxYn=document.getElementById('qn-tax-yn')?.checked||false;
   const taxItems=getQtTaxItems();
-  const items=QT_NEW_ITEMS.map(it=>({...it, taxApply: it.calc==='custom' ? (it.taxApply!==false) : it.taxApply}));
+  const items=QT_NEW_ITEMS.map(it=>{
+    const productName=(it.productName||'').trim();
+    const label=(it.calc==='product')
+      ?('상품금액'+(productName?`(${productName})`:'')) 
+      : (it.label||'');
+    return {
+      ...it,
+      label,
+      productName,
+      taxApply: it.calc==='custom' ? (it.taxApply!==false) : it.taxApply
+    };
+  });
   const d=ld();
   const editId=QT_EDIT_ID||document.getElementById('qn-edit-id')?.value||'';
   if(editId){
@@ -7196,7 +7250,7 @@ function saveQuoteForm(){
 function addQtItem(dummy){
   const _d2=ld(),_cl2=_d2.clients.find(x=>x.id===CUR_CLIENT);
   const _types2=getQtTypeList(_cl2);
-  QT_NEW_ITEMS.push({id:gid(),typeIdx:0,label:_types2[0].label,calc:_types2[0].calc,qty:1,unitPrice:_types2[0].defaultPrice||0,feeRate:_types2[0].feeRate||0,memo:''});
+  QT_NEW_ITEMS.push({id:gid(),typeIdx:0,label:_types2[0].label,calc:_types2[0].calc,qty:1,unitPrice:_types2[0].defaultPrice||0,feeRate:_types2[0].feeRate||0,memo:'',productName:''});
   renderQtNewItems();
 }
 function removeQtItem(itemId){
@@ -7215,6 +7269,7 @@ function onQtTypeChange(itemId,sel){
   it.label=t.label;
   it.unitPrice=t.defaultPrice||0;
   it.feeRate=t.feeRate||0;
+  if(it.calc!=='product') it.productName='';
   renderQtNewItems();
 }
 function onQtFieldChange(itemId,field,val){
@@ -7276,7 +7331,13 @@ function renderQtNewItems(){
               </select>
             </td>
             <td style="padding:5px 8px">
-        <input class="fi" style="font-size:11px;padding:3px 6px;width:100%" placeholder="${it.calc==='custom'?'품명 입력':it.label}" value="${it.calc==='custom'?it.label:''}" ${it.calc!=='custom'?'disabled style="background:#f0f0f0;color:var(--text3);font-size:10px"':''} oninput="onQtFieldChange('${it.id}','label',this.value)">
+        ${isProd
+          ?(`<div style="display:flex;flex-direction:column;gap:4px">
+              <div style="font-size:10px;color:var(--text3);font-weight:700">상품금액</div>
+              <input class="fi" style="font-size:11px;padding:3px 6px;width:100%" placeholder="제품명 수기입력" value="${escHtml(it.productName||'')}" oninput="onQtFieldChange('${it.id}','productName',this.value)">
+            </div>`)
+          :(`<input class="fi" style="font-size:11px;padding:3px 6px;width:100%" placeholder="${it.calc==='custom'?'품명 입력':it.label}" value="${it.calc==='custom'?escHtml(it.label||''):''}" ${it.calc!=='custom'?'disabled style="background:#f0f0f0;color:var(--text3);font-size:10px"':''} oninput="onQtFieldChange('${it.id}','label',this.value)">`)
+        }
             </td>
       <td style="padding:5px 6px;text-align:center"><input class="fi" type="text" inputmode="numeric" style="font-size:12px;padding:4px 6px;width:64px;text-align:center;font-weight:700" value="${it.qty}" onchange="onQtFieldChange('${it.id}','qty',this.value)"></td>
       <td style="padding:5px 6px;text-align:right"><input class="fi" type="text" inputmode="numeric" style="font-size:12px;padding:4px 6px;width:110px;text-align:right" value="${it.unitPrice}" onchange="onQtFieldChange('${it.id}','unitPrice',this.value)" placeholder="예: 100000"></td>
@@ -7367,7 +7428,18 @@ function saveNewQuote(){
   if(!QT_NEW_ITEMS.length){toast('견적 항목을 1개 이상 추가하세요','error');return;}
   const taxYn=document.getElementById('qn-tax-yn')?.checked||false;
   const taxItems=getQtTaxItems();
-  const items=QT_NEW_ITEMS.map(it=>({...it, taxApply: it.calc==='custom' ? (it.taxApply!==false) : it.taxApply}));
+  const items=QT_NEW_ITEMS.map(it=>{
+    const productName=(it.productName||'').trim();
+    const label=(it.calc==='product')
+      ?('상품금액'+(productName?`(${productName})`:'')) 
+      : (it.label||'');
+    return {
+      ...it,
+      label,
+      productName,
+      taxApply: it.calc==='custom' ? (it.taxApply!==false) : it.taxApply
+    };
+  });
   const qt={
     id:gid(),clientId:CUR_CLIENT,
     date,
@@ -8610,6 +8682,60 @@ function exportProjDetailXlsx(){
   const fname=title.replace(/[📋\s]/g,'').replace(/[—]/g,'')+'_'+getKSTDate()+'.xlsx';
   XLSX.writeFile(wb,fname);
   toast('엑셀 다운로드 완료!');
+}
+
+// ── 프로젝트별 보기: 미완료(리뷰 미작성) 목록 ──────────────────────
+let _MR_LAST_PROJ_ID=null;
+function openMissingReviewModal(projId){
+  const d=ld(),p=d.projects.find(x=>x.id===projId);if(!p)return;
+  _MR_LAST_PROJ_ID=projId;
+  const all=d.records.filter(r=>r.projectId===projId);
+  const miss=all.filter(r=>!r.reviewUrl);
+  document.getElementById('mr-title').textContent=`📝 리뷰 미작성자 — ${p.name}`;
+  document.getElementById('mr-stats').innerHTML=
+    sMini('총 참여','var(--accent)',(all.length||0)+'건')
+    +sMini('리뷰 완료','#7c3aed',(all.length-miss.length)+'건')
+    +sMini('미완료(리뷰 미작성)','var(--yellow)',(miss.length||0)+'건');
+  const cols=[
+    {k:'no',lb:'NO'},
+    {k:'nickname',lb:'닉네임'},
+    {k:'receiver',lb:'수취인'},
+    {k:'phone',lb:'연락처'},
+    {k:'product',lb:'상품명'},
+    {k:'option',lb:'옵션'},
+    {k:'tracking',lb:'송장'},
+    {k:'purchaseDate',lb:'구매일자'},
+    {k:'reviewType',lb:'리뷰유형'},
+    {k:'address',lb:'주소'},
+    {k:'email',lb:'이메일'},
+  ];
+  const colCount=cols.length;
+  document.getElementById('mr-table').innerHTML=
+    '<table style="white-space:nowrap;user-select:text;min-width:max-content">'
+    +'<thead><tr>'+cols.map(c=>'<th>'+c.lb+'</th>').join('')+'</tr></thead>'
+    +'<tbody>'+(miss.map(r=>{
+      let tr='<tr>';
+      cols.forEach(c=>{
+        const v=r[c.k]!=null?String(r[c.k]):'';
+        if(c.k==='no') tr+='<td style="font-weight:700;text-align:center">'+(v||'-')+'</td>';
+        else if(c.k==='nickname') tr+='<td style="font-weight:700;color:var(--accent)">'+(v||'-')+'</td>';
+        else if(c.k==='reviewType') tr+='<td style="white-space:nowrap">'+(v?'<span class="tag">'+v+'</span>':'-')+'</td>';
+        else tr+='<td style="font-size:11px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(v)+'">'+(v||'-')+'</td>';
+      });
+      return tr+'</tr>';
+    }).join('')) || ('<tr><td colspan="'+colCount+'" style="text-align:center;padding:24px;color:var(--text3)">리뷰 미작성자가 없습니다</td></tr>')
+    +'</tbody></table>';
+  openMd('missing-review');
+}
+function exportMissingReviewXlsx(){
+  const title=document.getElementById('mr-title')?.textContent||'리뷰 미작성자';
+  const table=document.querySelector('#mr-table table');
+  if(!table){toast('데이터가 없습니다','error');return;}
+  if(typeof XLSX==='undefined'){toast('XLSX 라이브러리 로딩 중...','error');return;}
+  const ws=XLSX.utils.table_to_sheet(table,{raw:true});
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'리뷰미작성');
+  XLSX.writeFile(wb,`${String(title).replace(/[\\/:*?"<>|]/g,'_')}_${getKSTDate()}.xlsx`);
 }
 
 // ── 프로젝트 전체 삭제 ──────────────────────────────
