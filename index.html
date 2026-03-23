@@ -2526,17 +2526,28 @@ async function ensureFirebaseReadAuth(){
   }
   await _fbReadAuthPromise;
 }
-async function showClientView(code){
-  try{
-    if(typeof ensureFirebaseReadAuth==='function') await ensureFirebaseReadAuth();
-  }catch(e){ console.warn('client view auth',e); }
-  if(typeof loadMainDataFromFirestore==='function'){
-    try{ await loadMainDataFromFirestore(); }catch(e){ console.error(e); }
-  }
+function showClientView(code){
   CV_CURRENT_CODE=code;
   hide('login-screen');hide('app');show('client-screen');
-  refreshClientView();
-  document.body.classList.add('client-view-ready'); // 로딩 메시지 숨김
+  document.body.classList.add('client-view-ready'); // 전체 덮개 로딩 즉시 해제 → 레이아웃 바로 표시
+  const loadBox='<div style="padding:36px;text-align:center;color:var(--text3);font-size:13px">데이터를 불러오는 중입니다…</div>';
+  document.getElementById('cv-company').textContent='';
+  document.getElementById('cv-title').textContent='WAY PROJECT';
+  document.getElementById('cv-date').textContent='';
+  document.getElementById('cvpanel-dashboard').innerHTML=loadBox;
+  document.getElementById('cvpanel-projects').innerHTML=loadBox;
+  document.getElementById('cvpanel-quote').innerHTML=loadBox;
+  document.getElementById('cvpanel-daily').innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">탭을 클릭하면 명단이 표시됩니다</div>';
+  delete document.getElementById('cvpanel-daily').dataset.clientId;
+  void (async ()=>{
+    try{
+      if(typeof ensureFirebaseReadAuth==='function') await ensureFirebaseReadAuth();
+    }catch(e){ console.warn('client view auth',e); }
+    if(typeof loadMainDataFromFirestore==='function'){
+      try{ await loadMainDataFromFirestore(); }catch(e){ console.error(e); }
+    }
+    refreshClientView();
+  })();
 }
 function refreshClientView(){
   if(!CV_CURRENT_CODE)return;
@@ -3259,6 +3270,13 @@ function exportDailyListXlsx(mode,dateStr){
   toast('엑셀 다운로드 완료');
 }
 
+// 프로젝트 명단: 미완료(리뷰 대기) = 구매완료 − 리뷰완료 (닉네임/송장=구매, 리뷰URL=리뷰)
+function countProjReviewPending(rc){
+  const buyDone=rc.filter(r=>r.nickname||r.tracking).length;
+  const rvDone=rc.filter(r=>r.reviewUrl).length;
+  return Math.max(0,buyDone-rvDone);
+}
+
 // ── 4번: 가로 스크롤 전체현황 ──
 function buildCvDash(c,projs,d){
   const allRecs=d.records.filter(r=>projs.some(p=>p.id===r.projectId));
@@ -3303,7 +3321,7 @@ function buildCvDash(c,projs,d){
     const reqTotal=p.contractTotal||p.total||rc.length||0;
     const buyDone=rc.filter(r=>r.nickname||r.tracking).length; // 닉네임 있으면 구매완료
     const rvDone=rc.filter(r=>r.reviewUrl).length;
-    const notDone=rc.length-rvDone;
+    const notDone=countProjReviewPending(rc);
     const pp=reqTotal>0?~~((rvDone/reqTotal)*100):0;
     const col=p.status==='진행중'?'var(--green)':p.status==='완료'?'var(--accent)':'var(--yellow)';
     const sc=badgeClass(p.status);
@@ -3344,7 +3362,7 @@ function buildCvProjects(projs,d){
     var reqTotal=p.contractTotal||p.total||rc.length||0;
     var buyDone=rc.filter(function(r){return r.nickname||r.tracking;}).length; // 닉네임 있으면 구매완료
     var rvDone=rc.filter(function(r){return r.reviewUrl;}).length;
-    var notDone=rc.length-rvDone;
+    var notDone=countProjReviewPending(rc);
     var pp=reqTotal>0?~~((rvDone/reqTotal)*100):0;
     var sc=badgeClass(p.status);
     rows+='<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh)">'
@@ -3375,7 +3393,7 @@ function showCvProjDetail(projId){
   const reqTotal=p.contractTotal||p.total||rc.length||0;
   const buyDone=rc.filter(r=>r.nickname||r.tracking).length; // 닉네임 있으면 구매완료
   const rvDone=rc.filter(r=>r.reviewUrl).length;
-  const notDone=rc.length-rvDone;
+  const notDone=countProjReviewPending(rc);
   const pp=reqTotal>0?~~((rvDone/reqTotal)*100):0;
   document.getElementById('pjd-title').textContent='📋 '+p.name+' — 참여 명단';
   document.getElementById('pjd-stats').innerHTML=
@@ -6313,9 +6331,9 @@ function renderDetDash(){
     const rc=d.records.filter(r=>r.projectId===p.id);
     // 3번 요청: 5개 항목
     const reqTotal=p.contractTotal||p.total||rc.length||0;
-    const buyDone=rc.filter(r=>r.tracking).length;
+    const buyDone=rc.filter(r=>r.nickname||r.tracking).length;
     const rvDone=rc.filter(r=>r.reviewUrl).length;
-    const notDone=rc.length-rvDone;
+    const notDone=countProjReviewPending(rc);
     const pp=reqTotal>0?~~((rvDone/reqTotal)*100):0;
     const col=p.status==='진행중'?'var(--green)':p.status==='완료'?'var(--accent)':'var(--yellow)';
     html+=`<div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:10px">
@@ -6542,7 +6560,7 @@ function renderDetProjView(){
     const reqTotal=p.contractTotal||p.total||rc.length||0;
     const buyDone=rc.filter(r=>r.nickname||r.tracking).length; // 닉네임 있으면 구매완료
     const rvDone=rc.filter(r=>r.reviewUrl).length;
-    const notDone=rc.length-rvDone;
+    const notDone=countProjReviewPending(rc);
     // 자동 진행상태 계산 (단, 사용자가 수동으로 잠근(statusManual) 프로젝트는 유지)
     let status=p.status||'';
     if(p.statusManual){
@@ -6797,7 +6815,7 @@ function showProjDetailModal(projId){
   const reqTotal=p.contractTotal||p.total||rc.length||0;
   const buyDone=rc.filter(r=>r.nickname||r.tracking).length; // 닉네임 있으면 구매완료
   const rvDone=rc.filter(r=>r.reviewUrl).length;
-  const notDone=rc.length-rvDone;
+  const notDone=countProjReviewPending(rc);
   const pp=reqTotal>0?~~((rvDone/reqTotal)*100):0;
   document.getElementById('pjd-title').textContent=`📋 ${p.name} — 참여 명단`;
   // 3번: 5개 항목
