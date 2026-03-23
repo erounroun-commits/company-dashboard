@@ -1757,8 +1757,7 @@ function subscribeAuxCollectionsFromFirestore(){
   }
   if(!_unsubUiCols){
     _unsubUiCols = db.collection('settings').doc('uiCols').onSnapshot(doc=>{
-      const d = doc && doc.exists ? (doc.data()||{}) : {};
-      UI_COLS_CACHE = {extraCols: Array.isArray(d.extraCols)?d.extraCols:[], colOrder: Array.isArray(d.colOrder)?d.colOrder:[]};
+      applyUiColsFirestoreData(doc && doc.exists ? (doc.data()||{}) : {});
       scheduleRerender();
     });
   }
@@ -1997,20 +1996,42 @@ function monthlyCntSv(obj){
   }catch(e){}
 }
 
+function applyUiColsFirestoreData(d){
+  const src=d&&typeof d==='object'?d:{};
+  const out={};
+  Object.keys(src).forEach(k=>{
+    if(k==='extraCols'||k==='colOrder')return;
+    const v=src[k];
+    if(v&&typeof v==='object'&&!Array.isArray(v)&&(Array.isArray(v.extraCols)||Array.isArray(v.colOrder))){
+      out[k]={
+        extraCols:Array.isArray(v.extraCols)?v.extraCols:[],
+        colOrder:Array.isArray(v.colOrder)?v.colOrder:[]
+      };
+    }
+  });
+  if(Array.isArray(src.extraCols)||Array.isArray(src.colOrder)){
+    out._global={
+      extraCols:Array.isArray(src.extraCols)?src.extraCols:[],
+      colOrder:Array.isArray(src.colOrder)?src.colOrder:[]
+    };
+  }
+  UI_COLS_CACHE=out;
+}
 async function loadUiColsFromFirestore(){
   if(typeof db === 'undefined'){return;}
   const ref = db.collection('settings').doc('uiCols');
   const snap = await ref.get().catch(()=>null);
   const d = snap && snap.exists ? (snap.data()||{}) : {};
-  UI_COLS_CACHE = {extraCols: Array.isArray(d.extraCols)?d.extraCols:[], colOrder: Array.isArray(d.colOrder)?d.colOrder:[]};
+  applyUiColsFirestoreData(d);
   try{
     const localExtra = JSON.parse(localStorage.getItem('wv_extra_cols')||'[]');
     const localOrder = JSON.parse(localStorage.getItem('wv_col_order')||'[]');
     const hasLocal = (Array.isArray(localExtra)&&localExtra.length) || (Array.isArray(localOrder)&&localOrder.length);
-    const hasRemote = (UI_COLS_CACHE.extraCols?.length||0) || (UI_COLS_CACHE.colOrder?.length||0);
+    const g=UI_COLS_CACHE._global||{};
+    const hasRemote = (g.extraCols?.length||0) || (g.colOrder?.length||0) || Object.keys(UI_COLS_CACHE).some(k=>k!=='_global'&&UI_COLS_CACHE[k]&&((UI_COLS_CACHE[k].extraCols?.length)||(UI_COLS_CACHE[k].colOrder?.length)));
     if(hasLocal && !hasRemote){
-      UI_COLS_CACHE = {extraCols: Array.isArray(localExtra)?localExtra:[], colOrder: Array.isArray(localOrder)?localOrder:[]};
-      await ref.set(UI_COLS_CACHE,{merge:true});
+      UI_COLS_CACHE={...UI_COLS_CACHE,_global:{extraCols:Array.isArray(localExtra)?localExtra:[],colOrder:Array.isArray(localOrder)?localOrder:[]}};
+      await ref.set({extraCols:UI_COLS_CACHE._global.extraCols,colOrder:UI_COLS_CACHE._global.colOrder},{merge:true});
       localStorage.removeItem('wv_extra_cols');
       localStorage.removeItem('wv_col_order');
     }
@@ -2471,6 +2492,7 @@ function checkRoute(){
 }
 window.addEventListener('hashchange',()=>{
   if(checkRoute())return;
+  CV_CURRENT_CODE=null;
   hide('client-screen');
   document.body.classList.remove('client-view-link','client-view-ready');
   show('app'); // 항상 앱으로 돌아감
@@ -2480,7 +2502,16 @@ window.addEventListener('hashchange',()=>{
 // CLIENT VIEW (업체 링크)
 // ═══════════════════════════════════════════
 let CV_CURRENT_CODE=null;
+async function ensureAnonAuthForClientView(){
+  if(typeof firebase==='undefined'||typeof firebase.auth!=='function')return;
+  const auth=firebase.auth();
+  if(auth.currentUser)return;
+  await auth.signInAnonymously();
+}
 async function showClientView(code){
+  try{
+    if(typeof ensureAnonAuthForClientView==='function') await ensureAnonAuthForClientView();
+  }catch(e){ console.warn('client view auth',e); }
   if(typeof loadMainDataFromFirestore==='function'){
     try{ await loadMainDataFromFirestore(); }catch(e){ console.error(e); }
   }
@@ -2524,6 +2555,7 @@ function refreshClientView(){
 }
 async function refreshClientViewFromServer(){
   if(!CV_CURRENT_CODE)return;
+  try{ await ensureAnonAuthForClientView(); }catch(e){ console.warn('client view refresh auth',e); }
   if(typeof loadMainDataFromFirestore==='function'){
     try{ await loadMainDataFromFirestore(); }catch(e){ console.error(e); }
   }
@@ -2757,7 +2789,7 @@ function selectDailyDate(mode,clientId,dateStr){
     return;
   }
 
-  const buyDone=dayRecs.filter(r=>r.tracking).length;
+  const buyDone=dayRecs.filter(r=>r.nickname||r.tracking).length;
   const rvDone=dayRecs.filter(r=>r.reviewUrl).length;
   // 로그인 사용자(관리자·일반) 화면(dp)에서는 수정 가능, 업체뷰(cv)는 조회만
   const isAdminEdit=mode!=='cv';
@@ -3320,6 +3352,7 @@ function buildCvProjects(projs,d){
 
 function showCvProjDetail(projId){
   const d=ld(),p=d.projects.find(x=>x.id===projId);if(!p)return;
+  loadExtraCols(p.clientId);
   const rc=d.records.filter(r=>r.projectId===projId);
   const reqTotal=p.contractTotal||p.total||rc.length||0;
   const buyDone=rc.filter(r=>r.nickname||r.tracking).length; // 닉네임 있으면 구매완료
@@ -3333,8 +3366,8 @@ function showCvProjDetail(projId){
     +sMini('리뷰 완료건수','#7c3aed',rvDone+'건')
     +sMini('미완료건수','var(--yellow)',notDone+'건')
     +sMini('진행율','var(--accent)',pp+'%');
-  // COLS 기반 동적 테이블
-  loadExtraCols();var cols2=getCOLS();
+  // COLS 기반 동적 테이블 (위에서 loadExtraCols(p.clientId) 적용됨)
+  var cols2=getCOLS();
   var colCount2=cols2.length+1;
   document.getElementById('pjd-table').innerHTML='<table style="white-space:nowrap;user-select:text;min-width:max-content">'
     +'<thead><tr>'+cols2.map(function(col){return '<th>'+col.lb+'</th>';}).join('')+'<th>리뷰 URL</th></tr></thead>'
@@ -3590,16 +3623,8 @@ function showCvTab(name){
     else{const ds=document.querySelector('[data-cvtab="daily"]');if(ds)renderDailyPanel('cv',ds.dataset.cid||'');}
   }
   if(name==='prodstat'){
-    // CV 모드: cvpanel-prodstat에 prodstat 렌더
     const pEl=document.getElementById('cvpanel-prodstat');
-    if(pEl&&CUR_CLIENT){
-      const savedInner=document.getElementById('dp-prodstat-inner');
-      renderProdStat();
-      pEl.innerHTML=savedInner?savedInner.innerHTML:'';
-    } else if(pEl){
-      // CUR_CLIENT 없을 때 (업체 뷰) - 로컬 스토리지에서 직접 렌더
-      renderCvProdStat(pEl);
-    }
+    if(pEl) renderCvProdStat(pEl);
   }
 }
 function renderCvProdStat(container){
@@ -5636,13 +5661,13 @@ function renderProdStat(){
     }
     const g=prodMap[key];
     g.total++;
-    if(r.tracking)g.purchased++;
+    if(r.nickname||r.tracking)g.purchased++;
     if(r.reviewUrl)g.reviewed++;
     // 옵션 집계
     const opt=(r.option||'기본').trim();
     if(!g.options[opt])g.options[opt]={total:0,purchased:0,reviewed:0};
     g.options[opt].total++;
-    if(r.tracking)g.options[opt].purchased++;
+    if(r.nickname||r.tracking)g.options[opt].purchased++;
     if(r.reviewUrl)g.options[opt].reviewed++;
   });
 
@@ -5656,7 +5681,7 @@ function renderProdStat(){
 
   // 전체 합계 카드
   const totalAll=allRecs.length;
-  const purchasedAll=allRecs.filter(r=>r.tracking).length;
+  const purchasedAll=allRecs.filter(r=>r.nickname||r.tracking).length;
   const reviewedAll=allRecs.filter(r=>r.reviewUrl).length;
   const pRate=totalAll?Math.round(purchasedAll/totalAll*100):0;
   const rRate=totalAll?Math.round(reviewedAll/totalAll*100):0;
@@ -5674,7 +5699,7 @@ function renderProdStat(){
     <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh)">
       <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
         <div style="font-size:13px;font-weight:700">📦 상품별 진행 현황</div>
-        <div style="font-size:11px;color:var(--text2)">송장번호 입력 = 구매완료 / 리뷰URL 입력 = 리뷰완료</div>
+        <div style="font-size:11px;color:var(--text2)">닉네임 또는 송장번호 = 구매완료 / 리뷰URL = 리뷰완료</div>
       </div>
       <div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse;font-size:12px">
@@ -5703,7 +5728,7 @@ function renderProdStat(){
       // 프로젝트 구분선
       const proj=projs.find(p=>p.id===g.projId);
       const projRecs=allRecs.filter(r=>r.projectId===g.projId);
-      const pT=projRecs.length,pP=projRecs.filter(r=>r.tracking).length,pR=projRecs.filter(r=>r.reviewUrl).length;
+      const pT=projRecs.length,pP=projRecs.filter(r=>r.nickname||r.tracking).length,pR=projRecs.filter(r=>r.reviewUrl).length;
       html+=`<tr style="background:var(--bg2)">
         <td colspan="7" style="padding:8px 14px;font-size:11px;font-weight:700;color:var(--accent);border-top:2px solid var(--border)">
           📁 ${g.projName}
@@ -8123,8 +8148,8 @@ const BASE_COLS=[
 // EXTRA_COLS: 사용자가 동적으로 추가한 열 (localStorage 저장)
 let EXTRA_COLS=[];
 let COL_ORDER=[]; // 전체 열 순서 (키 배열)
-function loadExtraCols(){
-  const u = uiColsLd(CUR_CLIENT);
+function loadExtraCols(forClientId){
+  const u = uiColsLd(forClientId!==undefined?forClientId:CUR_CLIENT);
   EXTRA_COLS = Array.isArray(u.extraCols)?u.extraCols:[];
   COL_ORDER = Array.isArray(u.colOrder)?u.colOrder:[];
 }
@@ -10838,6 +10863,7 @@ function exportDsExcel(){
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-analytics-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
 
 <script>
   const firebaseConfig = {
@@ -10855,24 +10881,31 @@ function exportDsExcel(){
   const db = firebase.firestore();
 
   document.addEventListener('DOMContentLoaded', () => {
-    // Firestore에서 사용자 및 메인 데이터 미리 로드
-    loadUsersFromFirestore().catch(console.error);
-    subscribeUsersFromFirestore();
-    // 실시간 반영 (다른 PC에서 추가/삭제 즉시 업데이트)
-    subscribeMainDataFromFirestore();
-    subscribeAuxCollectionsFromFirestore();
-    // 초기 1회 로드/마이그레이션도 유지
-    loadMainDataFromFirestore().catch(console.error);
-    loadSettlesFromFirestore().catch(console.error);
-    loadDepositHistoryFromFirestore().catch(console.error);
-    loadDepositUnmatchedFromFirestore().catch(console.error);
-    loadDepNamesFromFirestore().catch(console.error);
-    loadGsyncFromFirestore().catch(console.error);
-    loadDailySettleFromFirestore().catch(console.error);
-    loadBankTxFromFirestore().catch(console.error);
-    loadCompanyExpFromFirestore().catch(console.error);
-    loadMonthlyCntFromFirestore().catch(console.error);
-    loadUiColsFromFirestore().catch(console.error);
+    void (async () => {
+      try {
+        if (location.hash && location.hash.startsWith('#view-') && typeof ensureAnonAuthForClientView === 'function') {
+          await ensureAnonAuthForClientView();
+        }
+      } catch (e) { console.warn('client-link bootstrap auth', e); }
+      // Firestore에서 사용자 및 메인 데이터 미리 로드
+      loadUsersFromFirestore().catch(console.error);
+      subscribeUsersFromFirestore();
+      // 실시간 반영 (다른 PC에서 추가/삭제 즉시 업데이트)
+      subscribeMainDataFromFirestore();
+      subscribeAuxCollectionsFromFirestore();
+      // 초기 1회 로드/마이그레이션도 유지
+      loadMainDataFromFirestore().catch(console.error);
+      loadSettlesFromFirestore().catch(console.error);
+      loadDepositHistoryFromFirestore().catch(console.error);
+      loadDepositUnmatchedFromFirestore().catch(console.error);
+      loadDepNamesFromFirestore().catch(console.error);
+      loadGsyncFromFirestore().catch(console.error);
+      loadDailySettleFromFirestore().catch(console.error);
+      loadBankTxFromFirestore().catch(console.error);
+      loadCompanyExpFromFirestore().catch(console.error);
+      loadMonthlyCntFromFirestore().catch(console.error);
+      loadUiColsFromFirestore().catch(console.error);
+    })();
   });
 </script>
 
