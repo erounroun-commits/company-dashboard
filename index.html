@@ -1601,6 +1601,7 @@ let _unsubMonthlyCnt = null;
 let _unsubUiCols = null;
 
 let _renderTimer = null;
+let _mainSubErrNotified = false;
 function refreshDetailProjectSelectors(){
   try{
     if(!CUR_CLIENT) return;
@@ -1697,11 +1698,18 @@ function subscribeMainDataFromFirestore(){
     setter(snap.docs.map(d=>({id:d.id,...d.data()})));
     scheduleRerender();
   };
+  const onSubErr = (err)=>{
+    console.error('main snapshot error', err);
+    if(!_mainSubErrNotified){
+      _mainSubErrNotified = true;
+      try{ toast('데이터 읽기 권한 오류가 있어 화면 반영이 지연됩니다. Firebase 권한을 확인해주세요.','error'); }catch(_){}
+    }
+  };
   const unsubs = [];
-  unsubs.push(db.collection('clients').onSnapshot(makeHandler(v=>CLIENTS_CACHE=v)));
-  unsubs.push(db.collection('projects').onSnapshot(makeHandler(v=>PROJECTS_CACHE=v)));
-  unsubs.push(db.collection('records').onSnapshot(makeHandler(v=>RECORDS_CACHE=v)));
-  unsubs.push(db.collection('quotes').onSnapshot(makeHandler(v=>QUOTES_CACHE=v)));
+  unsubs.push(db.collection('clients').onSnapshot(makeHandler(v=>CLIENTS_CACHE=v), onSubErr));
+  unsubs.push(db.collection('projects').onSnapshot(makeHandler(v=>PROJECTS_CACHE=v), onSubErr));
+  unsubs.push(db.collection('records').onSnapshot(makeHandler(v=>RECORDS_CACHE=v), onSubErr));
+  unsubs.push(db.collection('quotes').onSnapshot(makeHandler(v=>QUOTES_CACHE=v), onSubErr));
   _unsubMain = ()=>{ unsubs.forEach(fn=>{try{fn&&fn();}catch(e){}}); _unsubMain=null; };
 }
 
@@ -1766,6 +1774,9 @@ function subscribeAuxCollectionsFromFirestore(){
 // Firestore에서 클라이언트/프로젝트/레코드/견적 로드
 async function loadMainDataFromFirestore(){
   if(typeof db === 'undefined'){return;}
+  if(typeof ensureFirebaseReadAuth==='function'){
+    try{ await ensureFirebaseReadAuth(); }catch(e){ console.warn('main data auth',e); }
+  }
   // clients
   const clSnap = await db.collection('clients').get();
   CLIENTS_CACHE = clSnap.docs.map(d=>({id:d.id,...d.data()}));
@@ -2502,15 +2513,22 @@ window.addEventListener('hashchange',()=>{
 // CLIENT VIEW (업체 링크)
 // ═══════════════════════════════════════════
 let CV_CURRENT_CODE=null;
-async function ensureAnonAuthForClientView(){
+let _fbReadAuthPromise=null;
+async function ensureFirebaseReadAuth(){
   if(typeof firebase==='undefined'||typeof firebase.auth!=='function')return;
   const auth=firebase.auth();
   if(auth.currentUser)return;
-  await auth.signInAnonymously();
+  if(!_fbReadAuthPromise){
+    _fbReadAuthPromise=auth.signInAnonymously().catch(err=>{
+      _fbReadAuthPromise=null;
+      throw err;
+    });
+  }
+  await _fbReadAuthPromise;
 }
 async function showClientView(code){
   try{
-    if(typeof ensureAnonAuthForClientView==='function') await ensureAnonAuthForClientView();
+    if(typeof ensureFirebaseReadAuth==='function') await ensureFirebaseReadAuth();
   }catch(e){ console.warn('client view auth',e); }
   if(typeof loadMainDataFromFirestore==='function'){
     try{ await loadMainDataFromFirestore(); }catch(e){ console.error(e); }
@@ -2555,7 +2573,7 @@ function refreshClientView(){
 }
 async function refreshClientViewFromServer(){
   if(!CV_CURRENT_CODE)return;
-  try{ await ensureAnonAuthForClientView(); }catch(e){ console.warn('client view refresh auth',e); }
+  try{ await ensureFirebaseReadAuth(); }catch(e){ console.warn('client view refresh auth',e); }
   if(typeof loadMainDataFromFirestore==='function'){
     try{ await loadMainDataFromFirestore(); }catch(e){ console.error(e); }
   }
@@ -10883,10 +10901,10 @@ function exportDsExcel(){
   document.addEventListener('DOMContentLoaded', () => {
     void (async () => {
       try {
-        if (location.hash && location.hash.startsWith('#view-') && typeof ensureAnonAuthForClientView === 'function') {
-          await ensureAnonAuthForClientView();
+        if (typeof ensureFirebaseReadAuth === 'function') {
+          await ensureFirebaseReadAuth();
         }
-      } catch (e) { console.warn('client-link bootstrap auth', e); }
+      } catch (e) { console.warn('bootstrap auth', e); }
       // Firestore에서 사용자 및 메인 데이터 미리 로드
       loadUsersFromFirestore().catch(console.error);
       subscribeUsersFromFirestore();
