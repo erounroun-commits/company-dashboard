@@ -5271,21 +5271,23 @@ async function doSync(silent=false){
       log('');
     }
 
-    // 매칭 실행
+    // 매칭 실행 — 제자리(r.reviewUrl=) 수정 금지: sv('rc')는 저장 직전 RECORDS_CACHE와
+    // 비교하는데, 미리 바꾸면 "변경 없음"으로 판정되어 Firestore에 안 쓰이고,
+    // 이후 스냅샷/재로드 시 리뷰 URL이 사라진 것처럼 보임.
     let updated=0, skipped=0;
-    d.records.forEach(r=>{
+    const nextRecords=d.records.map(r=>{
       const key=makeMatchKey(r.purchaseDate||'', r.product||'', r.receiver||'');
       const newUrl=sheetMap[key];
       if(newUrl&&newUrl!==r.reviewUrl){
-        r.reviewUrl=newUrl;
         updated++;
-      } else if(!newUrl){
-        skipped++;
+        return {...r, reviewUrl:newUrl};
       }
+      if(!newUrl) skipped++;
+      return {...r};
     });
 
     if(updated>0){
-      sv('rc',d.records);
+      sv('rc',nextRecords);
       if(CUR_CLIENT){
         try{renderDetDash();}catch(e){}
         try{renderDetProjView();}catch(e){}
@@ -5314,10 +5316,6 @@ function manualSync(){
   // 수동 동기화는 즉시 실행 + 자동 동기화 백오프 리셋
   try{ GSYNC_BACKOFF_LEVEL = 0; }catch(e){}
   doSync(false).finally(()=>setupAutoSync(true));
-}
-
-function setupAutoSync(){
-  setupAutoSync(false);
 }
 
 let GSYNC_BACKOFF_LEVEL = 0; // 0=정상(기본간격), 1=2배, 2=6배, 3=12배
@@ -10897,6 +10895,13 @@ function exportDsExcel(){
   firebase.initializeApp(firebaseConfig);
   const analytics = firebase.analytics();
   const db = firebase.firestore();
+  // Edge·추적 방지·일부 네트워크에서 WebChannel(Listen)이 404/transport error 나는 경우,
+  // 첫 Firestore 사용 전에 롱폴링으로 우회 (PERMISSION_DENIED와는 다른 이슈)
+  try {
+    db.settings({ experimentalForceLongPolling: true });
+  } catch (e) {
+    console.warn('firestore settings', e);
+  }
 
   document.addEventListener('DOMContentLoaded', () => {
     void (async () => {
