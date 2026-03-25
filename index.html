@@ -606,6 +606,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
           <div style="font-size:13px;font-weight:700">📁 저장된 입금 내역 <span id="dep-hist-count" style="font-size:11px;color:var(--text2);font-weight:400"></span></div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-green btn-sm" onclick="relinkDepositHistoryAll()">🔄 기존 내역 재연동</button>
             <button class="btn btn-blue btn-sm" onclick="downloadHistExcel()">📥 엑셀 다운로드</button>
             <button class="btn btn-red btn-sm" id="btn-del-hist-sel" style="display:none" onclick="delDepHistSelected()">🗑 선택 삭제</button>
             <button class="btn btn-gray btn-sm" onclick="clearDeposits()">전체 삭제</button>
@@ -4455,6 +4456,83 @@ function clearDepHistFilter(){
   renderDepositHistory();
 }
 
+// 저장된 입금내역을 기준으로 거래처 정산/견적서/일별집계를 일괄 재연동
+async function relinkDepositHistoryAll(){
+  const hist=[...depLd()];
+  if(!hist.length){toast('저장된 입금 내역이 없습니다','warn');return;}
+  if(!confirm(`저장된 입금 내역 ${hist.length}건을 기준으로\n거래처 정산/견적서/일별 집계를 다시 연동하시겠습니까?`))return;
+
+  const settles=[...stLd()];
+  const d=ld();
+  const quotes=[...(d.quotes||[])];
+  const clients=[...(d.clients||[])];
+  const clientIdToName={}; clients.forEach(c=>{ clientIdToName[c.id]=c.name||''; });
+  const quoteMap=new Map(quotes.map(q=>[q.id,q]));
+  const usedStIds=new Set();
+
+  const norm=s=>String(s||'').trim().toLowerCase();
+  const normDate=s=>String(s||'').slice(0,10);
+
+  // 히스토리 각 행을 정산 행으로 매칭 (stId 우선, 없으면 금액/업체/일자 기준 보정)
+  let linked=0, skipped=0;
+  const nextHist=hist.map(h=>{
+    const amount=Number(h.amount)||0;
+    let st=null;
+
+    if(h.stId){
+      st=settles.find(s=>s.id===h.stId)||null;
+    }
+
+    if(!st){
+      const candidates=settles.filter(s=>!usedStIds.has(s.id) && (Number(s.total)||0)===amount);
+      if(candidates.length){
+        const hClient=norm(h.clientName);
+        const hDate=normDate(h.stDate||h.date);
+        const byClient=hClient ? candidates.filter(s=>norm(clientIdToName[s.clientId]||s.toName)===hClient) : [];
+        const pool1=byClient.length?byClient:candidates;
+        const byDate=hDate ? pool1.filter(s=>normDate(s.date)===hDate) : [];
+        const pool2=byDate.length?byDate:pool1;
+        st=pool2[0]||null;
+      }
+    }
+
+    if(!st){
+      skipped++;
+      return h;
+    }
+
+    usedStIds.add(st.id);
+    st.settled=true;
+    st.depositDate=normDate(h.date)||normDate(h.stDate)||st.depositDate||'';
+    st.depositor=(h.content||h.rawDate||st.depositor||'');
+    st.depositAmt=amount||st.depositAmt||0;
+
+    if(st.qtId){
+      const q=quoteMap.get(st.qtId);
+      if(q) q.settled=true;
+    }
+    linked++;
+
+    return {
+      ...h,
+      matched:true,
+      stId:st.id,
+      stDate:st.date||h.stDate||'',
+      clientName:clientIdToName[st.clientId]||h.clientName||''
+    };
+  });
+
+  await stSv(settles);
+  await sv('qt', quotes);
+  await depSv(nextHist);
+  try{ syncAllDsRowsFromSettle(); }catch(e){ console.warn('relinkDepositHistoryAll sync ds err',e); }
+
+  renderDepositHistory();
+  renderSettleAll();
+  try{ renderDailySettle(); }catch(e){}
+  toast(`재연동 완료: ${linked}건 반영${skipped?` · ${skipped}건 미매칭`:''}`,'success');
+}
+
 // 개별 삭제 (id 기반) + 연동 취소
 async function delDepHistById(hid){
   if(!confirm('이 입금 내역을 삭제하시겠습니까?\n연결된 거래처 정산 및 일/월 정산 정보도 초기화됩니다.')) return;
@@ -5998,9 +6076,18 @@ function syncDsRowFromSettle(stId){
     const st=settles.find(s=>s.id===stId);
     if(!st)return;
 
-    const dsArr=dsLd();
-    const idx=dsArr.findIndex(r=>r.qtId===st.qtId);
-    if(idx<0)return; // 연결된 dsRow 없으면 무시
+    let dsArr=dsLd();
+    let idx=dsArr.findIndex(r=>r.qtId===st.qtId);
+    // 연결된 dsRow가 없으면 견적서 기준으로 생성 후 다시 찾기
+    if(idx<0){
+      const q=(ld().quotes||[]).find(x=>x.id===st.qtId);
+      if(q){
+        syncQtToDailySettle(q);
+        dsArr=dsLd();
+        idx=dsArr.findIndex(r=>r.qtId===st.qtId);
+      }
+    }
+    if(idx<0)return;
 
     // 입금일자, 입금명 동기화
     if(st.depositDate!==undefined) dsArr[idx].payDate = st.depositDate||'';
@@ -6016,11 +6103,21 @@ function syncDsRowFromSettle(stId){
 function syncAllDsRowsFromSettle(){
   try {
     const settles=stLd();
-    const dsArr=dsLd();
+    let dsArr=dsLd();
+    const quoteMap=new Map((ld().quotes||[]).map(q=>[q.id,q]));
     let changed=false;
     settles.forEach(st=>{
       if(!st.qtId)return;
-      const idx=dsArr.findIndex(r=>r.qtId===st.qtId);
+      let idx=dsArr.findIndex(r=>r.qtId===st.qtId);
+      // 누락된 dsRow는 자동 생성 (입금 업로드 후 연동 누락 방지)
+      if(idx<0){
+        const q=quoteMap.get(st.qtId);
+        if(q){
+          syncQtToDailySettle(q);
+          dsArr=dsLd();
+          idx=dsArr.findIndex(r=>r.qtId===st.qtId);
+        }
+      }
       if(idx<0)return;
       const prev=dsArr[idx];
       const newPayDate=st.depositDate||'';
