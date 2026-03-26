@@ -8010,37 +8010,42 @@ function renderCrmItems(){
   </tbody></table><div style="text-align:right;margin-top:6px;font-weight:800">최종 합계: ${fmtN(gt)}원</div>`;
 }
 async function saveCrmQuote(){
-  const date=document.getElementById('crm-date')?.value;
-  if(!date){toast('견적일자를 입력하세요','error');return;}
-  if(!CRM_NEW_ITEMS.length){toast('항목을 1개 이상 입력하세요','error');return;}
-  const d=ld();
-  const arr=[...(d.quotes||[])];
-  const basePricing={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:parseInt(document.getElementById('crm-p3')?.value)||0};
-  const quote={
-    id:CRM_EDIT_ID||gid(),
-    date,
-    no:document.getElementById('crm-no')?.value||'',
-    validity:document.getElementById('crm-validity')?.value||'30일',
-    toName:document.getElementById('crm-to-name')?.value||'',
-    toBizNo:document.getElementById('crm-to-biz-no')?.value||'',
-    toBizName:document.getElementById('crm-to-biz-name')?.value||'',
-    toCeo:document.getElementById('crm-to-ceo')?.value||'',
-    toType:document.getElementById('crm-to-type')?.value||'',
-    taxYn:document.getElementById('crm-tax-yn')?.checked||false,
-    taxItems:{fee:document.getElementById('crm-ti-fee')?.checked||false,delivery:document.getElementById('crm-ti-del')?.checked||false,product:document.getElementById('crm-ti-prod')?.checked||false},
-    basePricing,
-    items:CRM_NEW_ITEMS.map(it=>({...it,label:(it.calc==='product'?'상품금액'+((it.productName||'').trim()?`(${it.productName.trim()})`:''):(it.label||''))})),
-    notes:document.getElementById('crm-notes')?.value||'',
-    crmMode:true,
-    collapsed:true,
-    createdAt:CRM_EDIT_ID?((arr.find(x=>x.id===CRM_EDIT_ID)||{}).createdAt||new Date().toISOString()):new Date().toISOString(),
-  };
-  const idx=arr.findIndex(x=>x.id===quote.id);
-  if(idx>=0) arr[idx]=quote; else arr.push(quote);
-  await sv('qt',arr);
-  closeCrmQuoteForm();
-  renderCrmQuotes();
-  toast('CRM 견적서 저장 완료');
+  try{
+    const date=document.getElementById('crm-date')?.value;
+    if(!date){toast('견적일자를 입력하세요','error');return;}
+    if(!CRM_NEW_ITEMS.length){toast('항목을 1개 이상 입력하세요','error');return;}
+    const d=ld();
+    const arr=[...(d.quotes||[])];
+    const basePricing={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:parseInt(document.getElementById('crm-p3')?.value)||0};
+    const quote={
+      id:CRM_EDIT_ID||gid(),
+      date,
+      no:document.getElementById('crm-no')?.value||'',
+      validity:document.getElementById('crm-validity')?.value||'30일',
+      toName:document.getElementById('crm-to-name')?.value||'',
+      toBizNo:document.getElementById('crm-to-biz-no')?.value||'',
+      toBizName:document.getElementById('crm-to-biz-name')?.value||'',
+      toCeo:document.getElementById('crm-to-ceo')?.value||'',
+      toType:document.getElementById('crm-to-type')?.value||'',
+      taxYn:document.getElementById('crm-tax-yn')?.checked||false,
+      taxItems:{fee:document.getElementById('crm-ti-fee')?.checked||false,delivery:document.getElementById('crm-ti-del')?.checked||false,product:document.getElementById('crm-ti-prod')?.checked||false},
+      basePricing,
+      items:CRM_NEW_ITEMS.map(it=>({...it,label:(it.calc==='product'?'상품금액'+((it.productName||'').trim()?`(${it.productName.trim()})`:''):(it.label||''))})),
+      notes:document.getElementById('crm-notes')?.value||'',
+      crmMode:true,
+      collapsed:false,
+      createdAt:CRM_EDIT_ID?((arr.find(x=>x.id===CRM_EDIT_ID)||{}).createdAt||new Date().toISOString()):new Date().toISOString(),
+    };
+    const idx=arr.findIndex(x=>x.id===quote.id);
+    if(idx>=0) arr[idx]=quote; else arr.push(quote);
+    await sv('qt',arr);
+    closeCrmQuoteForm();
+    renderCrmQuotes();
+    toast('CRM 견적서 저장 완료');
+  }catch(e){
+    console.error(e);
+    toast('CRM 견적서 저장 실패: '+(e?.message||'권한 또는 네트워크 오류'),'error');
+  }
 }
 function crmToggle(id){
   const d=ld(); const arr=[...(d.quotes||[])];
@@ -8056,28 +8061,47 @@ async function delCrmQuote(id){
   renderCrmQuotes();
 }
 function openCrmLinkClient(id){
+  const body=document.getElementById('crm-body-'+id);
+  if(body && body.style.display==='none'){
+    body.style.display='';
+    try{
+      const arr=[...(ld().quotes||[])];
+      const i=arr.findIndex(x=>x.id===id);
+      if(i>=0){ arr[i].collapsed=false; sv('qt',arr); }
+    }catch(e){}
+  }
   const el=document.getElementById('crm-link-'+id);
   if(!el)return;
   el.classList.toggle('hidden');
+  if(!el.classList.contains('hidden')){
+    const sel=document.getElementById('crm-link-sel-'+id);
+    if(sel) setTimeout(()=>sel.focus(),10);
+  }
 }
 async function linkCrmQuoteToClient(id){
-  const d=ld();
-  const q=(d.quotes||[]).find(x=>x.id===id&&x.crmMode===true);
-  if(!q){toast('CRM 견적서를 찾을 수 없습니다','error');return;}
-  const sel=document.getElementById('crm-link-sel-'+id);
-  const cid=sel?.value;
-  if(!cid){toast('거래처를 선택하세요','error');return;}
-  const cl=(d.clients||[]).find(c=>c.id===cid);
-  if(!cl){toast('거래처 정보를 찾을 수 없습니다','error');return;}
-  const nextQt={...q,id:gid(),clientId:cid,settled:false,collapsed:true,crmMode:false,crmTransferredFrom:id,createdAt:new Date().toISOString()};
-  const quotes=[...(d.quotes||[])];
-  quotes.push(nextQt);
-  const crmRemoved=quotes.filter(x=>x.id!==id);
-  await sv('qt',crmRemoved);
-  await addToSettle(nextQt);
-  syncQtToDailySettle(nextQt);
-  renderCrmQuotes();
-  toast('거래처 견적서로 이관 및 연동 완료');
+  try{
+    const d=ld();
+    const q=(d.quotes||[]).find(x=>x.id===id&&x.crmMode===true);
+    if(!q){toast('CRM 견적서를 찾을 수 없습니다','error');return;}
+    const sel=document.getElementById('crm-link-sel-'+id);
+    const cid=sel?.value;
+    if(!cid){toast('거래처를 선택하세요','error');return;}
+    const cl=(d.clients||[]).find(c=>c.id===cid);
+    if(!cl){toast('거래처 정보를 찾을 수 없습니다','error');return;}
+    const nextQt={...q,id:gid(),clientId:cid,settled:false,collapsed:true,crmMode:false,crmTransferredFrom:id,createdAt:new Date().toISOString()};
+    const quotes=[...(d.quotes||[])];
+    quotes.push(nextQt);
+    const crmRemoved=quotes.filter(x=>x.id!==id);
+    await sv('qt',crmRemoved);
+    await addToSettle(nextQt);
+    syncQtToDailySettle(nextQt);
+    try{ renderDetQuote(); renderDetSettle(); }catch(e){}
+    renderCrmQuotes();
+    toast('거래처 견적서로 이관 및 연동 완료');
+  }catch(e){
+    console.error(e);
+    toast('거래처 연결 실패: '+(e?.message||'저장 오류'),'error');
+  }
 }
 function exportCrmQuoteExcel(id){
   if(typeof XLSX==='undefined'){toast('XLSX 라이브러리 로딩 중...','error');return;}
