@@ -6134,25 +6134,43 @@ function syncAllDsRowsFromSettle(){
   } catch(e){ console.warn('syncAllDsRowsFromSettle err:', e); }
 }
 
-// 일/월 정산(일별 집계)에서 수정한 입금일자/입금명 → 거래처 정산(wv_st)으로 역동기화
-function syncSettlesFromDaily(){
+// 일/월 정산(일별 집계)에서 수정한 정산여부·입금일자·입금명 → 거래처 정산(wv_st) + 견적서 settled 역동기화
+async function syncSettlesFromDaily(){
   try{
     const dsArr=dsLd();
     const settles=[...stLd()];
-    let changed=false;
+    const d=ld();
+    const quotes=[...(d.quotes||[])];
+    let stChanged=false, qtChanged=false;
     dsArr.forEach(r=>{
       if(!r.qtId)return;
       const idx=settles.findIndex(s=>s.qtId===r.qtId);
       if(idx<0)return;
       const st=settles[idx];
-      const newDate=(r.payDate||'').slice(0,10);
-      const newName=r.payName||'';
-      if((st.depositDate||'')!==newDate || (st.depositor||'')!==newName){
-        settles[idx]={...st,depositDate:newDate,depositor:newName};
-        changed=true;
+      const paid=!!r.paid;
+      const newDate= paid ? (r.payDate||'').slice(0,10) : '';
+      const newName= paid ? (r.payName||'') : '';
+      const next={...st,
+        settled:paid,
+        depositDate:newDate,
+        depositor:newName,
+        depositAmt:paid ? (Number(st.depositAmt)||0) : 0
+      };
+      if(st.settled!==next.settled||(st.depositDate||'')!==(next.depositDate||'')||(st.depositor||'')!==(next.depositor||'')||Number(st.depositAmt||0)!==Number(next.depositAmt||0)){
+        settles[idx]=next;
+        stChanged=true;
+      }
+      const qi=quotes.findIndex(q=>q.id===r.qtId);
+      if(qi>=0){
+        const q=quotes[qi];
+        if(!!q.settled!==paid){
+          quotes[qi]={...q,settled:paid};
+          qtChanged=true;
+        }
       }
     });
-    if(changed) stSv(settles);
+    if(stChanged) await stSv(settles);
+    if(qtChanged) await sv('qt',quotes);
   }catch(e){ console.warn('syncSettlesFromDaily err:',e); }
 }
 
@@ -6301,7 +6319,7 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
     +'<div style="width:100%">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">구매완료</span></span><span style="font-size:14px;font-weight:800;color:#22c55e">'+fmtN(purchaseDone)+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#7c3aed;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">리뷰완료</span></span><span style="font-size:14px;font-weight:800;color:#7c3aed">'+fmtN(rev)+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
-    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#f59e0b;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">미완료</span></span><span style="font-size:14px;font-weight:800;color:#f59e0b">'+fmtN(Math.max(0,purchaseDone-rev))+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#f59e0b;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">미완료</span></span><span style="font-size:14px;font-weight:800;color:#f59e0b;cursor:pointer" title="더블클릭: 전체 프로젝트 리뷰 미작성 명단" ondblclick="event.stopPropagation();openReviewPendingAllForClient(\''+(c&&c.id||'')+'\')">'+fmtN(Math.max(0,purchaseDone-rev))+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
     +'</div></div></div>'
 
     // ③ 구매일정
@@ -7440,6 +7458,11 @@ function onQtFieldChange(itemId,field,val){
   }
   renderQtNewItems();
 }
+// 한글 IME 조합 중에 매 행마다 테이블 전체를 다시 그리면 입력이 끊김 → 조합용은 값만 갱신
+function onQtTextDraft(itemId,field,val){
+  const it=QT_NEW_ITEMS.find(x=>x.id===itemId);
+  if(it) it[field]=val;
+}
 
 function renderQtNewItems(){
   const taxYn=document.getElementById('qn-tax-yn')?.checked||false;
@@ -7490,9 +7513,9 @@ function renderQtNewItems(){
         ${isProd
           ?(`<div style="display:flex;flex-direction:column;gap:4px">
               <div style="font-size:10px;color:var(--text3);font-weight:700">상품금액</div>
-              <input class="fi" style="font-size:11px;padding:3px 6px;width:100%" placeholder="제품명 수기입력" value="${escHtml(it.productName||'')}" oninput="onQtFieldChange('${it.id}','productName',this.value)">
+              <input class="fi" style="font-size:11px;padding:3px 6px;width:100%" placeholder="제품명 수기입력" value="${escHtml(it.productName||'')}" oninput="onQtTextDraft('${it.id}','productName',this.value)">
             </div>`)
-          :(`<input class="fi" style="font-size:11px;padding:3px 6px;width:100%" placeholder="${it.calc==='custom'?'품명 입력':it.label}" value="${it.calc==='custom'?escHtml(it.label||''):''}" ${it.calc!=='custom'?'disabled style="background:#f0f0f0;color:var(--text3);font-size:10px"':''} oninput="onQtFieldChange('${it.id}','label',this.value)">`)
+          :(`<input class="fi" style="font-size:11px;padding:3px 6px;width:100%" placeholder="${it.calc==='custom'?'품명 입력':it.label}" value="${it.calc==='custom'?escHtml(it.label||''):''}" ${it.calc!=='custom'?'disabled style="background:#f0f0f0;color:var(--text3);font-size:10px"':''} oninput="onQtTextDraft('${it.id}','label',this.value)">`)
         }
             </td>
       <td style="padding:5px 6px;text-align:center"><input class="fi" type="text" inputmode="numeric" style="font-size:12px;padding:4px 6px;width:64px;text-align:center;font-weight:700" value="${it.qty}" onchange="onQtFieldChange('${it.id}','qty',this.value)"></td>
@@ -8883,6 +8906,58 @@ function openMissingReviewModal(projId){
     +'</tbody></table>';
   openMd('missing-review');
 }
+
+// 거래처 전체현황 → 진행현황 박스 「미완료」건수 더블클릭: 모든 프로젝트(진행중단 제외) 리뷰 미작성 명단
+function openReviewPendingAllForClient(clientId){
+  if(!clientId){toast('거래처 정보가 없습니다','warn');return;}
+  const d=ld();
+  const c=d.clients.find(x=>x.id===clientId);
+  const projs=d.projects.filter(p=>p.clientId===clientId&&p.status!=='진행중단');
+  const pidSet=new Set(projs.map(p=>p.id));
+  const pool=d.records.filter(r=>pidSet.has(r.projectId));
+  const bought=pool.filter(r=>r.nickname||r.tracking);
+  const miss=bought.filter(r=>!r.reviewUrl);
+  const projName=p=>{const x=d.projects.find(z=>z.id===p);return x?x.name:'-';};
+  _MR_LAST_PROJ_ID=null;
+  document.getElementById('mr-title').textContent='📝 리뷰 미작성자 — 전체 프로젝트 ('+(c?c.name:'-')+')';
+  document.getElementById('mr-stats').innerHTML=
+    sMini('구매완료(명단 기준)','var(--accent)',(bought.length||0)+'건')
+    +sMini('리뷰 완료','#7c3aed',(pool.filter(r=>r.reviewUrl).length||0)+'건')
+    +sMini('미작성','var(--yellow)',(miss.length||0)+'건');
+  const cols=[
+    {k:'_proj',lb:'프로젝트'},
+    {k:'no',lb:'NO'},
+    {k:'nickname',lb:'닉네임'},
+    {k:'receiver',lb:'수취인'},
+    {k:'phone',lb:'연락처'},
+    {k:'product',lb:'상품명'},
+    {k:'option',lb:'옵션'},
+    {k:'tracking',lb:'송장'},
+    {k:'purchaseDate',lb:'구매일자'},
+    {k:'reviewType',lb:'리뷰유형'},
+    {k:'address',lb:'주소'},
+    {k:'email',lb:'이메일'},
+  ];
+  const colCount=cols.length;
+  document.getElementById('mr-table').innerHTML=
+    '<table style="white-space:nowrap;user-select:text;min-width:max-content">'
+    +'<thead><tr>'+cols.map(c0=>'<th>'+c0.lb+'</th>').join('')+'</tr></thead>'
+    +'<tbody>'+(miss.map(r=>{
+      let tr='<tr>';
+      cols.forEach(c0=>{
+        const v=c0.k==='_proj'?projName(r.projectId):(r[c0.k]!=null?String(r[c0.k]):'');
+        if(c0.k==='_proj') tr+='<td style="font-size:11px;font-weight:700;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(v)+'">'+(v||'-')+'</td>';
+        else if(c0.k==='no') tr+='<td style="font-weight:700;text-align:center">'+(v||'-')+'</td>';
+        else if(c0.k==='nickname') tr+='<td style="font-weight:700;color:var(--accent)">'+(v||'-')+'</td>';
+        else if(c0.k==='reviewType') tr+='<td style="white-space:nowrap">'+(v?'<span class="tag">'+v+'</span>':'-')+'</td>';
+        else tr+='<td style="font-size:11px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(v)+'">'+(v||'-')+'</td>';
+      });
+      return tr+'</tr>';
+    }).join('')) || ('<tr><td colspan="'+colCount+'" style="text-align:center;padding:24px;color:var(--green)">리뷰 미작성 대상이 없습니다</td></tr>')
+    +'</tbody></table>';
+  openMd('missing-review');
+}
+
 function exportMissingReviewXlsx(){
   const title=document.getElementById('mr-title')?.textContent||'리뷰 미작성자';
   const table=document.querySelector('#mr-table table');
@@ -10255,6 +10330,9 @@ function dsFieldChange(el){
   setProfitByRole('profitMgr',-c2.expMgr);
   setProfitByRole('profitTotal',c2.profit);
   DS_DIRTY=true;
+  if(field==='payDate'||field==='payName'){
+    syncSettlesFromDaily().then(()=>{ try{ scheduleRerender(); }catch(_){} }).catch(console.error);
+  }
 }
 
 function dsPaidChange(el){
@@ -10264,6 +10342,7 @@ function dsPaidChange(el){
   if(idx<0)return;
   arr[idx].paid=el.checked;
   dsSv(arr);
+  syncSettlesFromDaily().then(()=>{ try{ scheduleRerender(); }catch(_){} }).catch(console.error);
 }
 
 function updateDsSumRow(){
@@ -10326,12 +10405,13 @@ function delDsRow(id){
   toast('삭제 완료');
 }
 
-function saveDailySettle(){
+async function saveDailySettle(){
   try{
     // 일/월 정산 행(payDate/payName 등)은 dsFieldChange에서 실시간 저장되고 있으므로
     // 여기서는 거래처 정산(wv_st)의 입금정보와 동기화만 수행
-    syncSettlesFromDaily();
-    toast('저장 완료 (거래처 정산 입금정보 동기화)');
+    await syncSettlesFromDaily();
+    try{ scheduleRerender(); }catch(_){}
+    toast('저장 완료 (거래처 정산·견적서 연동 반영)');
   }catch(e){
     console.warn('saveDailySettle err',e);
     toast('저장 중 오류가 발생했습니다: '+e.message,'error');
