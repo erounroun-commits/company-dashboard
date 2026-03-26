@@ -1563,7 +1563,6 @@ let CLIENTS_CACHE = [];
 let PROJECTS_CACHE = [];
 let RECORDS_CACHE = [];
 let QUOTES_CACHE = [];
-let CRM_QUOTES_CACHE = [];
 // 정산(입금 매칭) 캐시 (Firestore 연동) — 기존 localStorage(wv_st) 대체
 let SETTLES_CACHE = [];
 // 입금내역 히스토리 캐시 (Firestore 연동) — 기존 localStorage(wv_dep) 대체
@@ -1591,7 +1590,6 @@ const ld=()=>({
   projects: PROJECTS_CACHE,
   records: RECORDS_CACHE,
   quotes: QUOTES_CACHE,
-  crmQuotes: CRM_QUOTES_CACHE,
   settles: SETTLES_CACHE,
   deposits: DEP_HIST_CACHE,
   unmatchedDeposits: DEP_UNMATCHED_CACHE,
@@ -1729,7 +1727,6 @@ function subscribeMainDataFromFirestore(){
   unsubs.push(db.collection('projects').onSnapshot(makeHandler(v=>PROJECTS_CACHE=v), onSubErr));
   unsubs.push(db.collection('records').onSnapshot(makeHandler(v=>RECORDS_CACHE=v), onSubErr));
   unsubs.push(db.collection('quotes').onSnapshot(makeHandler(v=>QUOTES_CACHE=v), onSubErr));
-  unsubs.push(db.collection('crmQuotes').onSnapshot(makeHandler(v=>CRM_QUOTES_CACHE=v), onSubErr));
   _unsubMain = ()=>{ unsubs.forEach(fn=>{try{fn&&fn();}catch(e){}}); _unsubMain=null; };
 }
 
@@ -1809,8 +1806,6 @@ async function loadMainDataFromFirestore(){
   // quotes (기존 구조 유지, 나중에 필요 시 확장)
   const qtSnap = await db.collection('quotes').get().catch(()=>null);
   QUOTES_CACHE = qtSnap && !qtSnap.empty ? qtSnap.docs.map(d=>({id:d.id,...d.data()})) : [];
-  const crmQtSnap = await db.collection('crmQuotes').get().catch(()=>null);
-  CRM_QUOTES_CACHE = crmQtSnap && !crmQtSnap.empty ? crmQtSnap.docs.map(d=>({id:d.id,...d.data()})) : [];
 }
 
 // Firestore에서 정산(settles) 로드 + (1회) localStorage(wv_st) 마이그레이션
@@ -2246,29 +2241,6 @@ async function sv(key, value){
       // Firestore는 undefined 값을 허용하지 않으므로, 안전하게 정제
       const cleaned=cleanForFirestore({...q,id:q.id});
       batch.set(col.doc(cleaned.id),cleaned);
-    });
-    await batch.commit();
-  }else if(key==='crmqt'){
-    const prev=Array.isArray(CRM_QUOTES_CACHE)?CRM_QUOTES_CACHE.slice():[];
-    CRM_QUOTES_CACHE = value.slice();
-    const col=db.collection('crmQuotes');
-    const snap=await col.get();
-    const existingIds=new Set();
-    snap.forEach(doc=>existingIds.add(doc.id));
-    const nextIds=new Set();
-    CRM_QUOTES_CACHE.forEach(q=>{
-      if(!q.id) q.id=col.doc().id;
-      nextIds.add(q.id);
-    });
-    const prevMap={};
-    prev.forEach(q=>{ if(q.id) prevMap[q.id]=cleanForFirestore({...q,id:q.id}); });
-    const batch=db.batch();
-    existingIds.forEach(id=>{ if(!nextIds.has(id)) batch.delete(col.doc(id)); });
-    CRM_QUOTES_CACHE.forEach(q=>{
-      const cleaned=cleanForFirestore({...q,id:q.id});
-      const prevClean=prevMap[q.id];
-      const changed=!prevClean || JSON.stringify(prevClean)!==JSON.stringify(cleaned);
-      if(changed) batch.set(col.doc(cleaned.id),cleaned);
     });
     await batch.commit();
   }else if(key==='st'){
@@ -7876,7 +7848,7 @@ function getCrmQuoteTypeList(base){
 }
 function renderCrmQuotes(){
   const d=ld();
-  const list=(d.crmQuotes||[]).slice().sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
+  const list=(d.quotes||[]).filter(q=>q.crmMode===true).slice().sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
   const el=document.getElementById('crm-quote-inner');
   if(!el)return;
   let html=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
@@ -7958,7 +7930,7 @@ function renderCrmQuotes(){
 function openCrmQuoteForm(id){
   CRM_EDIT_ID=id||null;
   const d=ld();
-  const q=id?(d.crmQuotes||[]).find(x=>x.id===id):null;
+  const q=id?(d.quotes||[]).find(x=>x.id===id&&x.crmMode===true):null;
   const wrap=document.getElementById('crm-form-wrap');
   if(!wrap)return;
   wrap.classList.remove('hidden');
@@ -7967,7 +7939,8 @@ function openCrmQuoteForm(id){
     CRM_NEW_ITEMS=[{id:gid(),typeIdx:0,label:'진행비',calc:'fee1',qty:1,unitPrice:0,feeRate:0,taxApply:true,productName:''}];
   }
   document.getElementById('crm-date').value=q?.date||getKSTDate();
-  document.getElementById('crm-no').value=q?.no||`CRM-${new Date().toISOString().slice(0,7).replace('-','')}-${String((d.crmQuotes||[]).length+1).padStart(3,'0')}`;
+  const crmCnt=(d.quotes||[]).filter(x=>x.crmMode===true).length;
+  document.getElementById('crm-no').value=q?.no||`CRM-${new Date().toISOString().slice(0,7).replace('-','')}-${String(crmCnt+1).padStart(3,'0')}`;
   document.getElementById('crm-validity').value=q?.validity||'30일';
   document.getElementById('crm-to-name').value=q?.toName||'';
   document.getElementById('crm-to-biz-no').value=q?.toBizNo||'';
@@ -8041,7 +8014,7 @@ async function saveCrmQuote(){
   if(!date){toast('견적일자를 입력하세요','error');return;}
   if(!CRM_NEW_ITEMS.length){toast('항목을 1개 이상 입력하세요','error');return;}
   const d=ld();
-  const arr=[...(d.crmQuotes||[])];
+  const arr=[...(d.quotes||[])];
   const basePricing={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:parseInt(document.getElementById('crm-p3')?.value)||0};
   const quote={
     id:CRM_EDIT_ID||gid(),
@@ -8058,27 +8031,28 @@ async function saveCrmQuote(){
     basePricing,
     items:CRM_NEW_ITEMS.map(it=>({...it,label:(it.calc==='product'?'상품금액'+((it.productName||'').trim()?`(${it.productName.trim()})`:''):(it.label||''))})),
     notes:document.getElementById('crm-notes')?.value||'',
+    crmMode:true,
     collapsed:true,
     createdAt:CRM_EDIT_ID?((arr.find(x=>x.id===CRM_EDIT_ID)||{}).createdAt||new Date().toISOString()):new Date().toISOString(),
   };
   const idx=arr.findIndex(x=>x.id===quote.id);
   if(idx>=0) arr[idx]=quote; else arr.push(quote);
-  await sv('crmqt',arr);
+  await sv('qt',arr);
   closeCrmQuoteForm();
   renderCrmQuotes();
   toast('CRM 견적서 저장 완료');
 }
 function crmToggle(id){
-  const d=ld(); const arr=[...(d.crmQuotes||[])];
+  const d=ld(); const arr=[...(d.quotes||[])];
   const i=arr.findIndex(x=>x.id===id); if(i<0)return;
   arr[i].collapsed=!arr[i].collapsed;
-  sv('crmqt',arr);
+  sv('qt',arr);
   renderCrmQuotes();
 }
 async function delCrmQuote(id){
   if(!confirm('CRM 견적서를 삭제하시겠습니까?'))return;
-  const arr=(ld().crmQuotes||[]).filter(x=>x.id!==id);
-  await sv('crmqt',arr);
+  const arr=(ld().quotes||[]).filter(x=>x.id!==id);
+  await sv('qt',arr);
   renderCrmQuotes();
 }
 function openCrmLinkClient(id){
@@ -8088,27 +8062,26 @@ function openCrmLinkClient(id){
 }
 async function linkCrmQuoteToClient(id){
   const d=ld();
-  const q=(d.crmQuotes||[]).find(x=>x.id===id);
+  const q=(d.quotes||[]).find(x=>x.id===id&&x.crmMode===true);
   if(!q){toast('CRM 견적서를 찾을 수 없습니다','error');return;}
   const sel=document.getElementById('crm-link-sel-'+id);
   const cid=sel?.value;
   if(!cid){toast('거래처를 선택하세요','error');return;}
   const cl=(d.clients||[]).find(c=>c.id===cid);
   if(!cl){toast('거래처 정보를 찾을 수 없습니다','error');return;}
-  const nextQt={...q,id:gid(),clientId:cid,settled:false,collapsed:true,crmTransferredFrom:id,createdAt:new Date().toISOString()};
+  const nextQt={...q,id:gid(),clientId:cid,settled:false,collapsed:true,crmMode:false,crmTransferredFrom:id,createdAt:new Date().toISOString()};
   const quotes=[...(d.quotes||[])];
   quotes.push(nextQt);
-  await sv('qt',quotes);
+  const crmRemoved=quotes.filter(x=>x.id!==id);
+  await sv('qt',crmRemoved);
   await addToSettle(nextQt);
   syncQtToDailySettle(nextQt);
-  const crmNext=(d.crmQuotes||[]).filter(x=>x.id!==id);
-  await sv('crmqt',crmNext);
   renderCrmQuotes();
   toast('거래처 견적서로 이관 및 연동 완료');
 }
 function exportCrmQuoteExcel(id){
   if(typeof XLSX==='undefined'){toast('XLSX 라이브러리 로딩 중...','error');return;}
-  const q=(ld().crmQuotes||[]).find(x=>x.id===id);
+  const q=(ld().quotes||[]).find(x=>x.id===id&&x.crmMode===true);
   if(!q){toast('대상을 찾을 수 없습니다','error');return;}
   const rows=[['견적일자',q.date],['견적번호',q.no||''],['수신처',q.toName||''],['사업자번호',q.toBizNo||''],['상호',q.toBizName||''],['대표자',q.toCeo||''],['업태/종목',q.toType||''],[],['품명','수량','단가','합계']];
   (q.items||[]).forEach(it=>{
