@@ -390,6 +390,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
     <div class="sidebar-logo">⚡ WAY PROJECT<span>관리자 대시보드</span></div>
     <div class="nav-item active" onclick="showPage('overview')" data-page="overview"><span class="nav-icon">📊</span>전체 현황</div>
     <div class="nav-item" onclick="showPage('clients')" data-page="clients"><span class="nav-icon">🏢</span>거래처 관리</div>
+    <div class="nav-item" onclick="showPage('crm')" data-page="crm"><span class="nav-icon">📇</span>CRM</div>
     <!-- 관리자 접이식 메뉴 -->
     <div class="nav-item" id="nav-admin-toggle" onclick="toggleAdminMenu()" data-page="__admin__" style="display:flex;align-items:center;justify-content:space-between">
       <span><span class="nav-icon">🛠️</span>관리자</span>
@@ -519,6 +520,20 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- CRM -->
+    <div class="page" id="page-crm">
+      <div class="page-header">
+        <div><div class="page-title">📇 CRM</div><div class="page-sub">외부 영업용 견적 관리 (정산 데이터와 분리)</div></div>
+        <button class="btn btn-sm btn-gray" onclick="refreshAllData()" title="최신 데이터로 새로고침">🔄 새로고침</button>
+      </div>
+      <div class="dtabs" style="margin-bottom:16px">
+        <div class="dtab active">📄 CRM용 견적서</div>
+      </div>
+      <div class="card">
+        <div id="crm-quote-inner"></div>
       </div>
     </div>
 
@@ -1548,6 +1563,7 @@ let CLIENTS_CACHE = [];
 let PROJECTS_CACHE = [];
 let RECORDS_CACHE = [];
 let QUOTES_CACHE = [];
+let CRM_QUOTES_CACHE = [];
 // 정산(입금 매칭) 캐시 (Firestore 연동) — 기존 localStorage(wv_st) 대체
 let SETTLES_CACHE = [];
 // 입금내역 히스토리 캐시 (Firestore 연동) — 기존 localStorage(wv_dep) 대체
@@ -1575,6 +1591,7 @@ const ld=()=>({
   projects: PROJECTS_CACHE,
   records: RECORDS_CACHE,
   quotes: QUOTES_CACHE,
+  crmQuotes: CRM_QUOTES_CACHE,
   settles: SETTLES_CACHE,
   deposits: DEP_HIST_CACHE,
   unmatchedDeposits: DEP_UNMATCHED_CACHE,
@@ -1688,6 +1705,7 @@ function scheduleRerender(){
       if(active==='page-settle-all') renderSettleAll();
       if(active==='page-deposit'){ updateUnmatchedBadge(); renderDepositHistory?.(); }
       if(active==='page-user-mgmt') renderUserMgmt();
+      if(active==='page-crm') renderCrmQuotes();
     }catch(e){}
   }, 80);
 }
@@ -1711,6 +1729,7 @@ function subscribeMainDataFromFirestore(){
   unsubs.push(db.collection('projects').onSnapshot(makeHandler(v=>PROJECTS_CACHE=v), onSubErr));
   unsubs.push(db.collection('records').onSnapshot(makeHandler(v=>RECORDS_CACHE=v), onSubErr));
   unsubs.push(db.collection('quotes').onSnapshot(makeHandler(v=>QUOTES_CACHE=v), onSubErr));
+  unsubs.push(db.collection('crmQuotes').onSnapshot(makeHandler(v=>CRM_QUOTES_CACHE=v), onSubErr));
   _unsubMain = ()=>{ unsubs.forEach(fn=>{try{fn&&fn();}catch(e){}}); _unsubMain=null; };
 }
 
@@ -1790,6 +1809,8 @@ async function loadMainDataFromFirestore(){
   // quotes (기존 구조 유지, 나중에 필요 시 확장)
   const qtSnap = await db.collection('quotes').get().catch(()=>null);
   QUOTES_CACHE = qtSnap && !qtSnap.empty ? qtSnap.docs.map(d=>({id:d.id,...d.data()})) : [];
+  const crmQtSnap = await db.collection('crmQuotes').get().catch(()=>null);
+  CRM_QUOTES_CACHE = crmQtSnap && !crmQtSnap.empty ? crmQtSnap.docs.map(d=>({id:d.id,...d.data()})) : [];
 }
 
 // Firestore에서 정산(settles) 로드 + (1회) localStorage(wv_st) 마이그레이션
@@ -2225,6 +2246,29 @@ async function sv(key, value){
       // Firestore는 undefined 값을 허용하지 않으므로, 안전하게 정제
       const cleaned=cleanForFirestore({...q,id:q.id});
       batch.set(col.doc(cleaned.id),cleaned);
+    });
+    await batch.commit();
+  }else if(key==='crmqt'){
+    const prev=Array.isArray(CRM_QUOTES_CACHE)?CRM_QUOTES_CACHE.slice():[];
+    CRM_QUOTES_CACHE = value.slice();
+    const col=db.collection('crmQuotes');
+    const snap=await col.get();
+    const existingIds=new Set();
+    snap.forEach(doc=>existingIds.add(doc.id));
+    const nextIds=new Set();
+    CRM_QUOTES_CACHE.forEach(q=>{
+      if(!q.id) q.id=col.doc().id;
+      nextIds.add(q.id);
+    });
+    const prevMap={};
+    prev.forEach(q=>{ if(q.id) prevMap[q.id]=cleanForFirestore({...q,id:q.id}); });
+    const batch=db.batch();
+    existingIds.forEach(id=>{ if(!nextIds.has(id)) batch.delete(col.doc(id)); });
+    CRM_QUOTES_CACHE.forEach(q=>{
+      const cleaned=cleanForFirestore({...q,id:q.id});
+      const prevClean=prevMap[q.id];
+      const changed=!prevClean || JSON.stringify(prevClean)!==JSON.stringify(cleaned);
+      if(changed) batch.set(col.doc(cleaned.id),cleaned);
     });
     await batch.commit();
   }else if(key==='st'){
@@ -5597,6 +5641,7 @@ function showPage(n){
     openAdminMenu();
   }
   if(n==='export')renderExportPage();
+  if(n==='crm')renderCrmQuotes();
   if(n==='settle-all')renderSettleAll();
   if(n==='deposit'){showDepTab('names');updateUnmatchedBadge();}
   if(n==='daily-settle')initDailySettle();
@@ -7056,7 +7101,10 @@ function renderDetQuote(){
   let html=`<div style="max-width:920px">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
       <div style="font-size:13px;font-weight:700">📄 견적서 관리</div>
-      <button class="btn btn-blue btn-sm" onclick="openNewQuoteForm()">+ 견적서 작성</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-green btn-sm" onclick="exportClientQuotesExcel()">📥 견적서 엑셀 추출</button>
+        <button class="btn btn-blue btn-sm" onclick="openNewQuoteForm()">+ 견적서 작성</button>
+      </div>
     </div>
     <div style="font-size:11px;color:var(--text2);margin-bottom:14px;padding:10px 14px;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px">
       📌 세금계산서 발행 시: 각 항목별 수수료·부가세 자동 계산 | <b>상품금액</b> 항목은 수수료율(%) 직접 입력 가능
@@ -7717,6 +7765,363 @@ function delQt(qtId){
   renderDetQuote();renderDetSettle();
   try{ scheduleRerender(); }catch(e){}
   toast('삭제됨');
+}
+
+function exportClientQuotesExcel(){
+  if(typeof XLSX==='undefined'){toast('XLSX 라이브러리 로딩 중...','error');return;}
+  const d=ld();
+  const c=d.clients.find(x=>x.id===CUR_CLIENT);
+  if(!c){toast('거래처를 선택해주세요','error');return;}
+  const quotes=(d.quotes||[]).filter(q=>q.clientId===CUR_CLIENT).sort((a,b)=>{
+    const oa=a.order!=null?a.order:9999, ob=b.order!=null?b.order:9999;
+    if(oa!==ob)return oa-ob;
+    return (b.date||'').localeCompare(a.date||'');
+  });
+  if(!quotes.length){toast('추출할 견적서가 없습니다','error');return;}
+
+  const wb=XLSX.utils.book_new();
+
+  // 1) 요약 시트
+  const summaryRows=[['거래처',c.name],['추출일시',new Date().toLocaleString('ko-KR')],[],['No','견적일자','견적번호','수신처','세금계산서','정산상태','합계금액']];
+  quotes.forEach((q,idx)=>{
+    summaryRows.push([
+      idx+1,
+      q.date||'',
+      q.no||'',
+      q.toName||c.name||'',
+      q.taxYn?'발행':'미발행',
+      q.settled?'정산완료':'대기중',
+      calcQtTotal(q)||0
+    ]);
+  });
+  const wsSummary=XLSX.utils.aoa_to_sheet(summaryRows);
+  wsSummary['!cols']=[{wch:6},{wch:12},{wch:18},{wch:18},{wch:12},{wch:12},{wch:14}];
+  XLSX.utils.book_append_sheet(wb,wsSummary,'견적서요약');
+
+  // 2) 견적서별 상세 시트
+  quotes.forEach((q,idx)=>{
+    const rows=[
+      ['거래처',c.name],
+      ['견적일자',q.date||''],
+      ['견적번호',q.no||''],
+      ['유효기간',q.validity||'30일'],
+      ['수신처',q.toName||''],
+      ['사업자번호',q.toBizNo||''],
+      ['상호',q.toBizName||''],
+      ['대표자',q.toCeo||''],
+      ['업태/종목',q.toType||''],
+      ['세금계산서',q.taxYn?'발행':'미발행'],
+      ['정산상태',q.settled?'정산완료':'대기중'],
+      [],
+      ['품명','수량','단가','공급가액','수수료','부가세','합계']
+    ];
+    const ti=q.taxItems||{};
+    (q.items||[]).forEach(it=>{
+      const qty=Number(it.qty)||0;
+      const unit=Number(it.unitPrice)||0;
+      const sup=qty*unit;
+      const applyTax=!!q.taxYn&&(
+        ((it.calc==='fee1'||it.calc==='fee2')&&ti.fee) ||
+        (it.calc==='delivery'&&ti.delivery) ||
+        (it.calc==='product'&&ti.product) ||
+        (it.calc==='custom'&&(it.taxApply!==false)) ||
+        (!ti.fee&&!ti.delivery&&!ti.product)
+      );
+      const feeRate=(it.calc==='product'&&applyTax)?(Number(it.feeRate)||10):0;
+      const comm=applyTax?Math.round(sup*(feeRate/100)):0;
+      const vat=applyTax?Math.round((sup+comm)*0.1):0;
+      const total=sup+comm+vat;
+      rows.push([
+        it.label||it.calc||'',
+        qty,
+        unit,
+        sup,
+        comm,
+        vat,
+        total
+      ]);
+    });
+    rows.push([]);
+    rows.push(['최종 합계','','','','','',calcQtTotal(q)||0]);
+    if(q.notes){
+      rows.push([]);
+      rows.push(['비고',q.notes]);
+    }
+    const ws=XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols']=[{wch:34},{wch:8},{wch:12},{wch:12},{wch:10},{wch:10},{wch:14}];
+    const sheetNameRaw=`견적${idx+1}_${q.no||q.date||''}`;
+    const sheetName=sheetNameRaw.replace(/[\\/:*?"<>|\[\]]/g,'_').slice(0,31)||`견적${idx+1}`;
+    XLSX.utils.book_append_sheet(wb,ws,sheetName);
+  });
+
+  const fileName=`${String(c.name||'거래처').replace(/[\\/:*?"<>|]/g,'_')}_견적서_${getKSTDate()}.xlsx`;
+  XLSX.writeFile(wb,fileName);
+  toast(`견적서 ${quotes.length}건 엑셀 추출 완료`);
+}
+
+// ── CRM 견적서 (외부 영업용 / 정산 분리) ─────────────────────
+let CRM_EDIT_ID=null;
+let CRM_NEW_ITEMS=[];
+function getCrmQuoteTypeList(base){
+  const b=base||{};
+  const p1=b.price1Type||'실배송';
+  const p2=b.price2Type||'빈박스';
+  return [
+    {label:`진행비 (${p1})`,calc:'fee1',defaultPrice:parseInt(b.price1)||0,feeRate:0},
+    {label:`진행비 (${p2})`,calc:'fee2',defaultPrice:parseInt(b.price2)||0,feeRate:0},
+    {label:'택배대행비',calc:'delivery',defaultPrice:parseInt(b.price3)||0,feeRate:0},
+    {label:'상품금액',calc:'product',defaultPrice:0,feeRate:10},
+    {label:'직접 입력',calc:'custom',defaultPrice:0,feeRate:0},
+  ];
+}
+function renderCrmQuotes(){
+  const d=ld();
+  const list=(d.crmQuotes||[]).slice().sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
+  const el=document.getElementById('crm-quote-inner');
+  if(!el)return;
+  let html=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <div style="font-size:12px;color:var(--text2)">CRM 견적금액은 <b>정산/입금/일월정산에 반영되지 않습니다.</b></div>
+    <button class="btn btn-blue btn-sm" onclick="openCrmQuoteForm()">+ CRM 견적서 작성</button>
+  </div>
+  <div id="crm-form-wrap" class="hidden" style="margin-bottom:14px;background:var(--bg2);border:2px solid var(--accent);border-radius:12px;padding:14px">
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px">
+      <div><label class="fl">견적일자 *</label><input class="fi" type="date" id="crm-date" value="${getKSTDate()}"></div>
+      <div><label class="fl">견적번호</label><input class="fi" id="crm-no" placeholder="자동생성"></div>
+      <div><label class="fl">유효기간</label><input class="fi" id="crm-validity" value="30일"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:8px">
+      <div><label class="fl">수신처</label><input class="fi" id="crm-to-name" placeholder="공급받는자명"></div>
+      <div><label class="fl">사업자번호</label><input class="fi" id="crm-to-biz-no" placeholder="수기 입력"></div>
+      <div><label class="fl">상호명</label><input class="fi" id="crm-to-biz-name" placeholder="수기 입력"></div>
+      <div><label class="fl">대표자</label><input class="fi" id="crm-to-ceo" placeholder="수기 입력"></div>
+      <div style="grid-column:1/3"><label class="fl">업태/종목</label><input class="fi" id="crm-to-type" placeholder="수기 입력"></div>
+    </div>
+    <div style="background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:10px;margin-bottom:8px">
+      <div style="font-size:11px;font-weight:700;color:#9a3412;margin-bottom:6px">💰 기본 단가 설정 (해당 견적서 전용)</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+        <div><input class="fi" id="crm-p1-type" value="실배송" placeholder="유형1 이름"><input class="fi" id="crm-p1" type="number" placeholder="유형1 단가"></div>
+        <div><input class="fi" id="crm-p2-type" value="빈박스" placeholder="유형2 이름"><input class="fi" id="crm-p2" type="number" placeholder="유형2 단가"></div>
+        <div><input class="fi" id="crm-p3" type="number" placeholder="택배대행 단가"></div>
+      </div>
+    </div>
+    <div style="display:flex;gap:14px;align-items:center;margin-bottom:8px">
+      <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="crm-tax-yn" onchange="renderCrmItems()"> 세금계산서</label>
+      <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="crm-ti-fee" checked onchange="renderCrmItems()"> 진행비</label>
+      <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="crm-ti-del" checked onchange="renderCrmItems()"> 택배비</label>
+      <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="crm-ti-prod" checked onchange="renderCrmItems()"> 상품금액</label>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <div style="font-size:12px;font-weight:700">견적 항목</div>
+      <button class="btn btn-xs btn-blue" onclick="crmAddItem()">+ 항목 추가</button>
+    </div>
+    <div id="crm-items-wrap"></div>
+    <div class="fg" style="margin-top:8px"><label class="fl">비고</label><textarea class="fta" id="crm-notes" style="min-height:44px"></textarea></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+      <button class="btn btn-gray btn-sm" onclick="closeCrmQuoteForm()">취소</button>
+      <button class="btn btn-green btn-sm" onclick="saveCrmQuote()">저장</button>
+    </div>
+  </div>`;
+  if(!list.length){
+    html+=`<div style="text-align:center;padding:24px;color:var(--text3)">CRM 견적서가 없습니다.</div>`;
+  }else{
+    html+=list.map(q=>{
+      const collapsed=!!q.collapsed;
+      const linked=q.linkedClientId?`<span class="badge bg">연결완료</span>`:'';
+      return `<div style="border:1px solid var(--border);border-radius:10px;margin-bottom:8px;overflow:hidden">
+        <div style="padding:10px 12px;background:var(--bg2);display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="crmToggle('${q.id}')">
+          <div style="display:flex;gap:8px;align-items:center">
+            <span style="font-size:11px;color:var(--text3)">${q.date}</span>
+            <b>${q.toName||'공급받는자 미입력'}</b>
+            ${linked}
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <span style="font-weight:700;color:var(--accent)">${fmtN(calcQtTotal(q))}원</span>
+            <button class="btn btn-xs btn-gray" onclick="event.stopPropagation();openCrmQuoteForm('${q.id}')">수정</button>
+            <button class="btn btn-xs btn-blue" onclick="event.stopPropagation();exportCrmQuoteExcel('${q.id}')">엑셀</button>
+            <button class="btn btn-xs btn-green" onclick="event.stopPropagation();openCrmLinkClient('${q.id}')">거래처 연결</button>
+            <button class="btn btn-xs btn-red" onclick="event.stopPropagation();delCrmQuote('${q.id}')">삭제</button>
+          </div>
+        </div>
+        <div id="crm-body-${q.id}" style="${collapsed?'display:none':''};padding:12px">${buildQtDoc(q)}
+          <div id="crm-link-${q.id}" class="hidden" style="margin-top:10px;padding:10px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px">
+            <div style="display:flex;gap:8px;align-items:center">
+              <select class="fs" id="crm-link-sel-${q.id}" style="flex:1">${(d.clients||[]).map(c=>`<option value="${c.id}">${c.name}</option>`).join('')}</select>
+              <button class="btn btn-sm btn-blue" onclick="linkCrmQuoteToClient('${q.id}')">이관 실행</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  el.innerHTML=html;
+}
+function openCrmQuoteForm(id){
+  CRM_EDIT_ID=id||null;
+  const d=ld();
+  const q=id?(d.crmQuotes||[]).find(x=>x.id===id):null;
+  const wrap=document.getElementById('crm-form-wrap');
+  if(!wrap)return;
+  wrap.classList.remove('hidden');
+  CRM_NEW_ITEMS=(q?.items||[]).map(it=>({...it,id:it.id||gid()}));
+  if(!CRM_NEW_ITEMS.length){
+    CRM_NEW_ITEMS=[{id:gid(),typeIdx:0,label:'진행비',calc:'fee1',qty:1,unitPrice:0,feeRate:0,taxApply:true,productName:''}];
+  }
+  document.getElementById('crm-date').value=q?.date||getKSTDate();
+  document.getElementById('crm-no').value=q?.no||`CRM-${new Date().toISOString().slice(0,7).replace('-','')}-${String((d.crmQuotes||[]).length+1).padStart(3,'0')}`;
+  document.getElementById('crm-validity').value=q?.validity||'30일';
+  document.getElementById('crm-to-name').value=q?.toName||'';
+  document.getElementById('crm-to-biz-no').value=q?.toBizNo||'';
+  document.getElementById('crm-to-biz-name').value=q?.toBizName||'';
+  document.getElementById('crm-to-ceo').value=q?.toCeo||'';
+  document.getElementById('crm-to-type').value=q?.toType||'';
+  document.getElementById('crm-p1-type').value=q?.basePricing?.price1Type||'실배송';
+  document.getElementById('crm-p2-type').value=q?.basePricing?.price2Type||'빈박스';
+  document.getElementById('crm-p1').value=q?.basePricing?.price1||0;
+  document.getElementById('crm-p2').value=q?.basePricing?.price2||0;
+  document.getElementById('crm-p3').value=q?.basePricing?.price3||0;
+  document.getElementById('crm-tax-yn').checked=!!q?.taxYn;
+  document.getElementById('crm-ti-fee').checked=!!(q?.taxItems?.fee ?? true);
+  document.getElementById('crm-ti-del').checked=!!(q?.taxItems?.delivery ?? true);
+  document.getElementById('crm-ti-prod').checked=!!(q?.taxItems?.product ?? true);
+  document.getElementById('crm-notes').value=q?.notes||'';
+  renderCrmItems();
+}
+function closeCrmQuoteForm(){
+  document.getElementById('crm-form-wrap')?.classList.add('hidden');
+  CRM_EDIT_ID=null;
+  CRM_NEW_ITEMS=[];
+}
+function crmAddItem(){
+  const base={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:parseInt(document.getElementById('crm-p3')?.value)||0};
+  const types=getCrmQuoteTypeList(base);
+  CRM_NEW_ITEMS.push({id:gid(),typeIdx:0,label:types[0].label,calc:types[0].calc,qty:1,unitPrice:types[0].defaultPrice||0,feeRate:0,taxApply:true,productName:''});
+  renderCrmItems();
+}
+function crmRemoveItem(id){ CRM_NEW_ITEMS=CRM_NEW_ITEMS.filter(x=>x.id!==id); renderCrmItems(); }
+function crmChangeType(id,idx){
+  const it=CRM_NEW_ITEMS.find(x=>x.id===id); if(!it)return;
+  const base={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:parseInt(document.getElementById('crm-p3')?.value)||0};
+  const t=getCrmQuoteTypeList(base)[idx]||getCrmQuoteTypeList(base)[0];
+  it.typeIdx=idx; it.label=t.label; it.calc=t.calc; it.unitPrice=t.defaultPrice||0; if(it.calc!=='product') it.productName='';
+  renderCrmItems();
+}
+function crmField(id,f,v){
+  const it=CRM_NEW_ITEMS.find(x=>x.id===id); if(!it)return;
+  if(f==='qty'||f==='unitPrice'||f==='feeRate') it[f]=parseFloat(v)||0; else if(f==='taxApply') it[f]=!!v; else it[f]=v;
+}
+function renderCrmItems(){
+  const wrap=document.getElementById('crm-items-wrap'); if(!wrap)return;
+  const taxYn=document.getElementById('crm-tax-yn')?.checked||false;
+  const ti={fee:document.getElementById('crm-ti-fee')?.checked||false,delivery:document.getElementById('crm-ti-del')?.checked||false,product:document.getElementById('crm-ti-prod')?.checked||false};
+  const base={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:parseInt(document.getElementById('crm-p3')?.value)||0};
+  const types=getCrmQuoteTypeList(base);
+  const calc=(it)=>{
+    const sup=(it.qty||0)*(it.unitPrice||0);
+    const applyTax=taxYn&&(((it.calc==='fee1'||it.calc==='fee2')&&ti.fee)||(it.calc==='delivery'&&ti.delivery)||(it.calc==='product'&&ti.product)||(it.calc==='custom'&&(it.taxApply!==false)));
+    const fr=(it.calc==='product'&&applyTax)?(it.feeRate||10):0;
+    const comm=applyTax?Math.round(sup*(fr/100)):0;
+    const vat=applyTax?Math.round((sup+comm)*0.1):0;
+    return {total:sup+comm+vat,sup,comm,vat};
+  };
+  const gt=CRM_NEW_ITEMS.reduce((s,it)=>s+calc(it).total,0);
+  wrap.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:var(--bg2)">
+    <th>유형</th><th>품명</th><th>수량</th><th>단가</th><th>합계</th><th></th></tr></thead><tbody>
+    ${CRM_NEW_ITEMS.map(it=>`<tr style="border-top:1px solid var(--border)">
+      <td><select class="fs" onchange="crmChangeType('${it.id}',parseInt(this.value))">${types.map((t,i)=>`<option value="${i}" ${i===it.typeIdx?'selected':''}>${t.label}</option>`).join('')}</select></td>
+      <td>${it.calc==='product'?`<input class="fi" value="${escHtml(it.productName||'')}" oninput="crmField('${it.id}','productName',this.value);">`:`<input class="fi" value="${escHtml(it.label||'')}" ${it.calc!=='custom'?'disabled':''} oninput="crmField('${it.id}','label',this.value);">`}</td>
+      <td><input class="fi" type="number" value="${it.qty||0}" onchange="crmField('${it.id}','qty',this.value);renderCrmItems()"></td>
+      <td><input class="fi" type="number" value="${it.unitPrice||0}" onchange="crmField('${it.id}','unitPrice',this.value);renderCrmItems()"></td>
+      <td style="text-align:right;font-weight:700">${fmtN(calc(it).total)}원</td>
+      <td><button class="btn btn-xs btn-red" onclick="crmRemoveItem('${it.id}')">삭제</button></td>
+    </tr>`).join('')}
+  </tbody></table><div style="text-align:right;margin-top:6px;font-weight:800">최종 합계: ${fmtN(gt)}원</div>`;
+}
+async function saveCrmQuote(){
+  const date=document.getElementById('crm-date')?.value;
+  if(!date){toast('견적일자를 입력하세요','error');return;}
+  if(!CRM_NEW_ITEMS.length){toast('항목을 1개 이상 입력하세요','error');return;}
+  const d=ld();
+  const arr=[...(d.crmQuotes||[])];
+  const basePricing={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:parseInt(document.getElementById('crm-p3')?.value)||0};
+  const quote={
+    id:CRM_EDIT_ID||gid(),
+    date,
+    no:document.getElementById('crm-no')?.value||'',
+    validity:document.getElementById('crm-validity')?.value||'30일',
+    toName:document.getElementById('crm-to-name')?.value||'',
+    toBizNo:document.getElementById('crm-to-biz-no')?.value||'',
+    toBizName:document.getElementById('crm-to-biz-name')?.value||'',
+    toCeo:document.getElementById('crm-to-ceo')?.value||'',
+    toType:document.getElementById('crm-to-type')?.value||'',
+    taxYn:document.getElementById('crm-tax-yn')?.checked||false,
+    taxItems:{fee:document.getElementById('crm-ti-fee')?.checked||false,delivery:document.getElementById('crm-ti-del')?.checked||false,product:document.getElementById('crm-ti-prod')?.checked||false},
+    basePricing,
+    items:CRM_NEW_ITEMS.map(it=>({...it,label:(it.calc==='product'?'상품금액'+((it.productName||'').trim()?`(${it.productName.trim()})`:''):(it.label||''))})),
+    notes:document.getElementById('crm-notes')?.value||'',
+    collapsed:true,
+    createdAt:CRM_EDIT_ID?((arr.find(x=>x.id===CRM_EDIT_ID)||{}).createdAt||new Date().toISOString()):new Date().toISOString(),
+  };
+  const idx=arr.findIndex(x=>x.id===quote.id);
+  if(idx>=0) arr[idx]=quote; else arr.push(quote);
+  await sv('crmqt',arr);
+  closeCrmQuoteForm();
+  renderCrmQuotes();
+  toast('CRM 견적서 저장 완료');
+}
+function crmToggle(id){
+  const d=ld(); const arr=[...(d.crmQuotes||[])];
+  const i=arr.findIndex(x=>x.id===id); if(i<0)return;
+  arr[i].collapsed=!arr[i].collapsed;
+  sv('crmqt',arr);
+  renderCrmQuotes();
+}
+async function delCrmQuote(id){
+  if(!confirm('CRM 견적서를 삭제하시겠습니까?'))return;
+  const arr=(ld().crmQuotes||[]).filter(x=>x.id!==id);
+  await sv('crmqt',arr);
+  renderCrmQuotes();
+}
+function openCrmLinkClient(id){
+  const el=document.getElementById('crm-link-'+id);
+  if(!el)return;
+  el.classList.toggle('hidden');
+}
+async function linkCrmQuoteToClient(id){
+  const d=ld();
+  const q=(d.crmQuotes||[]).find(x=>x.id===id);
+  if(!q){toast('CRM 견적서를 찾을 수 없습니다','error');return;}
+  const sel=document.getElementById('crm-link-sel-'+id);
+  const cid=sel?.value;
+  if(!cid){toast('거래처를 선택하세요','error');return;}
+  const cl=(d.clients||[]).find(c=>c.id===cid);
+  if(!cl){toast('거래처 정보를 찾을 수 없습니다','error');return;}
+  const nextQt={...q,id:gid(),clientId:cid,settled:false,collapsed:true,crmTransferredFrom:id,createdAt:new Date().toISOString()};
+  const quotes=[...(d.quotes||[])];
+  quotes.push(nextQt);
+  await sv('qt',quotes);
+  await addToSettle(nextQt);
+  syncQtToDailySettle(nextQt);
+  const crmNext=(d.crmQuotes||[]).filter(x=>x.id!==id);
+  await sv('crmqt',crmNext);
+  renderCrmQuotes();
+  toast('거래처 견적서로 이관 및 연동 완료');
+}
+function exportCrmQuoteExcel(id){
+  if(typeof XLSX==='undefined'){toast('XLSX 라이브러리 로딩 중...','error');return;}
+  const q=(ld().crmQuotes||[]).find(x=>x.id===id);
+  if(!q){toast('대상을 찾을 수 없습니다','error');return;}
+  const rows=[['견적일자',q.date],['견적번호',q.no||''],['수신처',q.toName||''],['사업자번호',q.toBizNo||''],['상호',q.toBizName||''],['대표자',q.toCeo||''],['업태/종목',q.toType||''],[],['품명','수량','단가','합계']];
+  (q.items||[]).forEach(it=>{
+    const itemQt={taxYn:q.taxYn,taxItems:q.taxItems,items:[it]};
+    rows.push([it.label||it.calc,it.qty||0,it.unitPrice||0,calcQtTotal(itemQt)]);
+  });
+  rows.push([]);
+  rows.push(['최종합계','','',calcQtTotal(q)]);
+  const wb=XLSX.utils.book_new();
+  const ws=XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols']=[{wch:28},{wch:10},{wch:12},{wch:14}];
+  XLSX.utils.book_append_sheet(wb,ws,'CRM견적서');
+  XLSX.writeFile(wb,`CRM_견적서_${(q.no||q.date||'')}.xlsx`);
 }
 
 function calcQtTotal(qt){
