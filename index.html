@@ -10605,7 +10605,7 @@ function renderDsTable(rows, dateStr){
 
   // 인풋 생성 - 자동계산 필드는 회색 배경으로 구분
   const inp=(rowId,field,val,isText,autoCalc)=>
-    `<input type="${isText?'text':'number'}" value="${val||''}" data-id="${rowId}" data-f="${field}" onchange="dsFieldChange(this)"
+    `<input type="${isText?'text':'number'}" value="${val||''}" data-id="${rowId}" data-f="${field}" onchange="dsFieldChange(this)" onpaste="handleDsPaste(event,this)"
       style="background:${autoCalc?'transparent':'transparent'};border:none;color:var(--text);font-size:11px;font-family:var(--font);width:100%;outline:none;text-align:${isText?'left':'right'};min-width:${isText?'76':'50'}px">`;
   
   // 자동계산 결과 셀 (읽기전용 + 강조)
@@ -10629,7 +10629,7 @@ function renderDsTable(rows, dateStr){
       ${calcCell(c2.totalRev,'','var(--accent)','totalRev')}
       ${TD(inp(r.id,'expReview',r.expReview),GExp)}
       <td style="border:1px solid var(--border);padding:3px 5px;background:${GExp}">
-        <input type="number" value="${c2.expBox||''}" data-id="${r.id}" data-f="expBoxOverride" onchange="dsFieldChange(this)"
+        <input type="number" value="${c2.expBox||''}" data-id="${r.id}" data-f="expBoxOverride" onchange="dsFieldChange(this)" onpaste="handleDsPaste(event,this)"
           style="background:transparent;border:none;color:#6b7280;font-size:11px;font-family:var(--font);width:100%;outline:none;text-align:right;min-width:50px"
           placeholder="${c2.expBox||''}">
       </td>
@@ -10737,6 +10737,97 @@ function dsFieldChange(el){
   }
 }
 
+function parseDsPasteValue(field, raw){
+  const v=(raw==null?'':String(raw)).trim();
+  if(field==='paid'){
+    const low=v.toLowerCase();
+    return ['y','yes','true','1','완료','입금','정산완료'].includes(low);
+  }
+  if(['clientName','payName','payDate','date','memo'].includes(field)) return v;
+  if(v==='') return '';
+  const num=Number(v.replace(/[,\s원]/g,''));
+  return Number.isFinite(num)?num:'';
+}
+
+function isDsPasteHeaderRow(cells){
+  if(!cells||!cells.length) return false;
+  const joined=cells.join(' ').toLowerCase();
+  return (
+    joined.includes('정산') ||
+    joined.includes('날짜') ||
+    joined.includes('업체명') ||
+    joined.includes('입금여부')
+  );
+}
+
+async function handleDsPaste(e, startEl){
+  try{
+    const text=(e.clipboardData||window.clipboardData)?.getData('text/plain')||'';
+    if(!text.trim()) return;
+    const startInput=startEl||e.target;
+    const startTd=startInput&&startInput.closest?startInput.closest('td'):null;
+    const startTr=startTd&&startTd.closest?startTd.closest('tr'):null;
+    const table=startTr&&startTr.closest?startTr.closest('table'):null;
+    const tbody=table&&table.tBodies&&table.tBodies[0]?table.tBodies[0]:null;
+    if(!startTd||!startTr||!tbody) return;
+    e.preventDefault();
+
+    let lines=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n');
+    while(lines.length && lines[lines.length-1].trim()==='') lines.pop();
+    if(!lines.length) return;
+    let rows=lines.map(line=>line.split('\t'));
+    if(rows.length && isDsPasteHeaderRow(rows[0])) rows=rows.slice(1);
+    if(!rows.length) return;
+
+    const arr=dsLd();
+    const rowMap={};
+    arr.forEach((r,i)=>{ rowMap[r.id]=i; });
+    const startRowIdx=Array.prototype.indexOf.call(tbody.rows,startTr);
+    const startColIdx=Array.prototype.indexOf.call(startTr.cells,startTd);
+    if(startRowIdx<0||startColIdx<0) return;
+
+    let applied=0;
+    let syncNeeded=false;
+    for(let r=0;r<rows.length;r++){
+      const targetRowIdx=startRowIdx+r;
+      if(targetRowIdx>=tbody.rows.length) break;
+      const tr=tbody.rows[targetRowIdx];
+      const cells=rows[r];
+      for(let c=0;c<cells.length;c++){
+        const targetColIdx=startColIdx+c;
+        if(targetColIdx>=tr.cells.length) break;
+        const td=tr.cells[targetColIdx];
+        if(!td) continue;
+        const editEl=td.querySelector('[data-id][data-f]');
+        if(!editEl) continue;
+        const id=editEl.dataset.id;
+        const field=editEl.dataset.f;
+        if(!id||!field) continue;
+        const idx=rowMap[id];
+        if(idx===undefined) continue;
+        const nextVal=parseDsPasteValue(field,cells[c]);
+        if(arr[idx][field]===nextVal) continue;
+        arr[idx][field]=nextVal;
+        applied++;
+        if(field==='payDate'||field==='payName'||field==='paid') syncNeeded=true;
+      }
+    }
+    if(!applied) return;
+
+    dsSv(arr);
+    DS_DIRTY=true;
+    if(syncNeeded){
+      await syncSettlesFromDaily();
+      try{ scheduleRerender(); }catch(_){}
+    }
+    if(DS_ALL_VIEW) loadDailyAll(); else loadDailySettle(DS_DATE);
+    toast(applied+'개 셀 붙여넣기 완료');
+  }catch(err){
+    console.warn('handleDsPaste err',err);
+    toast('붙여넣기 처리 중 오류: '+(err&&err.message?err.message:err),'error');
+  }
+}
+
 function dsPaidChange(el){
   const id=el.dataset.id;
   const arr=dsLd();
@@ -10800,11 +10891,29 @@ function saveDsRowModal(){
   toast('행 추가 완료');
 }
 
-function delDsRow(id){
-  if(!confirm('이 정산 행을 삭제하시겠습니까?'))return;
-  dsSv(dsLd().filter(r=>r.id!==id));
+async function delDsRow(id){
+  const arr=dsLd();
+  const row=arr.find(r=>r.id===id);
+  if(!row){toast('삭제할 행을 찾을 수 없습니다','error');return;}
+  const hasQt=!!row.qtId;
+  const msg=hasQt
+    ? '이 행을 삭제하시겠습니까?\n연결된 거래처 정산/견적서/일별 집계 행도 함께 삭제됩니다.'
+    : '이 정산 행을 삭제하시겠습니까?';
+  if(!confirm(msg))return;
+
+  if(hasQt){
+    const qtId=row.qtId;
+    dsSv(arr.filter(r=>r.qtId!==qtId));
+    await stSv(stLd().filter(s=>s.qtId!==qtId));
+    const d=ld();
+    await sv('qt',(d.quotes||[]).filter(q=>q.id!==qtId));
+    try{ scheduleRerender(); }catch(_){}
+    toast('연결된 행 삭제 완료');
+  }else{
+    dsSv(arr.filter(r=>r.id!==id));
+    toast('삭제 완료');
+  }
   if(DS_ALL_VIEW) loadDailyAll(); else loadDailySettle(DS_DATE);
-  toast('삭제 완료');
 }
 
 async function saveDailySettle(){
