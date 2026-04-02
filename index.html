@@ -11124,14 +11124,17 @@ function loadMonthlySettle(ym){
 
   while(curDay<=lastDate){
     const dateStr=`${ym}-${String(curDay).padStart(2,'0')}`;
-    const d=byDate[dateStr];
+    const rawD=byDate[dateStr];
+    // 견적서/정산행이 없는 날짜도 "0"으로 표시/수기입력 가능해야 함 (주말 포함)
+    const d=rawD||{sales:0,rev:0,profit:0,feeQty:0,boxQty:0,expMgr:0,cnt:0,paid:0,prodFee:0,feeAmt:0,boxAmt:0};
+    const hasData=!!rawD;
     const isWeekend=col%7===0||col%7===6;
     const dayCol=col%7===0?'#ef4444':col%7===6?'#6366f1':'var(--text)';
 
     let cellContent=`<div style="padding:6px 8px;">
       <div style="font-weight:700;font-size:13px;color:${dayCol};margin-bottom:${d?4:0}px">${curDay}</div>`;
 
-    if(d){
+    if(hasData){
       cellContent+=`<div style="font-size:10px;line-height:1.6;margin-top:2px">`;
       dataLabels.forEach(dl=>{
         const val=dl.fmt(null,d,dateStr);
@@ -11152,21 +11155,20 @@ function loadMonthlySettle(ym){
 
     cellContent+=`</div>`;
     // 진행건수+메모 수기입력 영역 추가
-    if(d){
-      const mc=manualCnt[dateStr];
-      const dispCnt=(mc&&mc.cnt!==undefined)?mc.cnt:d.feeQty;
-      const dispMemo=(mc&&mc.memo)?mc.memo:'';
-      const isManual=mc&&mc.cnt!==undefined;
-      cellContent=cellContent.replace('</div>',
-        `<div style="margin-top:4px;border-top:1px solid var(--border);padding-top:3px">
-          <span id="mcnt-${dateStr}" style="font-size:10px;font-weight:700;color:#6366f1;cursor:pointer;display:block" 
-            onclick="event.stopPropagation();editMonthlyCnt('${dateStr}','${ym}')" 
-            title="클릭하여 수기입력">✏️ 진행 ${dispCnt}건${isManual?' (수기)':' (자동)'}</span>
-          ${dispMemo?`<div id="mmemo-${dateStr}" style="font-size:9px;color:#f59e0b;margin-top:1px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%" onclick="event.stopPropagation();editMonthlyCnt('${dateStr}','${ym}')" title="${dispMemo}">📝 ${dispMemo}</div>`:`<div id="mmemo-${dateStr}" style="font-size:9px;color:var(--text3);cursor:pointer" onclick="event.stopPropagation();editMonthlyCnt('${dateStr}','${ym}')">+ 메모</div>`}
-        </div></div>`
-      );
-    }
-    row+=`<td style="border:1px solid var(--border);vertical-align:top;height:140px;cursor:${d?'pointer':'default'};background:${d?'var(--card)':'var(--bg2)'}" ${d?`onclick="showDsTabAndDate('${dateStr}')"`:''}>${cellContent}</td>`;
+    const mc=manualCnt[dateStr];
+    const dispCnt=(mc&&mc.cnt!==undefined)?mc.cnt:d.feeQty;
+    const dispMemo=(mc&&mc.memo)?mc.memo:'';
+    const isManual=mc&&mc.cnt!==undefined;
+    cellContent=cellContent.replace('</div>',
+      `<div style="margin-top:4px;border-top:1px solid var(--border);padding-top:3px">
+        <span id="mcnt-${dateStr}" style="font-size:10px;font-weight:700;color:#6366f1;cursor:pointer;display:block" 
+          onclick="event.stopPropagation();editMonthlyCnt('${dateStr}','${ym}')" 
+          title="클릭하여 수기입력">✏️ 진행 ${dispCnt}건${isManual?' (수기)':' (자동)'}</span>
+        ${dispMemo?`<div id="mmemo-${dateStr}" style="font-size:9px;color:#f59e0b;margin-top:1px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%" onclick="event.stopPropagation();editMonthlyCnt('${dateStr}','${ym}')" title="${dispMemo}">📝 ${dispMemo}</div>`:`<div id="mmemo-${dateStr}" style="font-size:9px;color:var(--text3);cursor:pointer" onclick="event.stopPropagation();editMonthlyCnt('${dateStr}','${ym}')">+ 메모</div>`}
+      </div></div>`
+    );
+    // 견적서가 없어도 일별 집계로 이동해 행 추가/확인 가능하게 한다.
+    row+=`<td style="border:1px solid var(--border);vertical-align:top;height:140px;cursor:pointer;background:${hasData?'var(--card)':'var(--bg2)'}" onclick="showDsTabAndDate('${dateStr}')">${cellContent}</td>`;
 
     col++;
     if(col%7===0&&curDay<lastDate){ calHtml+=row+'</tr><tr>'; row=''; }
