@@ -6059,6 +6059,48 @@ function extractQtDsData(qt){
   return {feeQty,feeAmt,feeTax,prodAmt,prodFee,prodTax,boxQty,boxAmt,boxTax};
 }
 
+// date(견적일자/정산일자)는 월별 달력 매칭을 위해 반드시 YYYY-MM-DD 형태여야 함.
+// 과거 데이터가 ISO(시간 포함) 등으로 저장된 경우를 대비해 통일한다.
+function normalizeYMD(input){
+  if(!input && input!==0)return '';
+  if(input instanceof Date){
+    const d=input;
+    return (d.toISOString ? d.toISOString() : String(d)).slice(0,10);
+  }
+  const s=String(input);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if(/^\d{4}-\d{2}-\d{2}T/.test(s)) return s.slice(0,10);
+  const m=s.match(/(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/);
+  if(m){
+    return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  }
+  return s.length>=10 ? s.slice(0,10) : s;
+}
+
+// 기존 ds.date 형식이 달력(YYYY-MM-DD)과 다르면 byDate[YYYY-MM-DD]로 매칭이 안됨.
+// qtId를 기준으로 quote.date를 읽어 ds.date를 보정(백필)한다.
+function normalizeDsDatesFromQuotes(){
+  try{
+    const quotes=new Map((ld().quotes||[]).map(q=>[q.id,q]));
+    const dsArr=dsLd();
+    let changed=false;
+    dsArr.forEach(r=>{
+      if(!r.qtId)return;
+      const q=quotes.get(r.qtId);
+      if(!q)return;
+      const target=normalizeYMD(q.date);
+      const cur=r.date;
+      if(target && target!==cur){
+        r.date=target;
+        changed=true;
+      }
+    });
+    if(changed) dsSv(dsArr);
+  }catch(e){
+    console.warn('normalizeDsDatesFromQuotes err',e);
+  }
+}
+
 // ─────────────────────────────────────────────────────────
 // [핵심] 견적서 → 일/월 정산 행 생성/업데이트
 // ─────────────────────────────────────────────────────────
@@ -6067,6 +6109,7 @@ function syncQtToDailySettle(qt){
   const d=ld();
   const client=d.clients.find(cl=>cl.id===qt.clientId);
   const dsArr=dsLd();
+  const qtDate=normalizeYMD(qt.date);
   const extracted=extractQtDsData(qt);
 
   const existIdx=dsArr.findIndex(r=>r.qtId===qt.id);
@@ -6075,7 +6118,7 @@ function syncQtToDailySettle(qt){
     const prev=dsArr[existIdx];
     dsArr[existIdx]={
       ...prev,
-      date: prev.date||qt.date,
+      date: qtDate||prev.date,
       clientId: qt.clientId,
       clientName: client?client.name:(prev.clientName||qt.toName||''),
       ...extracted,
@@ -6085,7 +6128,7 @@ function syncQtToDailySettle(qt){
     // 신규 생성
     dsArr.push({
       id:gid(), qtId:qt.id,
-      date:qt.date, clientId:qt.clientId,
+      date:qtDate||qt.date, clientId:qt.clientId,
       clientName:client?client.name:(qt.toName||''),
       payDate:'', payName:'',
       paid:false, ...extracted,
@@ -7426,7 +7469,7 @@ function saveQuoteForm(){
     if(idx<0){toast('수정할 견적서를 찾을 수 없습니다','error');return;}
     const prev=d.quotes[idx];
     const qt={...prev,
-      date,
+      date:normalizeYMD(date),
       no:document.getElementById('qn-no')?.value||'',
       validity:document.getElementById('qn-validity')?.value||'30일',
       toName:document.getElementById('qn-to-name')?.value||'',
@@ -7654,7 +7697,7 @@ function saveNewQuote(){
   });
   const qt={
     id:gid(),clientId:CUR_CLIENT,
-    date,
+    date:normalizeYMD(date),
     no:document.getElementById('qn-no')?.value||'',
     validity:document.getElementById('qn-validity')?.value||'30일',
     toName:document.getElementById('qn-to-name')?.value||'',
@@ -7910,7 +7953,8 @@ function renderCrmQuotes(){
     html+=`<div style="text-align:center;padding:24px;color:var(--text3)">CRM 견적서가 없습니다.</div>`;
   }else{
     html+=list.map(q=>{
-      const collapsed=!!q.collapsed;
+      // 기본은 접힘: collapsed가 명시적으로 false인 경우만 펼침
+      const collapsed=(q.collapsed!==false);
       const linked=q.linkedClientId?`<span class="badge bg">연결완료</span>`:'';
       return `<div style="border:1px solid var(--border);border-radius:10px;margin-bottom:8px;overflow:hidden">
         <div style="padding:10px 12px;background:var(--bg2);display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="crmToggle('${q.id}')">
@@ -8029,10 +8073,11 @@ async function saveCrmQuote(){
     if(!CRM_NEW_ITEMS.length){toast('항목을 1개 이상 입력하세요','error');return;}
     const d=ld();
     const arr=[...(d.quotes||[])];
+    const prevCollapsed = CRM_EDIT_ID ? ((arr.find(x=>x.id===CRM_EDIT_ID)||{}).collapsed) : undefined;
     const basePricing={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:parseInt(document.getElementById('crm-p3')?.value)||0};
     const quote={
       id:CRM_EDIT_ID||gid(),
-      date,
+      date:normalizeYMD(date),
       no:document.getElementById('crm-no')?.value||'',
       validity:document.getElementById('crm-validity')?.value||'30일',
       toName:document.getElementById('crm-to-name')?.value||'',
@@ -8046,7 +8091,8 @@ async function saveCrmQuote(){
       items:CRM_NEW_ITEMS.map(it=>({...it,label:(it.calc==='product'?'상품금액'+((it.productName||'').trim()?`(${it.productName.trim()})`:''):(it.label||''))})),
       notes:document.getElementById('crm-notes')?.value||'',
       crmMode:true,
-      collapsed:false,
+      // 기본은 접힘. 수정 시엔 기존 상태 유지(없으면 접힘).
+      collapsed: prevCollapsed===false ? false : true,
       createdAt:CRM_EDIT_ID?((arr.find(x=>x.id===CRM_EDIT_ID)||{}).createdAt||new Date().toISOString()):new Date().toISOString(),
     };
     const idx=arr.findIndex(x=>x.id===quote.id);
@@ -10458,6 +10504,8 @@ function loadDailySettle(dateStr){
   const all = dsLd();
   // 거래처 정산 최신 상태 일괄 동기화
   syncAllDsRowsFromSettle();
+  // 월별 달력/일별 조회는 ds.date가 YYYY-MM-DD 일치해야 함
+  normalizeDsDatesFromQuotes();
   const arr = dsLd().filter(r=>r.date===dateStr);
   DS_FILTER_ROWS = arr.slice();
   applyDsFilter();
@@ -10478,6 +10526,7 @@ function loadDailyAll(){
   document.getElementById('ds-date-input').value='';
   const all = dsLd();
   syncAllDsRowsFromSettle();
+  normalizeDsDatesFromQuotes();
   const allDs = dsLd();
   DS_FILTER_ROWS = allDs.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
   applyDsFilter();
@@ -10949,6 +10998,9 @@ async function saveDailySettle(){
 // ══════════════════════════════════════════════════════
 function loadMonthlySettle(ym){
   if(!ym)return;
+  // 월별 달력 매칭(byDate[YYYY-MM-DD])을 위해 동기화/보정을 먼저 수행
+  syncAllDsRowsFromSettle();
+  normalizeDsDatesFromQuotes();
   const all=dsLd().filter(r=>r.date&&r.date.startsWith(ym));
   const wrap=document.getElementById('ds-monthly-wrap');
   const summBox=document.getElementById('ds-month-summary-box');
