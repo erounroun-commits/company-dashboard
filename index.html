@@ -3948,7 +3948,7 @@ function processDepFile(file){
     const reader=new FileReader();
     reader.onload=e=>{
       try{
-        const wb=XLSX.read(e.target.result,{type:'string'});
+        const wb=XLSX.read(e.target.result,{type:'string',cellDates:true});
         _parseDepWb(wb,file.name);
       }catch(err){toast('CSV 읽기 오류: '+err.message,'error');}
     };
@@ -3959,7 +3959,7 @@ function processDepFile(file){
     reader.onload=e=>{
       try{
         const data=new Uint8Array(e.target.result);
-        const wb=XLSX.read(data,{type:'array'});
+        const wb=XLSX.read(data,{type:'array',cellDates:true});
         _parseDepWb(wb,file.name);
       }catch(err){
         // fallback: binary string
@@ -3975,29 +3975,51 @@ function processDepFile(file){
 }
 
 function depPickSheet(wb){
-  const names=wb.SheetNames||[];
+  if(!wb||!wb.Sheets) return null;
+  const sheets=wb.Sheets;
+  const names=Array.isArray(wb.SheetNames)&&wb.SheetNames.length
+    ? wb.SheetNames.slice()
+    : Object.keys(sheets);
+  if(!names.length) return null;
   const prefer=['국민은행','토스뱅크 지출 기록'];
   for(const p of prefer){
-    if(names.includes(p)&&wb.Sheets[p]) return wb.Sheets[p];
+    if(names.includes(p)&&sheets[p]) return sheets[p];
   }
-  let best=null, bestN=0;
-  for(const n of names){
-    const sh=wb.Sheets[n];
-    if(!sh) continue;
-    let cnt=0;
+  const compact=h=>String(h||'').trim().toLowerCase().replace(/\s+/g,'');
+  const looksLikeDep=(ws)=>{
     try{
-      const rows=XLSX.utils.sheet_to_json(sh,{header:1,defval:'',raw:true});
-      cnt=rows.filter(r=>Array.isArray(r)&&r.some(c=>c!==''&&c!=null)).length;
-    }catch(e){continue;}
-    if(cnt>bestN){bestN=cnt; best=sh;}
+      const strRows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false})||[];
+      for(let i=0;i<Math.min(35,strRows.length);i++){
+        const row=strRows[i]||[];
+        const hasDate=row.some(h=>{const c=compact(h);return c.includes('거래일시')||c.includes('일자')||c.includes('거래일자');});
+        const hasContent=row.some(h=>compact(h).includes('거래내용'));
+        const hasAmt=row.some(h=>{const c=compact(h);return c.includes('입금')&&!c.includes('입금자');});
+        if(hasDate&&hasContent&&hasAmt) return true;
+      }
+    }catch(e){}
+    return false;
+  };
+  for(const n of names){
+    const sh=sheets[n];
+    if(sh&&looksLikeDep(sh)) return sh;
+  }
+  let best=null,bestLen=-1;
+  for(const n of names){
+    const sh=sheets[n];
+    if(!sh) continue;
+    try{
+      const rows=XLSX.utils.sheet_to_json(sh,{header:1,defval:'',raw:true})||[];
+      if(rows.length>bestLen){bestLen=rows.length;best=sh;}
+    }catch(e){}
   }
   if(best) return best;
-  return wb.Sheets[names[0]];
+  const fk=(names[0]&&sheets[names[0]])?names[0]:Object.keys(sheets)[0];
+  return fk?sheets[fk]:null;
 }
 
 function _parseDepWb(wb,fname){
   const ws=depPickSheet(wb);
-  if(!ws){toast('시트를 찾을 수 없습니다.','error');return;}
+  if(!ws){toast('파일에서 시트를 읽지 못했습니다. .xlsx/.xls로 저장된 파일인지 확인하세요.','error');return;}
   // raw:true 로 읽어서 숫자/날짜 원형 보존, 별도 포맷
   const rawRows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
   const strRows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false});
@@ -4010,14 +4032,15 @@ function _parseDepWb(wb,fname){
 
   // ── 헤더/컬럼 위치 자동 감지 ─────────────────────────────
   const norm=h=>String(h||'').trim().toLowerCase();
+  const compact=h=>String(h||'').trim().toLowerCase().replace(/\s+/g,'');
 
-  // 헤더 행 찾기: "거래일시" 또는 "거래내용" + "입금" 텍스트가 있는 첫 행
+  // 헤더 행 찾기: "거래일시" 또는 "거래내용" + "입금" 텍스트가 있는 첫 행 (셀 안 공백 무시)
   let headerRowIdx=0;
   for(let i=0;i<strRows.length;i++){
     const row=strRows[i]||[];
-    const hasDate=row.some(h=>norm(h).includes('거래일시')||norm(h).includes('일자'));
-    const hasContent=row.some(h=>norm(h).includes('거래내용'));
-    const hasAmt=row.some(h=>norm(h).includes('입금')&&!norm(h).includes('입금자'));
+    const hasDate=row.some(h=>{const c=compact(h);return c.includes('거래일시')||c.includes('일자')||c.includes('거래일자');});
+    const hasContent=row.some(h=>compact(h).includes('거래내용'));
+    const hasAmt=row.some(h=>{const c=compact(h);return c.includes('입금')&&!c.includes('입금자');});
     if(hasDate && hasContent && hasAmt){
       headerRowIdx=i;
       break;
@@ -4029,7 +4052,7 @@ function _parseDepWb(wb,fname){
   // NO 컬럼 (번호)
   let colNo=0;
   header.forEach((h,idx)=>{
-    const n=norm(h);
+    const n=compact(h);
     if(n==='no'||n==='번호') colNo=idx;
   });
 
@@ -4039,20 +4062,19 @@ function _parseDepWb(wb,fname){
   // 거래내용 컬럼
   let colContent=2;
   header.forEach((h,idx)=>{
-    const n=norm(h);
-    if(n.includes('거래내용')) colContent=idx;
+    if(compact(h).includes('거래내용')) colContent=idx;
   });
 
   // 입금 금액 컬럼 (헤더에 '입금' 또는 '입금액')
   let colAmt=3;
   header.forEach((h,idx)=>{
-    const n=norm(h);
-    if(n.includes('입금')&& !n.includes('입금자')) colAmt=idx;
+    const n=compact(h);
+    if(n.includes('입금')&&!n.includes('입금자')) colAmt=idx;
   });
 
   // 헤더 행 건너뜀 여부 판단
   let start=headerRowIdx;
-  const h0=norm(rawRows[headerRowIdx][colNo]);
+  const h0=compact(rawRows[headerRowIdx]?rawRows[headerRowIdx][colNo]:'');
   if(h0==='no'||h0==='번호'||isNaN(Number(h0))) start=headerRowIdx+1;
 
   for(let i=start;i<rawRows.length;i++){
@@ -4060,7 +4082,13 @@ function _parseDepWb(wb,fname){
     const rs=strRows[i];  // string (포맷된 텍스트)
     if(!rr && !rs) continue;
 
-    const rawDate=String((rs&&rs[colDate])||(rr&&rr[colDate])||'').trim();
+    let cellB;
+    if(rs&&rs[colDate]!==undefined&&rs[colDate]!=='') cellB=rs[colDate];
+    else if(rr&&rr[colDate]!==undefined&&rr[colDate]!=='') cellB=rr[colDate];
+    else cellB='';
+    const rawDate=(cellB instanceof Date)
+      ?`${cellB.getFullYear()}-${String(cellB.getMonth()+1).padStart(2,'0')}-${String(cellB.getDate()).padStart(2,'0')}`
+      :String(cellB||'').trim();
     const content=String((rs&&rs[colContent])||(rr&&rr[colContent])||'').trim();
 
     // 입금 금액: raw 숫자 우선, 없으면 문자열에서 숫자만 추출
@@ -4077,7 +4105,7 @@ function _parseDepWb(wb,fname){
     if(!amt) continue;           // 입금액 없는 행
 
     const noVal=String((rs&&rs[colNo])||(rr&&rr[colNo])||i-start+1).trim();
-    const dateStr=parseDateStr(rawDate);
+    const dateStr=parseDateStr(cellB===''||cellB===null||cellB===undefined?'':cellB);
 
     DEP_PARSED.push({
       id:gid(), idx:i-start, no:noVal,
@@ -4102,6 +4130,11 @@ function _parseDepWb(wb,fname){
 // 날짜 파싱 헬퍼 (입금 내역용)
 function parseDateStr(s){
   if(s===null||s===undefined||s==='')return new Date().toISOString().slice(0,10);
+  // XLSX cellDates:true → Date 객체
+  if(Object.prototype.toString.call(s)==='[object Date]'&&!isNaN(s)){
+    const d=s;
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  }
   // 엑셀 날짜 시리얼(숫자) 처리
   if(typeof s==='number'){
     const base=new Date(Date.UTC(1899,11,30));
