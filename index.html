@@ -3974,9 +3974,30 @@ function processDepFile(file){
   }
 }
 
+function depPickSheet(wb){
+  const names=wb.SheetNames||[];
+  const prefer=['국민은행','토스뱅크 지출 기록'];
+  for(const p of prefer){
+    if(names.includes(p)&&wb.Sheets[p]) return wb.Sheets[p];
+  }
+  let best=null, bestN=0;
+  for(const n of names){
+    const sh=wb.Sheets[n];
+    if(!sh) continue;
+    let cnt=0;
+    try{
+      const rows=XLSX.utils.sheet_to_json(sh,{header:1,defval:'',raw:true});
+      cnt=rows.filter(r=>Array.isArray(r)&&r.some(c=>c!==''&&c!=null)).length;
+    }catch(e){continue;}
+    if(cnt>bestN){bestN=cnt; best=sh;}
+  }
+  if(best) return best;
+  return wb.Sheets[names[0]];
+}
+
 function _parseDepWb(wb,fname){
-  // 기본 가정: 첫 번째 시트 사용
-  const ws=wb.Sheets[wb.SheetNames[0]];
+  const ws=depPickSheet(wb);
+  if(!ws){toast('시트를 찾을 수 없습니다.','error');return;}
   // raw:true 로 읽어서 숫자/날짜 원형 보존, 별도 포맷
   const rawRows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
   const strRows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false});
