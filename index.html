@@ -609,6 +609,15 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
         </div>
         <div id="dep-file-info" style="display:none;margin-top:10px;padding:10px 14px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;font-size:12px"></div>
       </div>
+      <div class="card" style="margin-bottom:16px;border:2px solid #e0e7ff">
+        <div style="font-size:13px;font-weight:700;margin-bottom:6px;color:var(--accent)">📋 직접 붙여넣기</div>
+        <div style="font-size:11px;color:var(--text2);margin-bottom:10px;padding:8px 12px;background:#f8fafc;border-radius:8px;line-height:1.7">
+          엑셀에서 복사한 내용을 아래 표에 붙여넣을 수 있습니다. <b>1행은 헤더</b>와 동일한 컬럼 순서(NO·거래일시·거래내용·입금·해당일자·업체명)를 권장합니다.<br>
+          <span style="color:var(--text3)">드래그로 범위 선택 · Ctrl+C / Ctrl+V · Del로 선택 영역 비우기 · 행 추가/삭제</span>
+        </div>
+        <div id="dep-paste-container"></div>
+        <button type="button" class="btn btn-blue btn-sm" style="margin-top:12px" onclick="submitDepPasteGrid()">📤 이 내역으로 업로드하기</button>
+      </div>
       <!-- 매칭 결과 -->
       <div id="dep-result" style="display:none">
         <div class="card" style="margin-bottom:16px">
@@ -3734,6 +3743,11 @@ function initApp(){
 // ════════════════════════════════════════
 let DEP_PARSED=[]; // 현재 파싱된 입금내역 (파일로드 시 갱신)
 let DEP_MATCHES=[]; // 매칭 결과
+// 입금 탭 — 직접 붙여넣기 그리드 (A~F)
+const DEP_PASTE_COL_N=6;
+const DEP_PASTE_HDR=['NO','거래일시','거래내용','입금','해당일자','업체명'];
+let DEP_PASTE_ROWS=[];
+let DEP_PASTE_SEL_START=null,DEP_PASTE_SEL_END=null,DEP_PASTE_IS_SELECTING=false;
 
 // ── 입금자명 관리 ──────────────────────
 // getDepNames/saveDepNames는 상단에서 Firestore 캐시 기반으로 정의됨
@@ -4115,21 +4129,23 @@ function depPickSheet(wb){
 function _parseDepWb(wb,fname){
   const ws=depPickSheet(wb);
   if(!ws){toast('파일에서 시트를 읽지 못했습니다. .xlsx/.xls로 저장된 파일인지 확인하세요.','error');return;}
-  // raw:true 로 읽어서 숫자/날짜 원형 보존, 별도 포맷
   const rawRows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
   const strRows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false});
-  DEP_PARSED=[];
+  _parseDepRows(rawRows,strRows,fname);
+}
 
-  if(!rawRows.length){
+function _parseDepRows(rawRows,strRows,fname){
+  DEP_PARSED=[];
+  if(!rawRows||!rawRows.length){
     toast('엑셀에 데이터가 없습니다.','error');
     return;
   }
+  if(!strRows||!strRows.length){
+    strRows=rawRows.map(r=>(r||[]).map(c=>c==null?'':String(c)));
+  }
 
-  // ── 헤더/컬럼 위치 자동 감지 ─────────────────────────────
-  const norm=h=>String(h||'').trim().toLowerCase();
   const compact=h=>String(h||'').trim().toLowerCase().replace(/\s+/g,'');
 
-  // 헤더 행 찾기: "거래일시" 또는 "거래내용" + "입금" 텍스트가 있는 첫 행 (셀 안 공백 무시)
   let headerRowIdx=0;
   for(let i=0;i<strRows.length;i++){
     const row=strRows[i]||[];
@@ -4144,37 +4160,32 @@ function _parseDepWb(wb,fname){
 
   const header=strRows[headerRowIdx]||[];
 
-  // NO 컬럼 (번호)
   let colNo=0;
   header.forEach((h,idx)=>{
     const n=compact(h);
     if(n==='no'||n==='번호') colNo=idx;
   });
 
-  // 거래일시 컬럼 (날짜/시간) — 템플릿 기준으로 B열(1) 고정 사용
   const colDate=1;
 
-  // 거래내용 컬럼
   let colContent=2;
   header.forEach((h,idx)=>{
     if(compact(h).includes('거래내용')) colContent=idx;
   });
 
-  // 입금 금액 컬럼 (헤더에 '입금' 또는 '입금액')
   let colAmt=3;
   header.forEach((h,idx)=>{
     const n=compact(h);
     if(n.includes('입금')&&!n.includes('입금자')) colAmt=idx;
   });
 
-  // 헤더 행 건너뜀 여부 판단
   let start=headerRowIdx;
   const h0=compact(rawRows[headerRowIdx]?rawRows[headerRowIdx][colNo]:'');
   if(h0==='no'||h0==='번호'||isNaN(Number(h0))) start=headerRowIdx+1;
 
   for(let i=start;i<rawRows.length;i++){
-    const rr=rawRows[i];  // raw (숫자/날짜형)
-    const rs=strRows[i];  // string (포맷된 텍스트)
+    const rr=rawRows[i];
+    const rs=strRows[i];
     if(!rr && !rs) continue;
 
     let cellB;
@@ -4186,7 +4197,6 @@ function _parseDepWb(wb,fname){
       :String(cellB||'').trim();
     const content=String((rs&&rs[colContent])||(rr&&rr[colContent])||'').trim();
 
-    // 입금 금액: raw 숫자 우선, 없으면 문자열에서 숫자만 추출
     let amt=0;
     const dRaw=rr?rr[colAmt]:undefined;
     const dStr=String((rs&&rs[colAmt])||'').trim();
@@ -4196,8 +4206,8 @@ function _parseDepWb(wb,fname){
       amt=parseInt(dStr.replace(/[^0-9\-]/g,''))||0;
     }
 
-    if(!rawDate&&!amt) continue; // 완전 빈 행
-    if(!amt) continue;           // 입금액 없는 행
+    if(!rawDate&&!amt) continue;
+    if(!amt) continue;
 
     const noVal=String((rs&&rs[colNo])||(rr&&rr[colNo])||i-start+1).trim();
     const dateStr=parseDateStr(cellB===''||cellB===null||cellB===undefined?'':cellB);
@@ -4217,9 +4227,252 @@ function _parseDepWb(wb,fname){
   const info=document.getElementById('dep-file-info');
   if(info){
     info.style.display='';
-    info.innerHTML=`✅ <b>${fname}</b> — 총 <b>${DEP_PARSED.length}건</b> 인식 (D열=입금금액)`;
+    const label=escHtml(fname||'');
+    info.innerHTML=`✅ <b>${label}</b> — 총 <b>${DEP_PARSED.length}건</b> 인식 (D열=입금금액)`;
   }
   matchDeposits();
+}
+
+function ensureDepPasteRows(){
+  if(!DEP_PASTE_ROWS.length){
+    DEP_PASTE_ROWS=Array.from({length:18},()=>Array(DEP_PASTE_COL_N).fill(''));
+  }
+}
+function depPasteSyncFromDom(){
+  document.querySelectorAll('#dep-paste-tbl input[data-dpri]').forEach(inp=>{
+    const ri=+inp.dataset.dpri, ci=+inp.dataset.dpci;
+    if(isNaN(ri)||isNaN(ci))return;
+    while(DEP_PASTE_ROWS.length<=ri) DEP_PASTE_ROWS.push(Array(DEP_PASTE_COL_N).fill(''));
+    if(!DEP_PASTE_ROWS[ri]) DEP_PASTE_ROWS[ri]=Array(DEP_PASTE_COL_N).fill('');
+    DEP_PASTE_ROWS[ri][ci]=inp.value;
+  });
+}
+function depPasteIsSel(ri,ci){
+  if(!DEP_PASTE_SEL_START||!DEP_PASTE_SEL_END)return false;
+  const r1=Math.min(DEP_PASTE_SEL_START.r,DEP_PASTE_SEL_END.r),r2=Math.max(DEP_PASTE_SEL_START.r,DEP_PASTE_SEL_END.r);
+  const c1=Math.min(DEP_PASTE_SEL_START.c,DEP_PASTE_SEL_END.c),c2=Math.max(DEP_PASTE_SEL_START.c,DEP_PASTE_SEL_END.c);
+  return ri>=r1&&ri<=r2&&ci>=c1&&ci<=c2;
+}
+function depPasteGetSelRange(){
+  if(!DEP_PASTE_SEL_START)return null;
+  return{
+    r1:Math.min(DEP_PASTE_SEL_START.r,DEP_PASTE_SEL_END.r),
+    r2:Math.max(DEP_PASTE_SEL_START.r,DEP_PASTE_SEL_END.r),
+    c1:Math.min(DEP_PASTE_SEL_START.c,DEP_PASTE_SEL_END.c),
+    c2:Math.max(DEP_PASTE_SEL_START.c,DEP_PASTE_SEL_END.c)
+  };
+}
+function depPasteRenderSelOnly(){
+  document.querySelectorAll('#dep-paste-tbl td[data-dpci]').forEach(td=>{
+    const ri=+td.dataset.dpri, ci=+td.dataset.dpci;
+    const on=depPasteIsSel(ri,ci);
+    td.classList.toggle('sel',on);
+    const inp=td.querySelector('input');
+    if(inp) inp.style.background=on?'#dbeafe':'transparent';
+  });
+}
+function depPasteMouseDown(e,ri,ci){
+  if(e.button!==0)return;
+  DEP_PASTE_IS_SELECTING=true;
+  DEP_PASTE_SEL_START={r:ri,c:ci};
+  DEP_PASTE_SEL_END={r:ri,c:ci};
+  depPasteRenderSelOnly();
+}
+function depPasteMouseOver(e,ri,ci){
+  if(!DEP_PASTE_IS_SELECTING)return;
+  DEP_PASTE_SEL_END={r:ri,c:ci};
+  depPasteRenderSelOnly();
+}
+function depPasteMouseUp(){
+  DEP_PASTE_IS_SELECTING=false;
+}
+function depPasteRnClick(e,ri){
+  e.stopPropagation();
+  DEP_PASTE_SEL_START={r:ri,c:0};
+  DEP_PASTE_SEL_END={r:ri,c:DEP_PASTE_COL_N-1};
+  depPasteRenderSelOnly();
+}
+function depPasteInput(el){
+  const ri=+el.dataset.dpri, ci=+el.dataset.dpci;
+  if(isNaN(ri)||isNaN(ci))return;
+  while(DEP_PASTE_ROWS.length<=ri) DEP_PASTE_ROWS.push(Array(DEP_PASTE_COL_N).fill(''));
+  if(!DEP_PASTE_ROWS[ri]) DEP_PASTE_ROWS[ri]=Array(DEP_PASTE_COL_N).fill('');
+  DEP_PASTE_ROWS[ri][ci]=el.value;
+}
+function depPasteCellPaste(e,ri,ci){
+  const text=e.clipboardData&&e.clipboardData.getData?e.clipboardData.getData('text/plain'):'';
+  if(!text||(!text.includes('\t')&&!text.includes('\n')))return;
+  e.preventDefault();
+  depPasteApplyTsv(text,ri,ci);
+}
+function depPasteApplyTsv(text,startRi,startCi){
+  depPasteSyncFromDom();
+  const lines=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n');
+  if(lines.length&&lines[lines.length-1]==='')lines.pop();
+  lines.forEach((line,li)=>{
+    let ri=startRi+li;
+    while(ri>=DEP_PASTE_ROWS.length) DEP_PASTE_ROWS.push(Array(DEP_PASTE_COL_N).fill(''));
+    const cells=line.split('\t');
+    cells.forEach((cell,ci)=>{
+      const cci=startCi+ci;
+      if(cci<DEP_PASTE_COL_N) DEP_PASTE_ROWS[ri][cci]=cell.trim();
+    });
+  });
+  renderDepPasteGrid();
+  toast(`${lines.length}행 붙여넣기`);
+}
+function depPasteKeyDown(e,ri,ci){
+  if(e.key==='Tab'){
+    e.preventDefault();
+    const next=e.shiftKey?ci-1:ci+1;
+    if(next>=0&&next<DEP_PASTE_COL_N){
+      const inp=document.querySelector(`#dep-paste-tbl input[data-dpri="${ri}"][data-dpci="${next}"]`);
+      if(inp){inp.focus();inp.select();}
+    }
+    return;
+  }
+  if(e.key==='Enter'){
+    e.preventDefault();
+    const nextRi=e.shiftKey?ri-1:ri+1;
+    if(nextRi>=0){
+      if(nextRi>=DEP_PASTE_ROWS.length) DEP_PASTE_ROWS.push(Array(DEP_PASTE_COL_N).fill(''));
+      renderDepPasteGrid();
+      setTimeout(()=>{
+        const inp=document.querySelector(`#dep-paste-tbl input[data-dpri="${nextRi}"][data-dpci="${ci}"]`);
+        if(inp){inp.focus();inp.select();}
+      },0);
+    }
+    return;
+  }
+  if((e.ctrlKey||e.metaKey)&&e.key==='c'&&DEP_PASTE_SEL_START){
+    depPasteSyncFromDom();
+    const rng=depPasteGetSelRange();
+    if(!rng)return;
+    const lines=[];
+    for(let r=rng.r1;r<=rng.r2;r++){
+      const cells=[];
+      for(let c=rng.c1;c<=rng.c2;c++){
+        cells.push((DEP_PASTE_ROWS[r]&&DEP_PASTE_ROWS[r][c]!=null)?String(DEP_PASTE_ROWS[r][c]):'');
+      }
+      lines.push(cells.join('\t'));
+    }
+    navigator.clipboard.writeText(lines.join('\n')).then(()=>toast(`${rng.r2-rng.r1+1}행 복사됨`));
+    e.preventDefault();
+    return;
+  }
+  if((e.key==='Delete'||e.key==='Backspace')&&DEP_PASTE_SEL_START){
+    const rng=depPasteGetSelRange();
+    if(!rng)return;
+    const cellCount=(rng.r2-rng.r1+1)*(rng.c2-rng.c1+1);
+    if(cellCount<=1)return;
+    e.preventDefault();
+    depPasteClearRange(rng);
+  }
+}
+function depPasteClearRange(rng){
+  depPasteSyncFromDom();
+  for(let r=rng.r1;r<=rng.r2;r++){
+    if(!DEP_PASTE_ROWS[r]) DEP_PASTE_ROWS[r]=Array(DEP_PASTE_COL_N).fill('');
+    for(let c=rng.c1;c<=rng.c2;c++){
+      if(c<DEP_PASTE_COL_N) DEP_PASTE_ROWS[r][c]='';
+    }
+  }
+  renderDepPasteGrid();
+}
+function depPasteAddRows(){
+  depPasteSyncFromDom();
+  for(let i=0;i<5;i++) DEP_PASTE_ROWS.push(Array(DEP_PASTE_COL_N).fill(''));
+  renderDepPasteGrid();
+  toast('행 5개 추가됨');
+}
+function depPasteDeleteSelectedRows(){
+  const rng=depPasteGetSelRange();
+  if(!rng){toast('삭제할 행을 선택하세요','error');return;}
+  depPasteSyncFromDom();
+  const rows=[];
+  for(let r=rng.r1;r<=rng.r2;r++) rows.push(r);
+  if(!rows.length)return;
+  if(!confirm(`${rows.length}행을 삭제할까요?`))return;
+  const delSet=new Set(rows);
+  DEP_PASTE_ROWS=DEP_PASTE_ROWS.filter((_,i)=>!delSet.has(i));
+  if(DEP_PASTE_ROWS.length<1) DEP_PASTE_ROWS=[Array(DEP_PASTE_COL_N).fill('')];
+  DEP_PASTE_SEL_START=null;DEP_PASTE_SEL_END=null;
+  renderDepPasteGrid();
+}
+function depPasteClearCells(){
+  const rng=depPasteGetSelRange();
+  if(!rng){toast('셀을 선택하세요','error');return;}
+  depPasteClearRange(rng);
+}
+function depPasteInsertAbove(){
+  const rng=depPasteGetSelRange();
+  depPasteSyncFromDom();
+  const insertAt=rng?Math.min(rng.r1,rng.r2):0;
+  const n=rng?Math.max(1,rng.r2-rng.r1+1):1;
+  const blank=Array.from({length:n},()=>Array(DEP_PASTE_COL_N).fill(''));
+  DEP_PASTE_ROWS.splice(insertAt,0,...blank);
+  DEP_PASTE_SEL_START=null;DEP_PASTE_SEL_END=null;
+  renderDepPasteGrid();
+}
+function depPasteInsertBelow(){
+  const rng=depPasteGetSelRange();
+  depPasteSyncFromDom();
+  const insertAt=rng?Math.max(rng.r1,rng.r2)+1:DEP_PASTE_ROWS.length;
+  const n=rng?Math.max(1,rng.r2-rng.r1+1):1;
+  const blank=Array.from({length:n},()=>Array(DEP_PASTE_COL_N).fill(''));
+  DEP_PASTE_ROWS.splice(insertAt,0,...blank);
+  DEP_PASTE_SEL_START=null;DEP_PASTE_SEL_END=null;
+  renderDepPasteGrid();
+}
+function depPasteClearAll(){
+  if(!confirm('붙여넣기 표의 모든 내용을 지울까요?'))return;
+  DEP_PASTE_ROWS=Array.from({length:18},()=>Array(DEP_PASTE_COL_N).fill(''));
+  DEP_PASTE_SEL_START=null;DEP_PASTE_SEL_END=null;
+  renderDepPasteGrid();
+  toast('초기화됨');
+}
+function renderDepPasteGrid(){
+  ensureDepPasteRows();
+  const mount=document.getElementById('dep-paste-container');
+  if(!mount)return;
+  const w=[44,112,140,88,88,100];
+  const thead=`<thead><tr>
+    <th style="position:sticky;left:0;z-index:3;width:32px;min-width:32px;background:var(--bg2)">#</th>
+    ${DEP_PASTE_HDR.map((h,i)=>`<th style="min-width:${w[i]}px;background:var(--bg2);white-space:nowrap">${h}</th>`).join('')}
+  </tr></thead>`;
+  const tbody=DEP_PASTE_ROWS.map((row,ri)=>{
+    const cells=row.map((cell,ci)=>{
+      const v=String(cell??'').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+      const sel=depPasteIsSel(ri,ci)?' sel':'';
+      return `<td class="${sel}" data-dpri="${ri}" data-dpci="${ci}" onmousedown="depPasteMouseDown(event,${ri},${ci})" onmouseover="depPasteMouseOver(event,${ri},${ci})"><input type="text" data-dpri="${ri}" data-dpci="${ci}" value="${v}" onmousedown="depPasteMouseDown(event,${ri},${ci})" oninput="depPasteInput(this)" onpaste="depPasteCellPaste(event,${ri},${ci})" onkeydown="depPasteKeyDown(event,${ri},${ci})" style="width:100%;min-width:0;padding:5px 7px;font-size:11px;border:none;background:transparent;box-sizing:border-box;font-family:inherit"/></td>`;
+    }).join('');
+    return `<tr>${`<td class="rn" style="position:sticky;left:0;z-index:2;background:var(--card2);text-align:center;font-size:11px;color:var(--text3);user-select:none;cursor:pointer;border-right:1px solid var(--border)" onclick="depPasteRnClick(event,${ri})" title="행 전체 선택">${ri+1}</td>`}${cells}</tr>`;
+  }).join('');
+  mount.innerHTML=`<div class="sheet-toolbar" style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+    <button type="button" class="btn btn-xs btn-gray" onclick="depPasteAddRows()">+ 행 추가</button>
+    <button type="button" class="btn btn-xs btn-gray" onclick="depPasteDeleteSelectedRows()">🗑 행 삭제</button>
+    <button type="button" class="btn btn-xs btn-gray" onclick="depPasteClearCells()">✕ 셀 비우기</button>
+    <button type="button" class="btn btn-xs btn-gray" onclick="depPasteInsertAbove()">↑ 위에 삽입</button>
+    <button type="button" class="btn btn-xs btn-gray" onclick="depPasteInsertBelow()">↓ 아래 삽입</button>
+    <button type="button" class="btn btn-xs btn-gray" onclick="depPasteClearAll()">전체 지우기</button>
+    <span style="font-size:10px;color:var(--text3);margin-left:auto">드래그 범위 선택 · Ctrl+C/V · Del</span>
+  </div>
+  <div class="sheet-outer" id="dep-paste-outer-wrap" style="max-height:420px" onmouseup="depPasteMouseUp()" onmouseleave="depPasteMouseUp()"><table class="st" id="dep-paste-tbl">${thead}<tbody>${tbody}</tbody></table></div>`;
+  depPasteRenderSelOnly();
+}
+function submitDepPasteGrid(){
+  depPasteSyncFromDom();
+  const headerRow=[...DEP_PASTE_HDR];
+  const strRows=[headerRow,...DEP_PASTE_ROWS.map(r=>r.map(c=>String(c??'')))];
+  const rawRows=strRows.map((row,ri)=>row.map((cell,ci)=>{
+    if(ri===0) return cell;
+    if(ci===3){
+      const n=parseFloat(String(cell).replace(/[^0-9.\-]/g,''));
+      return Number.isFinite(n)?Math.round(n):cell;
+    }
+    return cell;
+  }));
+  _parseDepRows(rawRows,strRows,'직접 붙여넣기');
 }
 
 // 날짜 파싱 헬퍼 (입금 내역용)
@@ -4793,6 +5046,7 @@ function showDepTab(name){
   if(name==='history')renderDepositHistory();
   if(name==='names')renderDepNameTable();
   if(name==='unmatched')renderUnmatchedTable();
+  if(name==='upload')renderDepPasteGrid();
 }
 
 // ══════════════════════════════════════════════════
