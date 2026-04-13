@@ -3663,6 +3663,7 @@ function badgeClass(s){
   return 'by';
 }
 const PROJ_STATUSES=['시작전','진행중','진행중단','구매진행완료(리뷰 업로드 대기)','프로젝트 종료(리뷰 모두 업로드 완료)'];
+const PROJ_PLATFORMS=['쿠팡','네이버','쿠팡+네이버','기타'];
 // 프로젝트 자동 진행상태 계산 (거래처 - 프로젝트별 보기)
 function computeProjAutoStatus(reqTotal,buyDone,rvDone){
   const total = reqTotal||0;
@@ -7176,7 +7177,16 @@ function renderDetProjView(){
         <div style="display:flex;align-items:center;gap:10px">
           <div style="display:flex;flex-direction:column">
           <div style="font-size:14px;font-weight:700">${p.name}</div>
-          <div style="font-size:11px;color:var(--text2);margin-top:1px">${p.platform} · ${p.product}</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:1px;display:flex;align-items:center;gap:6px;flex-wrap:wrap" onclick="event.stopPropagation()">
+            <span>플랫폼</span>
+            <select style="font-size:11px;padding:2px 6px;border-radius:6px;border:1px solid var(--border);background:var(--card);cursor:pointer" onchange="changeProjPlatform('${p.id}',this.value)" onclick="event.stopPropagation()">
+              ${(() => {
+                const opts=PROJ_PLATFORMS.includes(p.platform)?PROJ_PLATFORMS:[...PROJ_PLATFORMS,p.platform||'기타'];
+                return opts.map(pl=>'<option value="'+pl+'"'+(pl===p.platform?' selected':'')+'>'+pl+'</option>').join('');
+              })()}
+            </select>
+            <span>· ${p.product}</span>
+          </div>
           </div>
           ${CUR_ADMIN?`<div style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text3)" onclick="event.stopPropagation()">
             <button class="btn btn-xs btn-gray" style="padding:2px 6px;font-size:10px" onclick="moveProjOrder('${p.id}',-1)">▲ 위로</button>
@@ -7299,6 +7309,27 @@ function renameProject(projId){
   }
   try{ scheduleRerender(); }catch(e){}
   toast('프로젝트 이름이 수정되었습니다');
+}
+
+function changeProjPlatform(projId, newPlatform){
+  const d=ld();
+  const idx=d.projects.findIndex(x=>x.id===projId);
+  if(idx<0)return;
+  const nextPlatform=String(newPlatform||'').trim();
+  if(!nextPlatform)return;
+  const prev={...d.projects[idx]};
+  if((d.projects[idx].platform||'')===nextPlatform)return;
+  d.projects[idx].platform=nextPlatform;
+  sv('pr',d.projects);
+  const changes=diffProject(prev,d.projects[idx]);
+  if(Object.keys(changes).length){
+    logChange('project', d.projects[idx].id, changes, {screen:'proj-view', action:'platform-change'});
+  }
+  try{renderOverview();}catch(e){}
+  try{renderDetDash();}catch(e){}
+  try{renderDetProjView();}catch(e){}
+  try{ scheduleRerender(); }catch(e){}
+  toast('플랫폼이 변경되었습니다');
 }
 
 function renderDetAllData(){
