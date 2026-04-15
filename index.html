@@ -2636,6 +2636,9 @@ function showClientView(code){
     if(typeof loadMainDataFromFirestore==='function'){
       try{ await loadMainDataFromFirestore(); }catch(e){ console.error(e); }
     }
+    if(typeof loadBlogProjectsFromFirestore==='function'){
+      try{ await loadBlogProjectsFromFirestore(); }catch(e){ console.error(e); }
+    }
     refreshClientView();
   })();
 }
@@ -2689,6 +2692,9 @@ async function refreshClientViewFromServer(){
   try{ await ensureFirebaseReadAuth(); }catch(e){ console.warn('client view refresh auth',e); }
   if(typeof loadMainDataFromFirestore==='function'){
     try{ await loadMainDataFromFirestore(); }catch(e){ console.error(e); }
+  }
+  if(typeof loadBlogProjectsFromFirestore==='function'){
+    try{ await loadBlogProjectsFromFirestore(); }catch(e){ console.error(e); }
   }
   refreshClientView();
   const el=document.getElementById('cv-date');
@@ -3788,7 +3794,13 @@ function renderCvProdStat(container){
 }
 function getCvClientId(){
   const panel=document.getElementById('cvpanel-daily');
-  return panel?.dataset?.clientId || '';
+  const byPanel=panel?.dataset?.clientId || '';
+  if(byPanel) return byPanel;
+  if(CV_CURRENT_CODE){
+    const c=ld().clients.find(x=>x.code===CV_CURRENT_CODE);
+    if(c?.id) return c.id;
+  }
+  return '';
 }
 function buildWayServicePanelHtml(){
   const chip=(txt,col)=>`<span style="display:inline-flex;align-items:center;padding:4px 9px;border-radius:999px;font-size:11px;font-weight:700;background:${col}22;color:${col};border:1px solid ${col}55">${txt}</span>`;
@@ -3832,6 +3844,8 @@ function buildWayServicePanelHtml(){
   </div>`;
 }
 let BLOG_EDIT_PROJECT_ID = '';
+const NBLOG_SELECTED_BY_CONTAINER = {};
+const BLOG_MEMBER_FIELDS = ['productType','name','blogAddress','addr','zipCode','phone','memo','courier','invoiceNo','blogUrl'];
 function blogDefaultProject(clientId, name){
   return {
     id: gid(),
@@ -3882,16 +3896,16 @@ function renderBlogInputPanel(container, clientId){
   </tr>`).join('');
   const memRows=(cur?.memberRows||[]).map((r,i)=>`<tr>
     <td style="padding:6px;border-bottom:1px solid var(--border);text-align:center">${i+1}</td>
-    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.productType||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','productType',this.value)"></td>
-    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.name||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','name',this.value)"></td>
-    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.blogAddress||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','blogAddress',this.value)"></td>
-    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.addr||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','addr',this.value)"></td>
-    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.zipCode||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','zipCode',this.value)"></td>
-    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.phone||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','phone',this.value)"></td>
-    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.memo||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','memo',this.value)"></td>
-    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.courier||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','courier',this.value)"></td>
-    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.invoiceNo||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','invoiceNo',this.value)"></td>
-    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.blogUrl||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','blogUrl',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.productType||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','productType',this.value)" onpaste="blogHandleMemberPaste(event,'${cur.id}','${r.id}','productType')"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.name||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','name',this.value)" onpaste="blogHandleMemberPaste(event,'${cur.id}','${r.id}','name')"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.blogAddress||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','blogAddress',this.value)" onpaste="blogHandleMemberPaste(event,'${cur.id}','${r.id}','blogAddress')"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.addr||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','addr',this.value)" onpaste="blogHandleMemberPaste(event,'${cur.id}','${r.id}','addr')"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.zipCode||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','zipCode',this.value)" onpaste="blogHandleMemberPaste(event,'${cur.id}','${r.id}','zipCode')"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.phone||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','phone',this.value)" onpaste="blogHandleMemberPaste(event,'${cur.id}','${r.id}','phone')"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.memo||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','memo',this.value)" onpaste="blogHandleMemberPaste(event,'${cur.id}','${r.id}','memo')"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.courier||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','courier',this.value)" onpaste="blogHandleMemberPaste(event,'${cur.id}','${r.id}','courier')"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.invoiceNo||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','invoiceNo',this.value)" onpaste="blogHandleMemberPaste(event,'${cur.id}','${r.id}','invoiceNo')"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.blogUrl||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','blogUrl',this.value)" onpaste="blogHandleMemberPaste(event,'${cur.id}','${r.id}','blogUrl')"></td>
     <td style="padding:6px;border-bottom:1px solid var(--border);text-align:center"><button class="btn btn-xs btn-red" onclick="blogDeleteRow('${cur.id}','memberRows','${r.id}')">삭제</button></td>
   </tr>`).join('');
 
@@ -3950,10 +3964,61 @@ function blogAddRow(section){
   arr[idx][section]=Array.isArray(arr[idx][section])?arr[idx][section]:[];
   if(section==='requestRows') arr[idx][section].push({id:gid(),publishMonth:'',issueCount:'',issueType:'',productUrl:''});
   if(section==='scheduleRows') arr[idx][section].push({id:gid(),publishMonth:'',item:'블로거 모집기간',period:'',note:''});
-  if(section==='memberRows') arr[idx][section].push({id:gid(),productType:'',name:'',blogAddress:'',addr:'',zipCode:'',phone:'',memo:'',courier:'',invoiceNo:'',blogUrl:''});
+  if(section==='memberRows') arr[idx][section].push(newBlogMemberRow());
   arr[idx].updatedAt=new Date().toISOString();
   blogSv(arr);
   renderBlogInputPanel(document.getElementById('dp-bloginput-inner'), CUR_CLIENT);
+}
+function newBlogMemberRow(){
+  return {id:gid(),productType:'',name:'',blogAddress:'',addr:'',zipCode:'',phone:'',memo:'',courier:'',invoiceNo:'',blogUrl:''};
+}
+function blogHandleMemberPaste(evt, projectId, rowId, field){
+  try{
+    const raw=evt?.clipboardData?.getData('text/plain')||'';
+    if(!raw) return;
+    // 단일 셀 붙여넣기는 기본 브라우저 동작 유지
+    if(!raw.includes('\t') && !raw.includes('\n') && !raw.includes('\r')) return;
+    evt.preventDefault();
+    const arr=blogLd().slice();
+    const pIdx=arr.findIndex(p=>p.id===projectId);
+    if(pIdx<0) return;
+    const rows=Array.isArray(arr[pIdx].memberRows)?arr[pIdx].memberRows:[];
+    const startRow=rows.findIndex(r=>r.id===rowId);
+    const startCol=BLOG_MEMBER_FIELDS.indexOf(field);
+    if(startRow<0 || startCol<0) return;
+
+    const parsed=raw
+      .replace(/\r\n/g,'\n')
+      .replace(/\r/g,'\n')
+      .split('\n')
+      .filter((line,idx,src)=>!(idx===src.length-1 && line===''))
+      .map(line=>line.split('\t'));
+    if(!parsed.length) return;
+
+    let writeCount=0;
+    for(let r=0;r<parsed.length;r++){
+      const targetRow=startRow+r;
+      while(rows.length<=targetRow){
+        rows.push(newBlogMemberRow());
+      }
+      const cells=parsed[r];
+      for(let c=0;c<cells.length;c++){
+        const targetCol=startCol+c;
+        if(targetCol>=BLOG_MEMBER_FIELDS.length) break;
+        const key=BLOG_MEMBER_FIELDS[targetCol];
+        rows[targetRow][key]=String(cells[c]??'').trim();
+        writeCount++;
+      }
+    }
+    arr[pIdx].memberRows=rows;
+    arr[pIdx].updatedAt=new Date().toISOString();
+    blogSv(arr);
+    renderBlogInputPanel(document.getElementById('dp-bloginput-inner'), CUR_CLIENT);
+    toast(`명단 붙여넣기 완료 (${parsed.length}행)`);
+  }catch(e){
+    console.warn('blogHandleMemberPaste err',e);
+    toast('붙여넣기 처리 중 오류가 발생했습니다','error');
+  }
 }
 function blogDeleteRow(projectId, section, rowId){
   const arr=blogLd().slice();
@@ -3979,8 +4044,33 @@ function blogSaveProject(){
   toast('블로그 데이터 저장 완료');
   try{ renderNBlogStatus(document.getElementById('dp-nblog-inner'), CUR_CLIENT); }catch(_){}
 }
+function getBlogProjectById(projectId){
+  return blogLd().find(p=>p.id===projectId) || null;
+}
+function showNBlogProjectDetail(containerId, projectId){
+  NBLOG_SELECTED_BY_CONTAINER[containerId]=projectId||'';
+  const container=document.getElementById(containerId);
+  if(container) renderNBlogStatus(container, container.dataset.clientId||'');
+}
+function exportNBlogMembers(projectId){
+  const p=getBlogProjectById(projectId);
+  if(!p){ toast('프로젝트를 찾을 수 없습니다','error'); return; }
+  const rows=(p.memberRows||[]);
+  if(!rows.length){ toast('내보낼 명단이 없습니다','error'); return; }
+  const headers=['NO','제품 구분','체험단 성함','블로그 주소','제품수령 주소','우편번호','연락처','메모','택배사','송장번호','블로그 발행 url'];
+  const body=rows.map((r,i)=>[
+    i+1, r.productType||'', r.name||'', r.blogAddress||'', r.addr||'', r.zipCode||'',
+    r.phone||'', r.memo||'', r.courier||'', r.invoiceNo||'', r.blogUrl||''
+  ]);
+  const ws=XLSX.utils.aoa_to_sheet([headers,...body]);
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '명단');
+  const safe=(p.name||'N블로그').replace(/[\\/:*?"<>|]/g,'_');
+  XLSX.writeFile(wb, `N블로그_명단_${safe}.xlsx`);
+}
 function renderNBlogStatus(container, clientId){
   if(!container)return;
+  container.dataset.clientId=clientId||'';
   if(!clientId){
     container.innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">거래처 정보를 불러오지 못했습니다</div>';
     return;
@@ -3991,6 +4081,8 @@ function renderNBlogStatus(container, clientId){
     return;
   }
   let reqTotal=0, scheduleTotal=0, memberTotal=0, pubDone=0;
+  const selectedId=NBLOG_SELECTED_BY_CONTAINER[container.id]||list[0]?.id||'';
+  NBLOG_SELECTED_BY_CONTAINER[container.id]=selectedId;
   const rows=list.map(p=>{
     const req=(p.requestRows||[]);
     const sch=(p.scheduleRows||[]);
@@ -3999,8 +4091,11 @@ function renderNBlogStatus(container, clientId){
     const done=mem.filter(r=>(r.blogUrl||'').trim()).length;
     const rate=(target||mem.length)?Math.round(done/Math.max(target,mem.length)*100):0;
     reqTotal+=target; scheduleTotal+=sch.length; memberTotal+=mem.length; pubDone+=done;
+    const isSel=p.id===selectedId;
     return `<tr>
-      <td style="padding:9px 10px;border-bottom:1px solid var(--border);font-weight:700">${escHtml(p.name||'-')}</td>
+      <td style="padding:9px 10px;border-bottom:1px solid var(--border);font-weight:700">
+        <button class="btn btn-xs ${isSel?'btn-blue':'btn-gray'}" style="font-size:11px" onclick="showNBlogProjectDetail('${container.id}','${p.id}')">${escHtml(p.name||'-')}</button>
+      </td>
       <td style="padding:9px 10px;border-bottom:1px solid var(--border);text-align:right">${fmtN(target)}건</td>
       <td style="padding:9px 10px;border-bottom:1px solid var(--border);text-align:right">${fmtN(sch.length)}개</td>
       <td style="padding:9px 10px;border-bottom:1px solid var(--border);text-align:right">${fmtN(mem.length)}명</td>
@@ -4013,6 +4108,20 @@ function renderNBlogStatus(container, clientId){
   }).join('');
   const base=Math.max(reqTotal,memberTotal);
   const rate=base?Math.round(pubDone/base*100):0;
+  const selected=list.find(p=>p.id===selectedId)||null;
+  const memberRows=(selected?.memberRows||[]).map((r,i)=>`<tr>
+    <td style="padding:8px 9px;border-bottom:1px solid var(--border);text-align:center">${i+1}</td>
+    <td style="padding:8px 9px;border-bottom:1px solid var(--border)">${escHtml(r.productType||'')}</td>
+    <td style="padding:8px 9px;border-bottom:1px solid var(--border)">${escHtml(r.name||'')}</td>
+    <td style="padding:8px 9px;border-bottom:1px solid var(--border)">${escHtml(r.blogAddress||'')}</td>
+    <td style="padding:8px 9px;border-bottom:1px solid var(--border)">${escHtml(r.addr||'')}</td>
+    <td style="padding:8px 9px;border-bottom:1px solid var(--border)">${escHtml(r.zipCode||'')}</td>
+    <td style="padding:8px 9px;border-bottom:1px solid var(--border)">${escHtml(r.phone||'')}</td>
+    <td style="padding:8px 9px;border-bottom:1px solid var(--border)">${escHtml(r.memo||'')}</td>
+    <td style="padding:8px 9px;border-bottom:1px solid var(--border)">${escHtml(r.courier||'')}</td>
+    <td style="padding:8px 9px;border-bottom:1px solid var(--border)">${escHtml(r.invoiceNo||'')}</td>
+    <td style="padding:8px 9px;border-bottom:1px solid var(--border)">${escHtml(r.blogUrl||'')}</td>
+  </tr>`).join('');
   container.innerHTML=`<div style="display:grid;gap:12px;max-width:960px">
     <div style="padding:16px;border:1px solid var(--border);border-radius:12px;background:var(--card)">
       <div style="font-size:17px;font-weight:800;margin-bottom:8px">📝 N-블로그 현황</div>
@@ -4030,6 +4139,30 @@ function renderNBlogStatus(container, clientId){
         <thead><tr style="background:var(--bg2)"><th style="padding:9px 10px;text-align:left;border-bottom:1px solid var(--border)">프로젝트</th><th style="padding:9px 10px;text-align:right;border-bottom:1px solid var(--border)">요청 건수</th><th style="padding:9px 10px;text-align:right;border-bottom:1px solid var(--border)">일정</th><th style="padding:9px 10px;text-align:right;border-bottom:1px solid var(--border)">명단</th><th style="padding:9px 10px;text-align:right;border-bottom:1px solid var(--border)">URL 등록</th><th style="padding:9px 10px;text-align:left;border-bottom:1px solid var(--border)">진행률</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
+    </div>
+    <div style="border:1px solid var(--border);border-radius:12px;background:var(--card);overflow:hidden">
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <div style="font-size:13px;font-weight:700">명단 상세 ${selected?`· ${escHtml(selected.name||'')}`:''}</div>
+        ${selected?`<button class="btn btn-green btn-sm" onclick="exportNBlogMembers('${selected.id}')">📤 엑셀 추출</button>`:''}
+      </div>
+      <div style="overflow-x:auto">
+        ${selected?`<table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:var(--bg2)">
+            <th style="padding:8px 9px;text-align:center;border-bottom:1px solid var(--border)">NO</th>
+            <th style="padding:8px 9px;text-align:left;border-bottom:1px solid var(--border)">제품 구분</th>
+            <th style="padding:8px 9px;text-align:left;border-bottom:1px solid var(--border)">체험단 성함</th>
+            <th style="padding:8px 9px;text-align:left;border-bottom:1px solid var(--border)">블로그 주소</th>
+            <th style="padding:8px 9px;text-align:left;border-bottom:1px solid var(--border)">제품수령 주소</th>
+            <th style="padding:8px 9px;text-align:left;border-bottom:1px solid var(--border)">우편번호</th>
+            <th style="padding:8px 9px;text-align:left;border-bottom:1px solid var(--border)">연락처</th>
+            <th style="padding:8px 9px;text-align:left;border-bottom:1px solid var(--border)">메모</th>
+            <th style="padding:8px 9px;text-align:left;border-bottom:1px solid var(--border)">택배사</th>
+            <th style="padding:8px 9px;text-align:left;border-bottom:1px solid var(--border)">송장번호</th>
+            <th style="padding:8px 9px;text-align:left;border-bottom:1px solid var(--border)">블로그 발행 url</th>
+          </tr></thead>
+          <tbody>${memberRows||'<tr><td colspan="11" style="text-align:center;color:var(--text3);padding:18px">명단 데이터가 없습니다</td></tr>'}</tbody>
+        </table>`:'<div style="text-align:center;color:var(--text3);padding:24px">표시할 프로젝트가 없습니다</div>'}
+      </div>
     </div>
   </div>`;
 }
