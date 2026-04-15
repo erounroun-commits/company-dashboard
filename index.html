@@ -1621,6 +1621,7 @@ let MONTHLY_CNT_CACHE = {};
 let BLOG_PROJECTS_CACHE = [];
 let BLOG_SAVE_IN_FLIGHT = false;
 let BLOG_SAVE_PENDING = null;
+const BLOG_LOCAL_KEY = 'wv_blog_projects';
 // 시트 UI 열설정 캐시 (Firestore 연동) — 기존 localStorage(wv_extra_cols / wv_col_order) 대체
 // 시트 UI 열설정 캐시 (거래처별 저장) — 기존: 전역 설정
 let UI_COLS_CACHE = {};
@@ -2073,13 +2074,50 @@ function monthlyCntSv(obj){
 }
 
 async function loadBlogProjectsFromFirestore(){
-  if(typeof db === 'undefined'){return;}
-  const snap = await db.collection('blogProjects').get().catch(()=>null);
-  BLOG_PROJECTS_CACHE = snap && !snap.empty ? snap.docs.map(d=>({id:d.id,...d.data()})) : [];
+  // 1) 기본값: 로컬 백업 먼저 읽어두기 (네트워크 실패 대비)
+  let localBackup = [];
+  try{
+    const raw=localStorage.getItem(BLOG_LOCAL_KEY)||'[]';
+    const parsed=JSON.parse(raw);
+    if(Array.isArray(parsed)) localBackup=parsed;
+  }catch(_){}
+
+  // 2) Firestore 우선 로드
+  if(typeof db !== 'undefined'){
+    try{
+      const snap = await db.collection('blogProjects').get();
+      const remote = snap && !snap.empty ? snap.docs.map(d=>({id:d.id,...d.data()})) : [];
+      BLOG_PROJECTS_CACHE = Array.isArray(remote) ? remote : [];
+      // 원격이 정상이라면 로컬 백업 갱신
+      try{ localStorage.setItem(BLOG_LOCAL_KEY, JSON.stringify(BLOG_PROJECTS_CACHE)); }catch(_){}
+      // 원격이 비었고 로컬 백업이 있으면 임시 복구 후 서버 재동기화 시도
+      if((!BLOG_PROJECTS_CACHE.length) && localBackup.length){
+        BLOG_PROJECTS_CACHE = localBackup.slice();
+        try{
+          await sv('bp', BLOG_PROJECTS_CACHE);
+        }catch(e){
+          console.warn('blog remote restore failed', e);
+        }
+      }
+      return;
+    }catch(e){
+      console.error('loadBlogProjectsFromFirestore error', e);
+      // Firestore 실패 시 로컬 백업으로 복구
+      BLOG_PROJECTS_CACHE = localBackup.slice();
+      if(localBackup.length){
+        try{ toast('블로그 데이터 원격 불러오기 실패: 로컬 백업으로 복구했습니다','error'); }catch(_){}
+      }
+      return;
+    }
+  }
+  // 3) db 자체가 없으면 로컬 백업 사용
+  BLOG_PROJECTS_CACHE = localBackup.slice();
 }
 function blogLd(){ return BLOG_PROJECTS_CACHE || []; }
 function blogSv(arr){
   BLOG_PROJECTS_CACHE = Array.isArray(arr)?arr.slice():[];
+  // 저장 직전 로컬 백업(새로고침 유실 방지)
+  try{ localStorage.setItem(BLOG_LOCAL_KEY, JSON.stringify(BLOG_PROJECTS_CACHE)); }catch(_){}
   BLOG_SAVE_PENDING = BLOG_PROJECTS_CACHE.slice();
   if(BLOG_SAVE_IN_FLIGHT) return;
   BLOG_SAVE_IN_FLIGHT = true;
