@@ -847,6 +847,10 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
           <input type="date" class="fi" id="ds-date-input" style="width:148px;font-size:12px;padding:5px 8px" onchange="loadDailySettle(this.value)">
           <button class="btn btn-sm" id="ds-btn-all" onclick="loadDailyAll()"
             style="background:rgba(99,102,241,.15);border:1px solid var(--accent);color:var(--accent);font-weight:700">📋 전체 보기</button>
+          <span style="font-size:11px;color:var(--text3);white-space:nowrap">월별</span>
+          <input type="month" class="fi" id="ds-daily-month-input" style="width:132px;font-size:12px;padding:5px 8px" title="조회할 달 선택" onchange="loadDailyMonth(this.value)">
+          <button class="btn btn-sm btn-gray" id="ds-btn-month-apply" onclick="loadDailyMonth(document.getElementById('ds-daily-month-input').value||getKSTDate().slice(0,7))">📆 이 달 보기</button>
+          <button class="btn btn-sm btn-gray" onclick="loadDailyMonth(getKSTDate().slice(0,7))">당월</button>
           <div style="width:1px;height:22px;background:var(--border)"></div>
           <!-- 필터 -->
           <select id="ds-filter-paid" onchange="applyDsFilter()" class="fs" style="font-size:11px;padding:4px 8px;width:90px">
@@ -872,7 +876,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
       </div>
       <!-- 일별 정산 테이블 -->
       <div id="ds-daily-table-wrap" style="overflow-x:auto">
-        <div style="text-align:center;padding:40px;color:var(--text3)">날짜를 선택하거나 전체 보기를 클릭하세요</div>
+        <div style="text-align:center;padding:40px;color:var(--text3)">날짜·월별·전체 보기 중에서 조회하세요</div>
       </div>
     </div>
 
@@ -10891,23 +10895,37 @@ function importTossExpense(input){
 // ── 초기화 ────────────────────────────────────────────────
 function initDailySettle(){
   DS_FILTER_ROWS = null;
-  DS_ALL_VIEW = false;
+  DS_TABLE_MODE = 'month';
+  DS_MONTH_KEY = getKSTDate().slice(0,7);
   // 월 선택 기본값 세팅
   const today = getKSTDate();
   const mEl=document.getElementById('ds-month-input');
   if(mEl)mEl.value=today.slice(0,7);
+  const dm=document.getElementById('ds-daily-month-input');
+  if(dm)dm.value=today.slice(0,7);
   // 기본: 대시보드 탭으로 진입
   showDsTab('dashboard');
 }
 
-function showDsTab(name){
+function showDsTab(name, opts){
+  opts = opts || {};
   document.querySelectorAll('[data-dstab]').forEach(t=>t.classList.toggle('active',t.dataset.dstab===name));
   document.querySelectorAll('.ds-panel').forEach(p=>p.classList.toggle('active',p.id==='dsp-'+name));
   if(name==='dashboard') renderDsDashboard();
   if(name==='monthly') loadMonthlySettle(document.getElementById('ds-month-input').value);
   if(name==='daily'){
     syncAllDsRowsFromSettle();
-    loadDailyAll();
+    if(opts.pickDate){
+      const dm=document.getElementById('ds-daily-month-input');
+      if(dm)dm.value=String(opts.pickDate).slice(0,7);
+      document.getElementById('ds-date-input').value=opts.pickDate;
+      loadDailySettle(opts.pickDate);
+      return;
+    }
+    const ym=getKSTDate().slice(0,7);
+    const dm=document.getElementById('ds-daily-month-input');
+    if(dm)dm.value=ym;
+    loadDailyMonth(ym);
   }
   if(name==='expense') {
     const mf=document.getElementById('exp-month-filter');
@@ -10928,14 +10946,30 @@ function dsDayNav(offset){
 }
 
 // ── 일별 정산 로드 ───────────────────────────────────────
-let DS_ALL_VIEW = false; // 전체보기 모드
+/** 'day' | 'month' | 'all' — 일별 집계 테이블 조회 범위 */
+let DS_TABLE_MODE = 'month';
+let DS_MONTH_KEY = ''; // YYYY-MM (mode==='month')
 let DS_FILTER_ROWS = null; // 필터링된 행 캐시
+
+function dsViewKeyForTable(){
+  if(DS_TABLE_MODE==='all') return '__all__';
+  if(DS_TABLE_MODE==='month') return 'month:'+(DS_MONTH_KEY||getKSTDate().slice(0,7));
+  return DS_DATE||getKSTDate();
+}
+
+function reloadCurrentDsView(){
+  if(DS_TABLE_MODE==='all') loadDailyAll();
+  else if(DS_TABLE_MODE==='month') loadDailyMonth(DS_MONTH_KEY||getKSTDate().slice(0,7));
+  else loadDailySettle(DS_DATE||getKSTDate());
+}
 
 function loadDailySettle(dateStr){
   if(!dateStr) return;
-  DS_ALL_VIEW = false;
+  DS_TABLE_MODE = 'day';
+  DS_MONTH_KEY = dateStr.slice(0,7);
   DS_DATE = dateStr;
-  const all = dsLd();
+  const di=document.getElementById('ds-date-input');
+  if(di)di.value=dateStr;
   // 거래처 정산 최신 상태 일괄 동기화
   syncAllDsRowsFromSettle();
   // 월별 달력/일별 조회는 ds.date가 YYYY-MM-DD 일치해야 함
@@ -10950,15 +10984,43 @@ function loadDailySettle(dateStr){
   document.getElementById('ds-btn-tmrw').className='btn btn-sm '+(dateStr===tmrw?'btn-blue':'btn-gray');
   document.getElementById('ds-btn-all').className='btn btn-sm';
   document.getElementById('ds-btn-all').style.cssText='background:rgba(99,102,241,.15);border:1px solid var(--accent);color:var(--accent);font-weight:700';
+  const dm=document.getElementById('ds-daily-month-input');
+  if(dm)dm.value=DS_MONTH_KEY;
+  const mb=document.getElementById('ds-btn-month-apply');
+  if(mb){ mb.className='btn btn-sm btn-gray'; mb.style.cssText=''; }
   const lbl=document.getElementById('ds-view-label');
   if(lbl)lbl.textContent=`📅 ${dateStr} 기준 조회 — ${arr.length}건`;
 }
 
-function loadDailyAll(){
-  DS_ALL_VIEW = true;
+function loadDailyMonth(ym){
+  if(!ym) return;
+  DS_TABLE_MODE = 'month';
+  DS_MONTH_KEY = ym;
   DS_DATE = '';
   document.getElementById('ds-date-input').value='';
-  const all = dsLd();
+  syncAllDsRowsFromSettle();
+  normalizeDsDatesFromQuotes();
+  const allDs = dsLd();
+  DS_FILTER_ROWS = allDs.filter(r=>r.date && r.date.slice(0,7)===ym)
+    .sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+  applyDsFilter();
+  ['ds-btn-today','ds-btn-yest','ds-btn-tmrw'].forEach(id=>{
+    document.getElementById(id).className='btn btn-sm btn-gray';
+  });
+  document.getElementById('ds-btn-all').className='btn btn-sm';
+  document.getElementById('ds-btn-all').style.cssText='background:rgba(99,102,241,.15);border:1px solid var(--accent);color:var(--accent);font-weight:700';
+  const dm=document.getElementById('ds-daily-month-input');
+  if(dm)dm.value=ym;
+  const mb=document.getElementById('ds-btn-month-apply');
+  if(mb){ mb.className='btn btn-sm btn-blue'; mb.style.cssText=''; }
+  const lbl=document.getElementById('ds-view-label');
+  if(lbl)lbl.textContent=`📆 ${ym.replace('-','/')} 월 — ${DS_FILTER_ROWS.length}건`;
+}
+
+function loadDailyAll(){
+  DS_TABLE_MODE = 'all';
+  DS_DATE = '';
+  document.getElementById('ds-date-input').value='';
   syncAllDsRowsFromSettle();
   normalizeDsDatesFromQuotes();
   const allDs = dsLd();
@@ -10969,6 +11031,8 @@ function loadDailyAll(){
   });
   document.getElementById('ds-btn-all').className='btn btn-sm btn-blue';
   document.getElementById('ds-btn-all').style.cssText='';
+  const mb=document.getElementById('ds-btn-month-apply');
+  if(mb){ mb.className='btn btn-sm btn-gray'; mb.style.cssText=''; }
   const lbl=document.getElementById('ds-view-label');
   if(lbl)lbl.textContent=`📋 전체 데이터 보기 — 총 ${allDs.length}건`;
 }
@@ -10991,7 +11055,7 @@ function applyDsFilter(){
       return true;
     });
   }
-  renderDsTable(rows, DS_ALL_VIEW ? '__all__' : DS_DATE);
+  renderDsTable(rows, dsViewKeyForTable());
 }
 
 // syncSettlePayInfo → syncAllDsRowsFromSettle로 통합
@@ -11154,7 +11218,11 @@ function renderDsTable(rows, dateStr){
   </tr>`;
 
   if(!rows.length){
-    wrap.innerHTML=`<div style="text-align:center;padding:50px;color:var(--text3)"><div style="font-size:28px;margin-bottom:10px">📭</div><div>${dateStr==='__all__'?'데이터 없음 (필터 확인)':dateStr+' 정산 내역 없음'}</div><div style="font-size:12px;margin-top:6px">+ 행 추가 버튼으로 입력하세요</div></div>`;
+    let emptyMsg;
+    if(dateStr==='__all__') emptyMsg='데이터 없음 (필터 확인)';
+    else if(String(dateStr).startsWith('month:')) emptyMsg=String(dateStr).slice(6).replace('-','/')+' 월 정산 내역 없음';
+    else emptyMsg=dateStr+' 정산 내역 없음';
+    wrap.innerHTML=`<div style="text-align:center;padding:50px;color:var(--text3)"><div style="font-size:28px;margin-bottom:10px">📭</div><div>${emptyMsg}</div><div style="font-size:12px;margin-top:6px">+ 행 추가 버튼으로 입력하세요</div></div>`;
     return;
   }
   const tableHtml=`<table style="border-collapse:collapse;white-space:nowrap;font-size:11px;min-width:1700px">${thead}<tbody>${tbody}</tbody></table>`;
@@ -11316,7 +11384,7 @@ async function handleDsPaste(e, startEl){
       await syncSettlesFromDaily();
       try{ scheduleRerender(); }catch(_){}
     }
-    if(DS_ALL_VIEW) loadDailyAll(); else loadDailySettle(DS_DATE);
+    reloadCurrentDsView();
     toast(applied+'개 셀 붙여넣기 완료');
   }catch(err){
     console.warn('handleDsPaste err',err);
@@ -11355,7 +11423,7 @@ function openAddDsRow(){
   openMd('add-ds-row');
   const sel = document.getElementById('ds-row-client-sel');
   if(sel){ sel.innerHTML='<option value="">직접 입력</option>'+opts; }
-  document.getElementById('ds-row-date').value = DS_DATE;
+  document.getElementById('ds-row-date').value = DS_DATE || getKSTDate();
   document.getElementById('ds-row-cname').value='';
   document.getElementById('ds-row-payname').value='';
   // 날짜 필드 채우기
@@ -11410,7 +11478,7 @@ async function delDsRow(id){
     dsSv(arr.filter(r=>r.id!==id));
     toast('행 삭제 완료');
   }
-  if(DS_ALL_VIEW) loadDailyAll(); else loadDailySettle(DS_DATE);
+  reloadCurrentDsView();
 }
 
 async function saveDailySettle(){
@@ -11618,9 +11686,7 @@ function loadMonthlySettle(ym){
 
 
 function showDsTabAndDate(dt){
-  showDsTab('daily');
-  document.getElementById('ds-date-input').value=dt;
-  loadDailySettle(dt);
+  showDsTab('daily', { pickDate: dt });
 }
 
 // 월별 달력 진행건수+메모 수기입력 (미니 팝오버)
