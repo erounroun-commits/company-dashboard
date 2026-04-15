@@ -1619,6 +1619,8 @@ let COMPANY_EXP_CACHE = [];
 let MONTHLY_CNT_CACHE = {};
 // 블로그 프로젝트 입력 데이터 캐시 (Firestore 연동)
 let BLOG_PROJECTS_CACHE = [];
+let BLOG_SAVE_IN_FLIGHT = false;
+let BLOG_SAVE_PENDING = null;
 // 시트 UI 열설정 캐시 (Firestore 연동) — 기존 localStorage(wv_extra_cols / wv_col_order) 대체
 // 시트 UI 열설정 캐시 (거래처별 저장) — 기존: 전역 설정
 let UI_COLS_CACHE = {};
@@ -2078,7 +2080,22 @@ async function loadBlogProjectsFromFirestore(){
 function blogLd(){ return BLOG_PROJECTS_CACHE || []; }
 function blogSv(arr){
   BLOG_PROJECTS_CACHE = Array.isArray(arr)?arr.slice():[];
-  sv('bp', BLOG_PROJECTS_CACHE).catch(console.error);
+  BLOG_SAVE_PENDING = BLOG_PROJECTS_CACHE.slice();
+  if(BLOG_SAVE_IN_FLIGHT) return;
+  BLOG_SAVE_IN_FLIGHT = true;
+  void (async function flushBlogSaveQueue(){
+    while(BLOG_SAVE_PENDING){
+      const next = BLOG_SAVE_PENDING.slice();
+      BLOG_SAVE_PENDING = null;
+      try{
+        await sv('bp', next);
+      }catch(e){
+        console.error('blogSv save failed',e);
+        toast('블로그 데이터 저장 실패: '+(e?.message||e),'error');
+      }
+    }
+    BLOG_SAVE_IN_FLIGHT = false;
+  })();
 }
 
 function applyUiColsFirestoreData(d){
@@ -4040,8 +4057,19 @@ function blogRowChange(projectId, section, rowId, field, value){
   arr[idx].updatedAt=new Date().toISOString();
   blogSv(arr);
 }
-function blogSaveProject(){
-  toast('블로그 데이터 저장 완료');
+async function blogSaveProject(){
+  try{
+    if(BLOG_SAVE_PENDING || BLOG_SAVE_IN_FLIGHT){
+      const started=Date.now();
+      while(BLOG_SAVE_PENDING || BLOG_SAVE_IN_FLIGHT){
+        await new Promise(r=>setTimeout(r,80));
+        if(Date.now()-started>12000) break;
+      }
+    }
+    toast('블로그 데이터 저장 완료');
+  }catch(e){
+    toast('저장 상태 확인 중 오류: '+(e?.message||e),'error');
+  }
   try{ renderNBlogStatus(document.getElementById('dp-nblog-inner'), CUR_CLIENT); }catch(_){}
 }
 function getBlogProjectById(projectId){
