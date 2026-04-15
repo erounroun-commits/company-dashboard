@@ -2700,6 +2700,11 @@ function refreshClientView(){
     document.getElementById('cvpanel-nblog').innerHTML='<div style="padding:20px;color:red">N-블로그 현황 오류: '+e.message+'</div>';
     console.error('cvNblog error',e);
   }
+  if(typeof loadBlogProjectsFromFirestore==='function'){
+    loadBlogProjectsFromFirestore()
+      .then(()=>{ try{ renderNBlogStatus(document.getElementById('cvpanel-nblog'), c.id); }catch(_){} })
+      .catch(e=>console.warn('client view nblog delayed reload',e));
+  }
   document.getElementById('cvpanel-daily').innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">탭을 클릭하면 명단이 표시됩니다</div>';
   document.getElementById('cvpanel-daily').dataset.clientId=c.id;
   document.getElementById('cvpanel-daily').dataset.clientCode=CV_CURRENT_CODE;
@@ -3794,8 +3799,19 @@ function showCvTab(name){
     if(pEl) pEl.innerHTML=buildWayServicePanelHtml();
   }
   if(name==='nblog'){
-    const pEl=document.getElementById('cvpanel-nblog');
-    if(pEl) renderNBlogStatus(pEl, getCvClientId());
+    renderCvNblogPanel();
+  }
+}
+function renderCvNblogPanel(){
+  const pEl=document.getElementById('cvpanel-nblog');
+  if(!pEl) return;
+  const clientId=getCvClientId();
+  renderNBlogStatus(pEl, clientId);
+  // 링크 유입 직후 동기화 지연 시 재조회 후 재렌더
+  if(clientId && !getClientBlogProjects(clientId).length && typeof loadBlogProjectsFromFirestore==='function'){
+    loadBlogProjectsFromFirestore()
+      .then(()=>renderNBlogStatus(pEl, clientId))
+      .catch(e=>console.warn('cv nblog reload',e));
   }
 }
 function renderCvProdStat(container){
