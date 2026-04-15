@@ -491,6 +491,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
           <div class="dtab" onclick="showDTab('prodstat')" data-dtab="prodstat">📦 제품별 진행현황</div>
           <div class="dtab" onclick="showDTab('waysvc')" data-dtab="waysvc">✨ WAY Service</div>
           <div class="dtab" onclick="showDTab('nblog')" data-dtab="nblog">📝 N-블로그 현황</div>
+          <div class="dtab" onclick="showDTab('bloginput')" data-dtab="bloginput"><span class="adot" style="margin-right:3px"></span>블로그 데이터 입력</div>
           <div class="dtab" onclick="showDTab('alldata')" data-dtab="alldata">📚 전체 데이터 보기</div>
           <div class="dtab" onclick="showDTab('input')" data-dtab="input"><span class="adot" style="margin-right:3px"></span>데이터 입력</div>
           <div class="dtab" onclick="showDTab('settle')" data-dtab="settle"><span class="adot" style="margin-right:3px"></span>거래처 정산</div>
@@ -505,6 +506,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
         <div class="dpanel" id="dp-prodstat"><div id="dp-prodstat-inner"></div></div>
         <div class="dpanel" id="dp-waysvc"><div id="dp-waysvc-inner"></div></div>
         <div class="dpanel" id="dp-nblog"><div id="dp-nblog-inner"></div></div>
+        <div class="dpanel" id="dp-bloginput"><div id="dp-bloginput-inner"></div></div>
         <div class="dpanel" id="dp-alldata"><div id="dp-alldata-inner"></div></div>
         <div class="dpanel" id="dp-input">
           <div class="new-proj-bar">
@@ -1615,6 +1617,8 @@ let BANK_TX_CACHE = [];
 let COMPANY_EXP_CACHE = [];
 // 월별 수기 진행건수/메모 캐시 (Firestore 연동) — 기존 localStorage(wv_monthly_cnt) 대체
 let MONTHLY_CNT_CACHE = {};
+// 블로그 프로젝트 입력 데이터 캐시 (Firestore 연동)
+let BLOG_PROJECTS_CACHE = [];
 // 시트 UI 열설정 캐시 (Firestore 연동) — 기존 localStorage(wv_extra_cols / wv_col_order) 대체
 // 시트 UI 열설정 캐시 (거래처별 저장) — 기존: 전역 설정
 let UI_COLS_CACHE = {};
@@ -1633,6 +1637,7 @@ const ld=()=>({
   bankTx: BANK_TX_CACHE,
   companyExp: COMPANY_EXP_CACHE,
   monthlyCnt: MONTHLY_CNT_CACHE,
+  blogProjects: BLOG_PROJECTS_CACHE,
   uiCols: UI_COLS_CACHE,
 });
 
@@ -1648,6 +1653,7 @@ let _unsubDs = null;
 let _unsubBankTx = null;
 let _unsubCompanyExp = null;
 let _unsubMonthlyCnt = null;
+let _unsubBlogProjects = null;
 let _unsubUiCols = null;
 
 let _renderTimer = null;
@@ -1811,6 +1817,12 @@ function subscribeAuxCollectionsFromFirestore(){
   if(!_unsubMonthlyCnt){
     _unsubMonthlyCnt = db.collection('settings').doc('monthlyCnt').onSnapshot(doc=>{
       MONTHLY_CNT_CACHE = (doc && doc.exists && (doc.data()?.data)) ? (doc.data().data||{}) : {};
+      scheduleRerender();
+    });
+  }
+  if(!_unsubBlogProjects){
+    _unsubBlogProjects = db.collection('blogProjects').onSnapshot(snap=>{
+      BLOG_PROJECTS_CACHE = snap.docs.map(d=>({id:d.id,...d.data()}));
       scheduleRerender();
     });
   }
@@ -2058,6 +2070,17 @@ function monthlyCntSv(obj){
   }catch(e){}
 }
 
+async function loadBlogProjectsFromFirestore(){
+  if(typeof db === 'undefined'){return;}
+  const snap = await db.collection('blogProjects').get().catch(()=>null);
+  BLOG_PROJECTS_CACHE = snap && !snap.empty ? snap.docs.map(d=>({id:d.id,...d.data()})) : [];
+}
+function blogLd(){ return BLOG_PROJECTS_CACHE || []; }
+function blogSv(arr){
+  BLOG_PROJECTS_CACHE = Array.isArray(arr)?arr.slice():[];
+  sv('bp', BLOG_PROJECTS_CACHE).catch(console.error);
+}
+
 function applyUiColsFirestoreData(d){
   const src=d&&typeof d==='object'?d:{};
   const out={};
@@ -2157,6 +2180,8 @@ async function deleteClientCascadeFirestore(cid){
   for(const pid of pids){
     await _deleteQueryDocs('records','projectId',pid);
   }
+  // 블로그 프로젝트 입력 데이터 삭제
+  await _deleteQueryDocs('blogProjects','clientId',cid);
 
   // client 문서 영구 삭제 (실패 시 예외 전파)
   await db.collection('clients').doc(cid).delete();
@@ -2358,6 +2383,18 @@ async function sv(key, value){
     COMPANY_EXP_CACHE.forEach(r=>{
       const id=r.id||db.collection('companyExpenses').doc().id;
       const data={...r,id};
+      batch.set(col.doc(id),data);
+    });
+    await batch.commit();
+  }else if(key==='bp'){
+    BLOG_PROJECTS_CACHE = value.slice();
+    const col=db.collection('blogProjects');
+    const snap=await col.get();
+    const batch=db.batch();
+    snap.forEach(doc=>batch.delete(doc.ref));
+    BLOG_PROJECTS_CACHE.forEach(r=>{
+      const id=r.id||db.collection('blogProjects').doc().id;
+      const data=cleanForFirestore({...r,id});
       batch.set(col.doc(id),data);
     });
     await batch.commit();
@@ -2670,6 +2707,7 @@ async function refreshAllData(){
     if(typeof loadBankTxFromFirestore==='function') await loadBankTxFromFirestore();
     if(typeof loadCompanyExpFromFirestore==='function') await loadCompanyExpFromFirestore();
     if(typeof loadMonthlyCntFromFirestore==='function') await loadMonthlyCntFromFirestore();
+    if(typeof loadBlogProjectsFromFirestore==='function') await loadBlogProjectsFromFirestore();
     if(typeof loadUiColsFromFirestore==='function') await loadUiColsFromFirestore();
     // 메인/현재 화면 재렌더
     try{renderOverview();}catch(e){}
@@ -3793,74 +3831,205 @@ function buildWayServicePanelHtml(){
     </div>
   </div>`;
 }
+let BLOG_EDIT_PROJECT_ID = '';
+function blogDefaultProject(clientId, name){
+  return {
+    id: gid(),
+    clientId: clientId || '',
+    name: (name||'').trim(),
+    requestRows: [],
+    scheduleRows: [],
+    memberRows: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+function getClientBlogProjects(clientId){
+  return blogLd().filter(p=>p.clientId===clientId);
+}
+function renderBlogInputPanel(container, clientId){
+  if(!container) return;
+  if(!clientId){
+    container.innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">거래처를 먼저 선택하세요</div>';
+    return;
+  }
+  const all=blogLd();
+  const list=all.filter(p=>p.clientId===clientId);
+  if(!BLOG_EDIT_PROJECT_ID || !list.some(p=>p.id===BLOG_EDIT_PROJECT_ID)){
+    BLOG_EDIT_PROJECT_ID = list[0]?.id || '';
+  }
+  const cur=list.find(p=>p.id===BLOG_EDIT_PROJECT_ID) || null;
+
+  const reqRows=(cur?.requestRows||[]).map((r,i)=>`<tr>
+    <td style="padding:6px;border-bottom:1px solid var(--border);text-align:center">${i+1}</td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" type="month" value="${escHtml(r.publishMonth||'')}" oninput="blogRowChange('${cur.id}','requestRows','${r.id}','publishMonth',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" type="number" min="0" value="${escHtml(r.issueCount||'')}" oninput="blogRowChange('${cur.id}','requestRows','${r.id}','issueCount',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.issueType||'')}" oninput="blogRowChange('${cur.id}','requestRows','${r.id}','issueType',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.productUrl||'')}" oninput="blogRowChange('${cur.id}','requestRows','${r.id}','productUrl',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border);text-align:center"><button class="btn btn-xs btn-red" onclick="blogDeleteRow('${cur.id}','requestRows','${r.id}')">삭제</button></td>
+  </tr>`).join('');
+  const schRows=(cur?.scheduleRows||[]).map((r,i)=>`<tr>
+    <td style="padding:6px;border-bottom:1px solid var(--border);text-align:center">${i+1}</td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" type="month" value="${escHtml(r.publishMonth||'')}" oninput="blogRowChange('${cur.id}','scheduleRows','${r.id}','publishMonth',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)">
+      <select class="sc" oninput="blogRowChange('${cur.id}','scheduleRows','${r.id}','item',this.value)">
+        ${['블로거 모집기간','주소 취합/배송','블로그 발행 링크 취합'].map(v=>`<option value="${v}" ${r.item===v?'selected':''}>${v}</option>`).join('')}
+      </select>
+    </td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.period||'')}" oninput="blogRowChange('${cur.id}','scheduleRows','${r.id}','period',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.note||'')}" oninput="blogRowChange('${cur.id}','scheduleRows','${r.id}','note',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border);text-align:center"><button class="btn btn-xs btn-red" onclick="blogDeleteRow('${cur.id}','scheduleRows','${r.id}')">삭제</button></td>
+  </tr>`).join('');
+  const memRows=(cur?.memberRows||[]).map((r,i)=>`<tr>
+    <td style="padding:6px;border-bottom:1px solid var(--border);text-align:center">${i+1}</td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.productType||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','productType',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.name||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','name',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.blogAddress||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','blogAddress',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.addr||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','addr',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.zipCode||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','zipCode',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.phone||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','phone',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.memo||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','memo',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.courier||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','courier',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.invoiceNo||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','invoiceNo',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border)"><input class="sc" value="${escHtml(r.blogUrl||'')}" oninput="blogRowChange('${cur.id}','memberRows','${r.id}','blogUrl',this.value)"></td>
+    <td style="padding:6px;border-bottom:1px solid var(--border);text-align:center"><button class="btn btn-xs btn-red" onclick="blogDeleteRow('${cur.id}','memberRows','${r.id}')">삭제</button></td>
+  </tr>`).join('');
+
+  container.innerHTML=`<div style="display:grid;gap:12px">
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div style="font-size:13px;font-weight:700">🛠️ 블로그 프로젝트명 관리</div>
+        <select id="blog-proj-sel" class="fs" style="width:220px" onchange="blogPickProject(this.value)">
+          <option value="">프로젝트 선택</option>
+          ${list.map(p=>`<option value="${p.id}" ${p.id===BLOG_EDIT_PROJECT_ID?'selected':''}>${escHtml(p.name||'-')}</option>`).join('')}
+        </select>
+        <input id="blog-proj-name" class="fi" style="width:200px" placeholder="새 프로젝트명 입력">
+        <button class="btn btn-blue btn-sm" onclick="blogCreateProject()">+ 생성</button>
+        <button class="btn btn-red btn-sm" onclick="blogDeleteProject()">삭제</button>
+        <button class="btn btn-green btn-sm" onclick="blogSaveProject()">💾 저장</button>
+      </div>
+    </div>
+    ${!cur?'<div class="card" style="text-align:center;padding:40px;color:var(--text3)">프로젝트를 생성한 뒤 입력을 시작하세요</div>':`
+    <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div class="card-title">요청사항</div><button class="btn btn-sm btn-gray" onclick="blogAddRow('requestRows')">+ 행 추가</button></div>
+      <div class="tw"><table><thead><tr><th>NO</th><th>발행월</th><th>발행건수</th><th>발행구분</th><th>발행 제품 URL</th><th>관리</th></tr></thead><tbody>${reqRows||'<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:16px">데이터 없음</td></tr>'}</tbody></table></div></div>
+    <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div class="card-title">일정</div><button class="btn btn-sm btn-gray" onclick="blogAddRow('scheduleRows')">+ 행 추가</button></div>
+      <div class="tw"><table><thead><tr><th>NO</th><th>발행월</th><th>목록</th><th>기간</th><th>비고사항</th><th>관리</th></tr></thead><tbody>${schRows||'<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:16px">데이터 없음</td></tr>'}</tbody></table></div></div>
+    <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div class="card-title">명단</div><button class="btn btn-sm btn-gray" onclick="blogAddRow('memberRows')">+ 행 추가</button></div>
+      <div class="tw"><table><thead><tr><th>NO</th><th>제품 구분</th><th>체험단 성함</th><th>블로그 주소</th><th>제품수령 주소</th><th>우편번호</th><th>연락처</th><th>메모</th><th>택배사</th><th>송장번호</th><th>블로그 발행 url</th><th>관리</th></tr></thead><tbody>${memRows||'<tr><td colspan="12" style="text-align:center;color:var(--text3);padding:16px">데이터 없음</td></tr>'}</tbody></table></div></div>`}
+  </div>`;
+}
+function blogPickProject(id){
+  BLOG_EDIT_PROJECT_ID=id||'';
+  renderBlogInputPanel(document.getElementById('dp-bloginput-inner'), CUR_CLIENT);
+}
+function blogCreateProject(){
+  if(!CUR_CLIENT){toast('거래처를 먼저 선택하세요','error');return;}
+  const name=(document.getElementById('blog-proj-name')?.value||'').trim();
+  if(!name){toast('프로젝트명을 입력하세요','error');return;}
+  const arr=blogLd().slice();
+  const row=blogDefaultProject(CUR_CLIENT,name);
+  arr.push(row);
+  blogSv(arr);
+  BLOG_EDIT_PROJECT_ID=row.id;
+  toast('블로그 프로젝트 생성 완료');
+  renderBlogInputPanel(document.getElementById('dp-bloginput-inner'), CUR_CLIENT);
+}
+function blogDeleteProject(){
+  if(!BLOG_EDIT_PROJECT_ID){toast('삭제할 프로젝트를 선택하세요','error');return;}
+  if(!confirm('선택한 블로그 프로젝트를 삭제하시겠습니까?')) return;
+  const arr=blogLd().filter(p=>p.id!==BLOG_EDIT_PROJECT_ID);
+  blogSv(arr);
+  BLOG_EDIT_PROJECT_ID='';
+  toast('블로그 프로젝트 삭제 완료');
+  renderBlogInputPanel(document.getElementById('dp-bloginput-inner'), CUR_CLIENT);
+}
+function blogAddRow(section){
+  const arr=blogLd().slice();
+  const idx=arr.findIndex(p=>p.id===BLOG_EDIT_PROJECT_ID);
+  if(idx<0)return;
+  arr[idx][section]=Array.isArray(arr[idx][section])?arr[idx][section]:[];
+  if(section==='requestRows') arr[idx][section].push({id:gid(),publishMonth:'',issueCount:'',issueType:'',productUrl:''});
+  if(section==='scheduleRows') arr[idx][section].push({id:gid(),publishMonth:'',item:'블로거 모집기간',period:'',note:''});
+  if(section==='memberRows') arr[idx][section].push({id:gid(),productType:'',name:'',blogAddress:'',addr:'',zipCode:'',phone:'',memo:'',courier:'',invoiceNo:'',blogUrl:''});
+  arr[idx].updatedAt=new Date().toISOString();
+  blogSv(arr);
+  renderBlogInputPanel(document.getElementById('dp-bloginput-inner'), CUR_CLIENT);
+}
+function blogDeleteRow(projectId, section, rowId){
+  const arr=blogLd().slice();
+  const idx=arr.findIndex(p=>p.id===projectId);
+  if(idx<0)return;
+  arr[idx][section]=(arr[idx][section]||[]).filter(r=>r.id!==rowId);
+  arr[idx].updatedAt=new Date().toISOString();
+  blogSv(arr);
+  renderBlogInputPanel(document.getElementById('dp-bloginput-inner'), CUR_CLIENT);
+}
+function blogRowChange(projectId, section, rowId, field, value){
+  const arr=blogLd().slice();
+  const idx=arr.findIndex(p=>p.id===projectId);
+  if(idx<0)return;
+  const rows=arr[idx][section]||[];
+  const rIdx=rows.findIndex(r=>r.id===rowId);
+  if(rIdx<0)return;
+  rows[rIdx][field]=value;
+  arr[idx].updatedAt=new Date().toISOString();
+  blogSv(arr);
+}
+function blogSaveProject(){
+  toast('블로그 데이터 저장 완료');
+  try{ renderNBlogStatus(document.getElementById('dp-nblog-inner'), CUR_CLIENT); }catch(_){}
+}
 function renderNBlogStatus(container, clientId){
   if(!container)return;
   if(!clientId){
     container.innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">거래처 정보를 불러오지 못했습니다</div>';
     return;
   }
-  const d=ld();
-  const projs=d.projects.filter(p=>p.clientId===clientId);
-  const nProjs=projs.filter(p=>String(p.platform||'').includes('네이버'));
-  const projIdSet=new Set(nProjs.map(p=>p.id));
-  const nRecs=d.records.filter(r=>projIdSet.has(r.projectId));
-  const done=nRecs.filter(r=>/(^|\.)blog\.naver\.com|m\.blog\.naver\.com|post\.naver\.com/i.test(String(r.reviewUrl||''))).length;
-  const reqTotal=nProjs.reduce((a,p)=>a+(Number(p.total)||0),0);
-  const baseTotal=Math.max(reqTotal,nRecs.length);
-  const rate=baseTotal?Math.round(done/baseTotal*100):0;
-
-  if(!nProjs.length){
-    container.innerHTML=`<div style="max-width:760px;border:1px solid var(--border);border-radius:12px;padding:24px;background:var(--card)">
-      <div style="font-size:16px;font-weight:800;margin-bottom:8px">📝 N-블로그 현황</div>
-      <div style="font-size:12px;color:var(--text2);line-height:1.6">현재 이 거래처에 네이버 플랫폼 프로젝트가 없습니다. 프로젝트 플랫폼을 <b>네이버</b> 또는 <b>쿠팡+네이버</b>로 설정하면 이 탭에서 진행 현황을 확인할 수 있습니다.</div>
-    </div>`;
+  const list=getClientBlogProjects(clientId);
+  if(!list.length){
+    container.innerHTML=`<div class="card" style="max-width:760px"><div style="font-size:16px;font-weight:800;margin-bottom:8px">📝 N-블로그 현황</div><div style="font-size:12px;color:var(--text2);line-height:1.6">입력된 블로그 프로젝트가 없습니다. 관리자 화면의 <b>블로그 데이터 입력</b> 탭에서 프로젝트를 생성해 주세요.</div></div>`;
     return;
   }
-
-  const rows=nProjs.map(p=>{
-    const rc=nRecs.filter(r=>r.projectId===p.id);
-    const t=Math.max(Number(p.total)||0,rc.length);
-    const dCnt=rc.filter(r=>/(^|\.)blog\.naver\.com|m\.blog\.naver\.com|post\.naver\.com/i.test(String(r.reviewUrl||''))).length;
-    const pRate=t?Math.round(dCnt/t*100):0;
+  let reqTotal=0, scheduleTotal=0, memberTotal=0, pubDone=0;
+  const rows=list.map(p=>{
+    const req=(p.requestRows||[]);
+    const sch=(p.scheduleRows||[]);
+    const mem=(p.memberRows||[]);
+    const target=req.reduce((a,r)=>a+(Number(r.issueCount)||0),0);
+    const done=mem.filter(r=>(r.blogUrl||'').trim()).length;
+    const rate=(target||mem.length)?Math.round(done/Math.max(target,mem.length)*100):0;
+    reqTotal+=target; scheduleTotal+=sch.length; memberTotal+=mem.length; pubDone+=done;
     return `<tr>
       <td style="padding:9px 10px;border-bottom:1px solid var(--border);font-weight:700">${escHtml(p.name||'-')}</td>
-      <td style="padding:9px 10px;border-bottom:1px solid var(--border);color:var(--text2)">${escHtml(p.platform||'-')}</td>
-      <td style="padding:9px 10px;border-bottom:1px solid var(--border);text-align:right">${fmtN(t)}건</td>
-      <td style="padding:9px 10px;border-bottom:1px solid var(--border);text-align:right;color:#6366f1;font-weight:700">${fmtN(dCnt)}건</td>
+      <td style="padding:9px 10px;border-bottom:1px solid var(--border);text-align:right">${fmtN(target)}건</td>
+      <td style="padding:9px 10px;border-bottom:1px solid var(--border);text-align:right">${fmtN(sch.length)}개</td>
+      <td style="padding:9px 10px;border-bottom:1px solid var(--border);text-align:right">${fmtN(mem.length)}명</td>
+      <td style="padding:9px 10px;border-bottom:1px solid var(--border);text-align:right;color:#10b981;font-weight:700">${fmtN(done)}건</td>
       <td style="padding:9px 10px;border-bottom:1px solid var(--border)">
-        <div style="height:8px;background:var(--bg2);border-radius:999px;overflow:hidden"><div style="height:100%;width:${pRate}%;background:linear-gradient(90deg,#6366f1,#3b82f6)"></div></div>
-        <div style="font-size:11px;color:var(--text3);margin-top:4px">${pRate}%</div>
+        <div style="height:8px;background:var(--bg2);border-radius:999px;overflow:hidden"><div style="height:100%;width:${rate}%;background:linear-gradient(90deg,#6366f1,#10b981)"></div></div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">${rate}%</div>
       </td>
     </tr>`;
   }).join('');
-
+  const base=Math.max(reqTotal,memberTotal);
+  const rate=base?Math.round(pubDone/base*100):0;
   container.innerHTML=`<div style="display:grid;gap:12px;max-width:960px">
     <div style="padding:16px;border:1px solid var(--border);border-radius:12px;background:var(--card)">
       <div style="font-size:17px;font-weight:800;margin-bottom:8px">📝 N-블로그 현황</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px">
-        ${sMini('네이버 프로젝트','#6366f1',fmtN(nProjs.length)+'개')}
-        ${sMini('기준 목표 건수','#0891b2',fmtN(baseTotal)+'건')}
-        ${sMini('블로그 URL 등록','#10b981',fmtN(done)+'건')}
-        ${sMini('진행률','#f59e0b',rate+'%')}
+        ${sMini('블로그 프로젝트','#6366f1',fmtN(list.length)+'개')}
+        ${sMini('요청 발행건수','#0891b2',fmtN(reqTotal)+'건')}
+        ${sMini('명단 인원','#f59e0b',fmtN(memberTotal)+'명')}
+        ${sMini('발행 URL 등록','#10b981',fmtN(pubDone)+'건')}
       </div>
-      <div style="margin-top:10px;font-size:11px;color:var(--text3)">기준: 프로젝트 플랫폼이 '네이버' 포함 + 리뷰URL이 blog.naver.com 계열인 경우 집계</div>
+      <div style="margin-top:10px;font-size:11px;color:var(--text3)">전체 진행률: ${rate}% (기준: max(요청 발행건수, 명단 인원))</div>
     </div>
     <div style="border:1px solid var(--border);border-radius:12px;background:var(--card);overflow:hidden">
-      <div style="padding:12px 14px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700">프로젝트별 현황</div>
-      <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;font-size:12px">
-          <thead>
-            <tr style="background:var(--bg2)">
-              <th style="padding:9px 10px;text-align:left;border-bottom:1px solid var(--border)">프로젝트</th>
-              <th style="padding:9px 10px;text-align:left;border-bottom:1px solid var(--border)">플랫폼</th>
-              <th style="padding:9px 10px;text-align:right;border-bottom:1px solid var(--border)">목표</th>
-              <th style="padding:9px 10px;text-align:right;border-bottom:1px solid var(--border)">등록</th>
-              <th style="padding:9px 10px;text-align:left;border-bottom:1px solid var(--border)">진행률</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700">프로젝트별 정리</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="background:var(--bg2)"><th style="padding:9px 10px;text-align:left;border-bottom:1px solid var(--border)">프로젝트</th><th style="padding:9px 10px;text-align:right;border-bottom:1px solid var(--border)">요청 건수</th><th style="padding:9px 10px;text-align:right;border-bottom:1px solid var(--border)">일정</th><th style="padding:9px 10px;text-align:right;border-bottom:1px solid var(--border)">명단</th><th style="padding:9px 10px;text-align:right;border-bottom:1px solid var(--border)">URL 등록</th><th style="padding:9px 10px;text-align:left;border-bottom:1px solid var(--border)">진행률</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
     </div>
   </div>`;
 }
@@ -6323,6 +6492,10 @@ function showDTab(name){
   if(name==='nblog'){
     const el=document.getElementById('dp-nblog-inner');
     if(el)renderNBlogStatus(el, CUR_CLIENT);
+  }
+  if(name==='bloginput'){
+    const el=document.getElementById('dp-bloginput-inner');
+    if(el)renderBlogInputPanel(el, CUR_CLIENT);
   }
   if(name==='input'){
     var d=ld();
@@ -12355,6 +12528,7 @@ function exportDsExcel(){
       loadBankTxFromFirestore().catch(console.error);
       loadCompanyExpFromFirestore().catch(console.error);
       loadMonthlyCntFromFirestore().catch(console.error);
+      loadBlogProjectsFromFirestore().catch(console.error);
       loadUiColsFromFirestore().catch(console.error);
     })();
   });
