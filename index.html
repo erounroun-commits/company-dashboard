@@ -1768,7 +1768,7 @@ function subscribeMainDataFromFirestore(){
   const unsubs = [];
   unsubs.push(db.collection('clients').onSnapshot(makeHandler(v=>CLIENTS_CACHE=v), onSubErr));
   unsubs.push(db.collection('projects').onSnapshot(makeHandler(v=>PROJECTS_CACHE=v), onSubErr));
-  unsubs.push(db.collection('records').onSnapshot(makeHandler(v=>RECORDS_CACHE=v), onSubErr));
+  // records 전체 구독 제거: 거래처 선택 시 loadRecordsByClient(clientId)로 해당 거래처만 로드
   unsubs.push(db.collection('quotes').onSnapshot(makeHandler(v=>QUOTES_CACHE=v), onSubErr));
   _unsubMain = ()=>{ unsubs.forEach(fn=>{try{fn&&fn();}catch(e){}}); _unsubMain=null; };
 }
@@ -1849,12 +1849,28 @@ async function loadMainDataFromFirestore(){
   // projects
   const prSnap = await db.collection('projects').get();
   PROJECTS_CACHE = prSnap.docs.map(d=>({id:d.id,...d.data()}));
-  // records
-  const rcSnap = await db.collection('records').get();
-  RECORDS_CACHE = rcSnap.docs.map(d=>({id:d.id,...d.data()}));
+  // records 전체 로드 제거: 거래처 선택 시 loadRecordsByClient(clientId)로 해당 거래처만 로드
   // quotes (기존 구조 유지, 나중에 필요 시 확장)
   const qtSnap = await db.collection('quotes').get().catch(()=>null);
   QUOTES_CACHE = qtSnap && !qtSnap.empty ? qtSnap.docs.map(d=>({id:d.id,...d.data()})) : [];
+}
+
+// 특정 거래처의 records만 로드 (records 전체 구독 제거 대체)
+// 주의: records 문서에는 clientId가 없고 projectId만 있으므로,
+//       해당 거래처의 프로젝트 id 목록으로 조회한다.
+async function loadRecordsByClient(clientId){
+  if(typeof db === 'undefined'){return;}
+  if(!clientId){ RECORDS_CACHE = []; return; }
+  const projIds=(PROJECTS_CACHE||[]).filter(p=>p.clientId===clientId).map(p=>p.id).filter(Boolean);
+  if(!projIds.length){ RECORDS_CACHE = []; return; }
+  const out=[];
+  // Firestore 'in' 쿼리는 한 번에 최대 10개까지만 허용 → 10개씩 나눠 조회
+  for(let i=0;i<projIds.length;i+=10){
+    const chunk=projIds.slice(i,i+10);
+    const snap=await db.collection('records').where('projectId','in',chunk).get();
+    snap.docs.forEach(dd=>out.push({id:dd.id,...dd.data()}));
+  }
+  RECORDS_CACHE = out;
 }
 
 // Firestore에서 정산(settles) 로드 + (1회) localStorage(wv_st) 마이그레이션
@@ -2306,7 +2322,14 @@ async function sv(key, value){
     const col=db.collection('records');
     const snap=await col.get();
     const existingIds=new Set();
-    snap.forEach(doc=>existingIds.add(doc.id));
+    const existingProjById={};
+    snap.forEach(doc=>{ existingIds.add(doc.id); existingProjById[doc.id]=(doc.data()||{}).projectId; });
+    // records를 거래처별로만 로드하므로(전체 구독 제거), RECORDS_CACHE에는
+    // 현재 거래처의 records만 들어있다. 따라서 삭제는 "현재 로드된 거래처 범위"의
+    // projectId에 속한 문서로만 제한해 다른 거래처 records가 삭제되지 않도록 한다.
+    const scopeProjIds=new Set();
+    prev.forEach(r=>{ if(r&&r.projectId!=null) scopeProjIds.add(r.projectId); });
+    RECORDS_CACHE.forEach(r=>{ if(r&&r.projectId!=null) scopeProjIds.add(r.projectId); });
     // id 부여 및 다음 상태 id 집합 계산
     const nextIds=new Set();
     RECORDS_CACHE.forEach(r=>{
@@ -2318,9 +2341,9 @@ async function sv(key, value){
       if(r.id) prevMap[r.id]=cleanForFirestore({...r,id:r.id});
     });
     const batch=db.batch();
-    // 삭제: 이전에 있었지만 지금은 없는 id만 삭제
+    // 삭제: 이전에 있었지만 지금은 없는 id만 삭제 (단, 현재 거래처 범위의 projectId 문서로 제한)
     existingIds.forEach(id=>{
-      if(!nextIds.has(id)) batch.delete(col.doc(id));
+      if(!nextIds.has(id) && scopeProjIds.has(existingProjById[id])) batch.delete(col.doc(id));
     });
     // 추가/수정: 내용이 바뀐 경우에만 set
     RECORDS_CACHE.forEach(r=>{
@@ -2691,6 +2714,11 @@ function showClientView(code){
     if(typeof loadMainDataFromFirestore==='function'){
       try{ await loadMainDataFromFirestore(); }catch(e){ console.error(e); }
     }
+    // 해당 거래처의 records만 로드 (records 전체 구독 제거 대체)
+    try{
+      const _c=ld().clients.find(x=>x.code===code);
+      if(_c && typeof loadRecordsByClient==='function') await loadRecordsByClient(_c.id);
+    }catch(e){ console.error(e); }
     if(typeof loadBlogProjectsFromFirestore==='function'){
       try{ await loadBlogProjectsFromFirestore(); }catch(e){ console.error(e); }
     }
@@ -2753,6 +2781,11 @@ async function refreshClientViewFromServer(){
   if(typeof loadMainDataFromFirestore==='function'){
     try{ await loadMainDataFromFirestore(); }catch(e){ console.error(e); }
   }
+  // 해당 거래처의 records만 로드 (records 전체 구독 제거 대체)
+  try{
+    const _c=ld().clients.find(x=>x.code===CV_CURRENT_CODE);
+    if(_c && typeof loadRecordsByClient==='function') await loadRecordsByClient(_c.id);
+  }catch(e){ console.error(e); }
   if(typeof loadBlogProjectsFromFirestore==='function'){
     try{ await loadBlogProjectsFromFirestore(); }catch(e){ console.error(e); }
   }
@@ -6673,12 +6706,14 @@ function renderClients(){
 // ═══════════════════════════════════════════
 // CLIENT DETAIL
 // ═══════════════════════════════════════════
-function openDetail(cid){
+async function openDetail(cid){
   CUR_CLIENT=cid;
   const d=ld(),c=d.clients.find(x=>x.id===cid);if(!c)return;
   hide('cl-list');show('cl-detail');
   document.getElementById('det-name').textContent=c.name;
   document.getElementById('det-info').textContent=`${c.manager||''} ${c.phone?'· '+c.phone:''} · 코드: ${c.code}`;
+  // 선택한 거래처의 records만 로드 (records 전체 구독 제거 대체)
+  try{ if(typeof loadRecordsByClient==='function') await loadRecordsByClient(cid); }catch(e){ console.error(e); }
   showDTab('dash');
   renderDetDash();renderDetProjView();renderDetQuote();renderDetSettle();renderInfoForm(c);
   // daily 탭은 lazy render on tab click
