@@ -2302,29 +2302,71 @@ function cleanForFirestore(val){
 async function sv(key, value){
   if(typeof db === 'undefined'){return;}
   if(key==='cl'){
+    // 변경분만 반영 (전체 삭제/재삽입 대신) → 1건 수정 시 1건만 쓰기
+    console.time('sv:cl');
+    const prev=Array.isArray(CLIENTS_CACHE)?CLIENTS_CACHE.slice():[];
     CLIENTS_CACHE = value.slice();
     const col=db.collection('clients');
     const snap=await col.get();
-    const batch=db.batch();
-    snap.forEach(doc=>batch.delete(doc.ref));
+    const existingIds=new Set();
+    snap.forEach(doc=>existingIds.add(doc.id));
+    const nextIds=new Set();
     CLIENTS_CACHE.forEach(c=>{
-      const id=c.id||db.collection('clients').doc().id;
-      const data={...c,id};
-      batch.set(col.doc(id),data, { merge: true });
+      if(!c.id) c.id=col.doc().id;
+      nextIds.add(c.id);
+    });
+    const prevMap={};
+    prev.forEach(c=>{
+      if(c.id) prevMap[c.id]=cleanForFirestore({...c,id:c.id});
+    });
+    const batch=db.batch();
+    // 삭제: 이전엔 있었지만 지금은 없는 id만 삭제
+    existingIds.forEach(id=>{
+      if(!nextIds.has(id)) batch.delete(col.doc(id));
+    });
+    // 추가/수정: 내용이 바뀐 경우에만 set
+    CLIENTS_CACHE.forEach(c=>{
+      const cleaned=cleanForFirestore({...c,id:c.id});
+      const prevClean=prevMap[c.id];
+      const changed=!prevClean || JSON.stringify(prevClean)!==JSON.stringify(cleaned);
+      if(changed){
+        batch.set(col.doc(cleaned.id),cleaned, { merge: true });
+      }
     });
     await batch.commit();
+    console.timeEnd('sv:cl');
   }else if(key==='pr'){
+    // 변경분만 반영 (전체 삭제/재삽입 대신) → 1건 수정 시 1건만 쓰기
+    console.time('sv:pr');
+    const prev=Array.isArray(PROJECTS_CACHE)?PROJECTS_CACHE.slice():[];
     PROJECTS_CACHE = value.slice();
     const col=db.collection('projects');
     const snap=await col.get();
-    const batch=db.batch();
-    snap.forEach(doc=>batch.delete(doc.ref));
+    const existingIds=new Set();
+    snap.forEach(doc=>existingIds.add(doc.id));
+    const nextIds=new Set();
     PROJECTS_CACHE.forEach(p=>{
-      const id=p.id||db.collection('projects').doc().id;
-      const data={...p,id};
-      batch.set(col.doc(id),data, { merge: true });
+      if(!p.id) p.id=col.doc().id;
+      nextIds.add(p.id);
+    });
+    const prevMap={};
+    prev.forEach(p=>{
+      if(p.id) prevMap[p.id]=cleanForFirestore({...p,id:p.id});
+    });
+    const batch=db.batch();
+    existingIds.forEach(id=>{
+      if(!nextIds.has(id)) batch.delete(col.doc(id));
+    });
+    PROJECTS_CACHE.forEach(p=>{
+      const cleaned=cleanForFirestore({...p,id:p.id});
+      const prevClean=prevMap[p.id];
+      const changed=!prevClean || JSON.stringify(prevClean)!==JSON.stringify(cleaned);
+      if(changed){
+        batch.set(col.doc(cleaned.id),cleaned, { merge: true });
+      }
     });
     await batch.commit();
+    console.timeEnd('sv:pr');
   }else if(key==='rc'){
     // records는 전체 삭제/재삽입 대신,
     // 이전 스냅샷과 비교하여 변경/삭제된 것만 최소한으로 반영
@@ -2392,29 +2434,69 @@ async function sv(key, value){
     });
     await batch.commit();
   }else if(key==='st'){
+    // 변경분만 반영 (전체 삭제/재삽입 대신)
+    console.time('sv:st');
+    const prev=Array.isArray(SETTLES_CACHE)?SETTLES_CACHE.slice():[];
     SETTLES_CACHE = value.slice();
     const col=db.collection('settles');
     const snap=await col.get();
-    const batch=db.batch();
-    snap.forEach(doc=>batch.delete(doc.ref));
+    const existingIds=new Set();
+    snap.forEach(doc=>existingIds.add(doc.id));
+    const nextIds=new Set();
     SETTLES_CACHE.forEach(s=>{
-      const id=s.id||db.collection('settles').doc().id;
-      const data={...s,id};
-      batch.set(col.doc(id),data, { merge: true });
+      if(!s.id) s.id=col.doc().id;
+      nextIds.add(s.id);
+    });
+    const prevMap={};
+    prev.forEach(s=>{
+      if(s.id) prevMap[s.id]=cleanForFirestore({...s,id:s.id});
+    });
+    const batch=db.batch();
+    existingIds.forEach(id=>{
+      if(!nextIds.has(id)) batch.delete(col.doc(id));
+    });
+    SETTLES_CACHE.forEach(s=>{
+      const cleaned=cleanForFirestore({...s,id:s.id});
+      const prevClean=prevMap[s.id];
+      const changed=!prevClean || JSON.stringify(prevClean)!==JSON.stringify(cleaned);
+      if(changed){
+        batch.set(col.doc(cleaned.id),cleaned, { merge: true });
+      }
     });
     await batch.commit();
+    console.timeEnd('sv:st');
   }else if(key==='dep'){
+    // 변경분만 반영 (전체 삭제/재삽입 대신)
+    console.time('sv:dep');
+    const prev=Array.isArray(DEP_HIST_CACHE)?DEP_HIST_CACHE.slice():[];
     DEP_HIST_CACHE = value.slice();
     const col=db.collection('depositHistory');
     const snap=await col.get();
-    const batch=db.batch();
-    snap.forEach(doc=>batch.delete(doc.ref));
+    const existingIds=new Set();
+    snap.forEach(doc=>existingIds.add(doc.id));
+    const nextIds=new Set();
     DEP_HIST_CACHE.forEach(h=>{
-      const id=h.id||db.collection('depositHistory').doc().id;
-      const data={...h,id};
-      batch.set(col.doc(id),data, { merge: true });
+      if(!h.id) h.id=col.doc().id;
+      nextIds.add(h.id);
+    });
+    const prevMap={};
+    prev.forEach(h=>{
+      if(h.id) prevMap[h.id]=cleanForFirestore({...h,id:h.id});
+    });
+    const batch=db.batch();
+    existingIds.forEach(id=>{
+      if(!nextIds.has(id)) batch.delete(col.doc(id));
+    });
+    DEP_HIST_CACHE.forEach(h=>{
+      const cleaned=cleanForFirestore({...h,id:h.id});
+      const prevClean=prevMap[h.id];
+      const changed=!prevClean || JSON.stringify(prevClean)!==JSON.stringify(cleaned);
+      if(changed){
+        batch.set(col.doc(cleaned.id),cleaned, { merge: true });
+      }
     });
     await batch.commit();
+    console.timeEnd('sv:dep');
   }else if(key==='um'){
     DEP_UNMATCHED_CACHE = value.slice();
     const col=db.collection('depositUnmatched');
