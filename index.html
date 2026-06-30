@@ -743,6 +743,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
             <option value="y">Y (발행함)</option>
             <option value="n">N (미발행)</option>
           </select>
+          <button class="btn btn-sm btn-blue" id="settle-bulk-tax-btn" onclick="bulkSetTaxIssued()" disabled style="margin-left:8px">선택 항목 세금계산서 발행 Y로 변경</button>
         </div>
         <div class="tw" id="settle-all-table"></div>
       </div>
@@ -5894,11 +5895,16 @@ function renderSettleAll(){
     ${sCard('정산 완료','var(--green)',fmtN(settledAmt)+'원',settles.filter(x=>x.settled).length+'건')}
     ${sCard('미정산','var(--red)',fmtN(pendingAmt)+'원',settles.filter(x=>!x.settled).length+'건')}`;
 
+  // 요청3 진단용: quotes 전체 개수 확인 (건수에 따라 최적화 방식이 달라짐)
+  console.log('quotes 전체 개수:', QUOTES_CACHE.length);
+
   // 거래처명 매핑 + 견적서 order (순서 반영)
   const clientMap={};
-  d.clients.forEach(cl=>{clientMap[cl.id]=cl.name;});
+  const clientById={};
+  d.clients.forEach(cl=>{clientMap[cl.id]=cl.name;clientById[cl.id]=cl;});
   const quoteOrder={};
-  (d.quotes||[]).forEach(q=>{ quoteOrder[q.id]=q.order!=null?q.order:9999; });
+  const quoteMap={};
+  (d.quotes||[]).forEach(q=>{ quoteOrder[q.id]=q.order!=null?q.order:9999; quoteMap[q.id]=q; });
 
   let filtered=settles.filter(s=>{
     const cname=(clientMap[s.clientId]||'').toLowerCase();
@@ -5925,13 +5931,20 @@ function renderSettleAll(){
     return b.date.localeCompare(a.date);
   });
 
-  const tbody=filtered.map((s,i)=>`<tr>
-    <td style="text-align:center;font-size:11px;color:var(--text3);position:sticky;left:0;z-index:3;background:var(--card);min-width:40px">${i+1}</td>
-    <td style="font-family:monospace;font-size:11px;position:sticky;left:40px;z-index:3;background:var(--card);min-width:90px">${s.date}</td>
-    <td style="font-weight:700;position:sticky;left:130px;z-index:3;background:var(--card);min-width:120px">${clientMap[s.clientId]||'—'}</td>
+  const tbody=filtered.map((s,i)=>{
+    // 요청1: settle → quote(taxBizIdx) → client.bizInfoList[idx].bizNo
+    const quote=quoteMap[s.qtId];
+    const client=clientById[s.clientId];
+    const bizIdx=(quote&&quote.taxBizIdx!=null)?quote.taxBizIdx:0;
+    const bizNo=(client&&client.bizInfoList&&client.bizInfoList[bizIdx]&&client.bizInfoList[bizIdx].bizNo)||'—';
+    return `<tr>
+    <td style="text-align:center;position:sticky;left:0;z-index:3;background:var(--card);min-width:36px"><input type="checkbox" class="settle-row-check" value="${s.id}" onchange="updateBulkTaxBtnState()" onclick="event.stopPropagation()" ${s.taxYn?'':'disabled'}></td>
+    <td style="text-align:center;font-size:11px;color:var(--text3);position:sticky;left:36px;z-index:3;background:var(--card);min-width:40px">${i+1}</td>
+    <td style="font-family:monospace;font-size:11px;position:sticky;left:76px;z-index:3;background:var(--card);min-width:90px">${s.date}</td>
+    <td style="font-weight:700;position:sticky;left:166px;z-index:3;background:var(--card);min-width:120px">${clientMap[s.clientId]||'—'}</td>
     <td style="font-size:11px;color:var(--text2)">${s.toName||'—'}</td>
     <td style="font-size:10px;color:var(--text2)">${s.no||'—'}</td>
-    <td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text2)" title="${s.itemSummary||''}">${s.itemSummary||'—'}</td>
+    <td style="font-size:11px;font-family:monospace;color:var(--text2)" title="${bizNo}">${bizNo}</td>
     <td style="text-align:right;font-weight:700;color:var(--accent)">${fmtN(s.total)}원</td>
     <td style="text-align:center;min-width:80px">
       ${s.taxYn
@@ -5970,18 +5983,20 @@ function renderSettleAll(){
     <td style="text-align:center">
       <button class="btn btn-xs btn-red" onclick="delSettleRow('${s.id}')" title="정산 내역 삭제">🗑</button>
     </td>
-  </tr>`).join('');
+  </tr>`;
+  }).join('');
 
   const tableEl=document.getElementById('settle-all-table');
   if(!tableEl)return;
   const tableHtml=`<table style="border-collapse:collapse;width:100%;min-width:1100px">
     <thead><tr>
-      <th style="position:sticky;left:0;z-index:4;padding:8px 10px;background:var(--bg2);text-align:center;border-bottom:1px solid var(--border)">#</th>
-      <th style="position:sticky;left:40px;z-index:4;padding:8px 10px;background:var(--bg2);text-align:center;border-bottom:1px solid var(--border)">견적일자</th>
-      <th style="position:sticky;left:130px;z-index:4;padding:8px 10px;background:var(--bg2);text-align:left;border-bottom:1px solid var(--border)">거래처</th>
+      <th style="position:sticky;left:0;z-index:4;padding:8px 10px;background:var(--bg2);text-align:center;border-bottom:1px solid var(--border)"><input type="checkbox" id="settle-check-all" onchange="toggleAllSettleCheck(this.checked)"></th>
+      <th style="position:sticky;left:36px;z-index:4;padding:8px 10px;background:var(--bg2);text-align:center;border-bottom:1px solid var(--border)">#</th>
+      <th style="position:sticky;left:76px;z-index:4;padding:8px 10px;background:var(--bg2);text-align:center;border-bottom:1px solid var(--border)">견적일자</th>
+      <th style="position:sticky;left:166px;z-index:4;padding:8px 10px;background:var(--bg2);text-align:left;border-bottom:1px solid var(--border)">거래처</th>
       <th style="padding:8px 10px;background:var(--bg2);text-align:left;border-bottom:1px solid var(--border)">수신처</th>
       <th style="padding:8px 10px;background:var(--bg2);text-align:left;border-bottom:1px solid var(--border)">견적번호</th>
-      <th style="padding:8px 10px;background:var(--bg2);text-align:left;border-bottom:1px solid var(--border)">항목요약</th>
+      <th style="padding:8px 10px;background:var(--bg2);text-align:left;border-bottom:1px solid var(--border)">사업자등록번호</th>
       <th style="padding:8px 10px;background:var(--bg2);text-align:right;border-bottom:1px solid var(--border)">합계금액</th>
       <th style="padding:8px 10px;background:var(--bg2);text-align:center;border-bottom:1px solid var(--border)">세금계산서</th>
       <th style="padding:8px 10px;background:var(--bg2);text-align:center;border-bottom:1px solid var(--border)">발행여부</th>
@@ -5990,7 +6005,7 @@ function renderSettleAll(){
       <th style="padding:8px 10px;background:var(--bg2);text-align:center;border-bottom:1px solid var(--border)">정산상태</th>
       <th style="padding:8px 10px;background:var(--bg2);text-align:center;border-bottom:1px solid var(--border)">삭제</th>
     </tr></thead>
-    <tbody>${tbody||'<tr><td colspan="13" style="text-align:center;padding:40px;color:var(--text3)">정산 내역이 없습니다</td></tr>'}</tbody>
+    <tbody>${tbody||'<tr><td colspan="14" style="text-align:center;padding:40px;color:var(--text3)">정산 내역이 없습니다</td></tr>'}</tbody>
   </table>`;
 
   tableEl.innerHTML=`
@@ -6015,6 +6030,41 @@ function renderSettleAll(){
       main.onscroll=()=>{ top.scrollLeft=main.scrollLeft; };
     }
   }catch(e){ console.warn('settle-all scroll sync err',e); }
+
+  // 체크박스가 모두 초기화된 상태이므로 일괄 버튼 상태도 갱신
+  try{ updateBulkTaxBtnState(); }catch(_){}
+}
+
+// ── 정산 탭 체크박스 다중선택 / 세금계산서 발행여부 일괄 Y 변경 ──
+function toggleAllSettleCheck(checked){
+  document.querySelectorAll('.settle-row-check').forEach(cb=>{ if(!cb.disabled) cb.checked=checked; });
+  updateBulkTaxBtnState();
+}
+function updateBulkTaxBtnState(){
+  const checkedCount=document.querySelectorAll('.settle-row-check:checked').length;
+  const btn=document.getElementById('settle-bulk-tax-btn');
+  if(btn) btn.disabled=checkedCount===0;
+}
+async function bulkSetTaxIssued(){
+  const checked=[...document.querySelectorAll('.settle-row-check:checked')];
+  if(checked.length===0)return;
+  // taxYn이 false인 행은 세금계산서 대상이 아니므로 제외 (체크박스는 disabled 처리되어 있음)
+  const settles=stLd();
+  const targetIds=[]; let skipped=0;
+  checked.forEach(cb=>{
+    const s=settles.find(x=>x.id===cb.value);
+    if(s&&s.taxYn) targetIds.push(cb.value); else skipped++;
+  });
+  if(targetIds.length===0){ toast('선택 항목 중 세금계산서 대상이 없습니다','error'); return; }
+  if(!confirm(`선택한 ${targetIds.length}건의 세금계산서 발행여부를 Y로 변경할까요?`))return;
+  for(const id of targetIds){
+    // 기존 setSettleTaxIssued(id, true) 재사용
+    await setSettleTaxIssued(id, true);
+  }
+  let msg=`${targetIds.length}건 세금계산서 발행여부가 Y로 변경되었습니다`;
+  if(skipped>0) msg+=` (${skipped}건은 세금계산서 대상이 아니라 제외됨)`;
+  toast(msg,'success');
+  renderSettleAll();
 }
 
 function openSettleQuote(qtId){
