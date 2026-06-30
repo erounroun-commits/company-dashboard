@@ -1839,23 +1839,30 @@ function subscribeAuxCollectionsFromFirestore(){
 
 // Firestore에서 클라이언트/프로젝트/레코드/견적 로드
 let _mainDataLoaded = false;
+let _mainDataPromise = null; // 로드 진행 중인 Promise(중복/조기반환 race 방지)
 async function loadMainDataFromFirestore(force = false){
   if(typeof db === 'undefined'){return;}
-  if(_mainDataLoaded && !force) return; // 이미 로드됐으면 스킵 (force=true면 재로드)
-  _mainDataLoaded = true;
-  if(typeof ensureFirebaseReadAuth==='function'){
-    try{ await ensureFirebaseReadAuth(); }catch(e){ console.warn('main data auth',e); }
-  }
-  // clients
-  const clSnap = await db.collection('clients').get();
-  CLIENTS_CACHE = clSnap.docs.map(d=>({id:d.id,...d.data()}));
-  // projects
-  const prSnap = await db.collection('projects').get();
-  PROJECTS_CACHE = prSnap.docs.map(d=>({id:d.id,...d.data()}));
-  // records 전체 로드 제거: 거래처 선택 시 loadRecordsByClient(clientId)로 해당 거래처만 로드
-  // quotes (기존 구조 유지, 나중에 필요 시 확장)
-  const qtSnap = await db.collection('quotes').get().catch(()=>null);
-  QUOTES_CACHE = qtSnap && !qtSnap.empty ? qtSnap.docs.map(d=>({id:d.id,...d.data()})) : [];
+  if(_mainDataLoaded && !force) return; // 이미 로드 완료됐으면 스킵
+  if(_mainDataPromise && !force) return _mainDataPromise; // 로드 진행 중이면 같은 Promise를 await (조기 반환 방지)
+  const p = (async ()=>{
+    if(typeof ensureFirebaseReadAuth==='function'){
+      try{ await ensureFirebaseReadAuth(); }catch(e){ console.warn('main data auth',e); }
+    }
+    // clients
+    const clSnap = await db.collection('clients').get();
+    CLIENTS_CACHE = clSnap.docs.map(d=>({id:d.id,...d.data()}));
+    // projects
+    const prSnap = await db.collection('projects').get();
+    PROJECTS_CACHE = prSnap.docs.map(d=>({id:d.id,...d.data()}));
+    // records 전체 로드 제거: 거래처 선택 시 loadRecordsByClient(clientId)로 해당 거래처만 로드
+    // quotes (기존 구조 유지, 나중에 필요 시 확장)
+    const qtSnap = await db.collection('quotes').get().catch(()=>null);
+    QUOTES_CACHE = qtSnap && !qtSnap.empty ? qtSnap.docs.map(d=>({id:d.id,...d.data()})) : [];
+    _mainDataLoaded = true; // 실제 로드가 끝난 뒤에만 완료 처리(실패 시 재시도 가능)
+  })();
+  _mainDataPromise = p;
+  try{ await p; }
+  finally { if(_mainDataPromise===p) _mainDataPromise=null; }
 }
 
 // 특정 거래처의 records만 로드 (records 전체 구독 제거 대체)
@@ -6636,8 +6643,8 @@ function renderOverview(){
   document.getElementById('ov-stats').innerHTML=`
     <div class="stat-card" style="border-top-color:var(--accent)"><div class="stat-label">총 거래처</div><div class="stat-value" style="color:var(--accent)">${d.clients.length}</div><div class="stat-sub">활성 ${d.clients.filter(c=>c.status==='활성').length}개</div></div>
     <div class="stat-card" style="border-top-color:var(--green)"><div class="stat-label">진행중 프로젝트</div><div class="stat-value" style="color:var(--green)">${d.projects.filter(p=>p.status==='진행중').length}</div><div class="stat-sub">전체 ${d.projects.length}개</div></div>
-    <div class="stat-card" style="border-top-color:var(--yellow)"><div class="stat-label">리뷰 완료</div><div class="stat-value" style="color:var(--yellow)">${rev}</div><div class="stat-sub">${tot}건 중 ${tot>0?~~((rev/tot)*100):0}%</div></div>
-    <div class="stat-card clickable" style="border-top-color:var(--red)" ondblclick="showPending()" title="더블클릭: 미작성 목록"><div class="stat-label">⚠️ 미완료 <span style="font-size:9px;color:var(--text3)">(더블클릭)</span></div><div class="stat-value" style="color:var(--red)">${pend}</div><div class="stat-sub">처리 대기중</div></div>
+    <div class="stat-card" style="border-top-color:var(--yellow)"><div class="stat-label">리뷰 완료</div><div class="stat-value" style="color:var(--yellow)" id="ov-rev">…</div><div class="stat-sub" id="ov-rev-sub">집계 중…</div></div>
+    <div class="stat-card clickable" style="border-top-color:var(--red)" ondblclick="showPending()" title="더블클릭: 미작성 목록"><div class="stat-label">⚠️ 미완료 <span style="font-size:9px;color:var(--text3)">(더블클릭)</span></div><div class="stat-value" style="color:var(--red)" id="ov-pend">…</div><div class="stat-sub">처리 대기중</div></div>
     <div class="stat-card" style="border-top-color:var(--accent)"><div class="stat-label">📅 금일 구매</div><div class="stat-value" style="color:var(--accent)">${todayBuy}</div><div class="stat-sub">${todayISO} 예정</div></div>
     <div class="stat-card" style="border-top-color:var(--orange)"><div class="stat-label">📅 익일 구매</div><div class="stat-value" style="color:var(--orange)">${tmrBuy}</div><div class="stat-sub">${tmrISO} 예정</div></div>`;
 
@@ -6679,6 +6686,34 @@ function renderOverview(){
       </tr>`;
     }).join('')}
   </tbody></table>`;
+
+  // 리뷰완료/미완료/총건수는 RECORDS_CACHE(거래처별 부분 로드)로는 알 수 없으므로
+  // Firestore 집계 쿼리(count())로 서버에서 개수만 받아온다(전체 문서 다운로드 X).
+  loadOverviewCounts();
+}
+
+// 전체현황 상단 카드(리뷰완료/미완료) 서버 집계 — 전체 문서를 받지 않고 count()만 사용
+let _ovCountTimer=null;
+function loadOverviewCounts(){
+  if(typeof db==='undefined') return;
+  if(_ovCountTimer) clearTimeout(_ovCountTimer);
+  _ovCountTimer=setTimeout(async ()=>{
+    try{
+      const col=db.collection('records');
+      const totSnap=await col.count().get();
+      const tot=totSnap.data().count;
+      // 리뷰완료 = reviewUrl이 비어있지 않은 문서 (''보다 큰 문자열 = 비어있지 않음)
+      const revSnap=await col.where('reviewUrl','>','').count().get();
+      const rev=revSnap.data().count;
+      const pend=Math.max(0,tot-rev);
+      const elRev=document.getElementById('ov-rev');
+      const elRevSub=document.getElementById('ov-rev-sub');
+      const elPend=document.getElementById('ov-pend');
+      if(elRev) elRev.textContent=rev;
+      if(elRevSub) elRevSub.textContent=`${tot}건 중 ${tot>0?~~((rev/tot)*100):0}%`;
+      if(elPend) elPend.textContent=pend;
+    }catch(e){ console.error('overview counts', e); }
+  },300);
 }
 
 // ═══════════════════════════════════════════
