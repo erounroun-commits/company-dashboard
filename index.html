@@ -7043,9 +7043,13 @@ function renderDetSettle(){
       ${sMini('정산 완료 금액','var(--green)',fmtN(settledAmt)+'원')}
       ${sMini('미정산 금액','var(--red)',fmtN(pendingAmt)+'원')}
     </div>
+    <div style="margin-bottom:10px">
+      <button class="btn btn-sm btn-green" id="det-settle-bulk-btn" onclick="bulkMarkSettleDone()" disabled>선택 항목 일괄 정산완료</button>
+    </div>
     <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh)">
       <table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead><tr>
+          <th style="padding:10px 14px;text-align:center;background:var(--bg2);border-bottom:1px solid var(--border)"><input type="checkbox" id="det-settle-check-all" onchange="toggleAllDetSettleCheck(this.checked)"></th>
           <th style="padding:10px 14px;background:var(--bg2);text-align:left;border-bottom:1px solid var(--border)">견적일자</th>
           <th style="padding:10px 14px;background:var(--bg2);text-align:left;border-bottom:1px solid var(--border)">견적번호</th>
           <th style="padding:10px 14px;background:var(--bg2);text-align:left;border-bottom:1px solid var(--border)">수신처</th>
@@ -7059,10 +7063,11 @@ function renderDetSettle(){
         <tbody>`;
 
   if(!settles.length){
-    html+=`<tr><td colspan="7" style="padding:40px;text-align:center;color:var(--text3)">견적서를 저장하면 자동으로 정산 내역이 생성됩니다</td></tr>`;
+    html+=`<tr><td colspan="10" style="padding:40px;text-align:center;color:var(--text3)">견적서를 저장하면 자동으로 정산 내역이 생성됩니다</td></tr>`;
   } else {
     settles.forEach(s=>{
       html+=`<tr style="background:${s.settled?'#f0fdf4':'var(--card)'};border-bottom:1px solid var(--border)">
+        <td style="padding:9px 14px;text-align:center"><input type="checkbox" class="det-settle-row-check" value="${s.id}" ${s.settled?'disabled':''} onchange="updateDetSettleBulkBtnState()" onclick="event.stopPropagation()"></td>
         <td style="padding:9px 14px;font-family:monospace;font-size:11px">${s.date}</td>
         <td style="padding:9px 14px;font-size:11px;color:var(--text2)">${s.no||'-'}</td>
         <td style="padding:9px 14px;font-weight:600">${s.toName||'-'}</td>
@@ -7086,6 +7091,31 @@ function renderDetSettle(){
 
   html+=`</tbody></table></div></div>`;
   document.getElementById('dp-settle-inner').innerHTML=html;
+  // 재렌더 시 체크박스가 초기화되므로 버튼 상태도 갱신
+  try{ updateDetSettleBulkBtnState(); }catch(_){}
+}
+
+// ── 거래처 정산 탭: 체크박스 다중선택 → 일괄 정산완료 ──
+function toggleAllDetSettleCheck(checked){
+  document.querySelectorAll('.det-settle-row-check:not(:disabled)').forEach(cb=>cb.checked=checked);
+  updateDetSettleBulkBtnState();
+}
+function updateDetSettleBulkBtnState(){
+  const n=document.querySelectorAll('.det-settle-row-check:checked').length;
+  const btn=document.getElementById('det-settle-bulk-btn');
+  if(btn) btn.disabled=n===0;
+}
+async function bulkMarkSettleDone(){
+  const checked=[...document.querySelectorAll('.det-settle-row-check:checked')];
+  if(!checked.length) return;
+  if(!confirm(`선택한 ${checked.length}건을 정산완료 처리할까요?`)) return;
+  for(const cb of checked){
+    await markSettleDone(cb.value, true); // 기존 함수 재사용 (일괄: 항목별 confirm/재렌더 생략)
+  }
+  toast(`${checked.length}건 정산완료 처리됨`,'success');
+  renderDetSettle();
+  try{ renderDetQuote(); }catch(_){}
+  try{ scheduleRerender(); }catch(_){}
 }
 
 
@@ -7344,8 +7374,8 @@ async function syncSettleStatus(qtId,settled){
   if(idx>=0){settles[idx].settled=settled;await stSv(settles);}
 }
 
-async function markSettleDone(stId){
-  if(!confirm('정산 완료 처리하시겠습니까?'))return;
+async function markSettleDone(stId,skipConfirm=false){
+  if(!skipConfirm && !confirm('정산 완료 처리하시겠습니까?'))return;
   const settles=[...stLd()];
   const idx=settles.findIndex(s=>s.id===stId);if(idx<0)return;
   settles[idx].settled=true;
@@ -7356,9 +7386,12 @@ async function markSettleDone(stId){
   if(qi>=0){d.quotes[qi].settled=true;await sv('qt',d.quotes);}
   // ★ 일/월 정산 동기화
   syncDsRowFromSettle(stId);
-  renderDetSettle();renderDetQuote();
-  try{ scheduleRerender(); }catch(e){}
-  toast('정산 완료 처리됨');
+  // 일괄 처리(skipConfirm) 시에는 항목별 재렌더/토스트를 생략 (호출부에서 마지막에 한 번 처리)
+  if(!skipConfirm){
+    renderDetSettle();renderDetQuote();
+    try{ scheduleRerender(); }catch(e){}
+    toast('정산 완료 처리됨');
+  }
 }
 
 
