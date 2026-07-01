@@ -2353,36 +2353,17 @@ async function sv(key, value){
     await batch.commit();
     console.timeEnd('sv:cl');
   }else if(key==='pr'){
-    // 변경분만 반영 (전체 삭제/재삽입 대신) → 1건 수정 시 1건만 쓰기
-    console.time('sv:pr');
-    const prev=Array.isArray(PROJECTS_CACHE)?PROJECTS_CACHE.slice():[];
     PROJECTS_CACHE = value.slice();
     const col=db.collection('projects');
-    const nextIds=new Set();
-    PROJECTS_CACHE.forEach(p=>{
-      if(!p.id) p.id=col.doc().id;
-      nextIds.add(p.id);
-    });
-    const prevMap={};
-    prev.forEach(p=>{
-      if(p.id) prevMap[p.id]=cleanForFirestore({...p,id:p.id});
-    });
+    const snap=await col.get();
     const batch=db.batch();
-    // 삭제: 내 캐시(prev)에 있었는데 value에서 사라진 것만 삭제 (다른 사용자가 추가한 항목은 prev에 없으므로 삭제 안 함)
-    const prevIds=new Set(prev.filter(p=>p.id).map(p=>p.id));
-    prevIds.forEach(id=>{
-      if(!nextIds.has(id)) batch.delete(col.doc(id));
-    });
+    snap.forEach(doc=>batch.delete(doc.ref));
     PROJECTS_CACHE.forEach(p=>{
-      const cleaned=cleanForFirestore({...p,id:p.id});
-      const prevClean=prevMap[p.id];
-      const changed=!prevClean || JSON.stringify(prevClean)!==JSON.stringify(cleaned);
-      if(changed){
-        batch.set(col.doc(cleaned.id),cleaned, { merge: true });
-      }
+      const id=p.id||db.collection('projects').doc().id;
+      const data={...p,id};
+      batch.set(col.doc(id),data);
     });
     await batch.commit();
-    console.timeEnd('sv:pr');
   }else if(key==='rc'){
     // records는 전체 삭제/재삽입 대신,
     // 이전 스냅샷과 비교하여 변경/삭제된 것만 최소한으로 반영
