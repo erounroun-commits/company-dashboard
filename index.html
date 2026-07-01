@@ -1515,6 +1515,7 @@ function loadChangeLogs(){
 
 let CHANGE_LOG_CACHE=[];
 const CHANGE_LOG_MAX=300;
+let _logChangePermWarned=false;
 async function logChange(entityType, entityId, changes, context){
   if(!changes || Object.keys(changes).length===0) return;
   const payload={
@@ -1530,7 +1531,18 @@ async function logChange(entityType, entityId, changes, context){
   if(CHANGE_LOG_CACHE.length>CHANGE_LOG_MAX) CHANGE_LOG_CACHE.length=CHANGE_LOG_MAX;
   try{
     if(typeof db!=='undefined') await db.collection('changeLogs').add(payload);
-  }catch(e){ console.error('logChange error',e); }
+  }catch(e){
+    // changeLogs 컬렉션 규칙 미설정 시 permission-denied — 로컬 캐시는 유지, 콘솔 스팸 방지
+    const isPerm=e&&e.code==='permission-denied';
+    if(isPerm){
+      if(!_logChangePermWarned){
+        _logChangePermWarned=true;
+        console.warn('logChange: changeLogs 컬렉션 쓰기 권한 없음 — 세션 내 로컬 이력만 유지됩니다. Firestore 규칙 추가 필요.');
+      }
+    }else{
+      console.error('logChange error',e);
+    }
+  }
 }
 function showChangeLogContext(entityType,entityId,ev){
   if(ev)ev.preventDefault();
@@ -2299,8 +2311,15 @@ function cleanForFirestore(val){
 }
 
 // Firestore에 개별 키별로 저장하던 helper 대체
+const _svLocks={};
 async function sv(key, value){
   if(typeof db === 'undefined'){return;}
+  if(_svLocks[key]){
+    console.warn(`sv(${key}) 이미 실행 중 - 스킵`);
+    return;
+  }
+  _svLocks[key]=true;
+  try{
   if(key==='cl'){
     // 변경분만 반영 (전체 삭제/재삽입 대신) → 1건 수정 시 1건만 쓰기
     console.time('sv:cl');
@@ -2564,6 +2583,9 @@ async function sv(key, value){
       batch.set(col.doc(id),data, { merge: true });
     });
     await batch.commit();
+  }
+  }finally{
+    _svLocks[key]=false;
   }
 }
 // 공급자 고정 정보 (웨이프로젝트)
@@ -6819,7 +6841,7 @@ function renderOverview(){
   loadOverviewCounts();
 }
 
-// 전체현황 상단 카드(리뷰완료/미완료) 서버 집계 — 전체 문서를 받지 않고 count()만 사용
+// 전체현황 상단 카드(리뷰완료/미완료) — compat SDK는 count() 미지원 → get().size 사용
 let _ovCountTimer=null;
 function loadOverviewCounts(){
   if(typeof db==='undefined') return;
@@ -6827,11 +6849,11 @@ function loadOverviewCounts(){
   _ovCountTimer=setTimeout(async ()=>{
     try{
       const col=db.collection('records');
-      const totSnap=await col.count().get();
-      const tot=totSnap.data().count;
+      const totSnap=await col.get();
+      const tot=totSnap.size;
       // 리뷰완료 = reviewUrl이 비어있지 않은 문서 (''보다 큰 문자열 = 비어있지 않음)
-      const revSnap=await col.where('reviewUrl','>','').count().get();
-      const rev=revSnap.data().count;
+      const revSnap=await col.where('reviewUrl','>','').get();
+      const rev=revSnap.size;
       const pend=Math.max(0,tot-rev);
       const elRev=document.getElementById('ov-rev');
       const elRevSub=document.getElementById('ov-rev-sub');
