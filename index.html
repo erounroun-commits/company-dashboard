@@ -2307,9 +2307,6 @@ async function sv(key, value){
     const prev=Array.isArray(CLIENTS_CACHE)?CLIENTS_CACHE.slice():[];
     CLIENTS_CACHE = value.slice();
     const col=db.collection('clients');
-    const snap=await col.get();
-    const existingIds=new Set();
-    snap.forEach(doc=>existingIds.add(doc.id));
     const nextIds=new Set();
     CLIENTS_CACHE.forEach(c=>{
       if(!c.id) c.id=col.doc().id;
@@ -2320,8 +2317,9 @@ async function sv(key, value){
       if(c.id) prevMap[c.id]=cleanForFirestore({...c,id:c.id});
     });
     const batch=db.batch();
-    // 삭제: 이전엔 있었지만 지금은 없는 id만 삭제
-    existingIds.forEach(id=>{
+    // 삭제: 내 캐시(prev)에 있었는데 value에서 사라진 것만 삭제 (다른 사용자가 추가한 항목은 prev에 없으므로 삭제 안 함)
+    const prevIds=new Set(prev.filter(c=>c.id).map(c=>c.id));
+    prevIds.forEach(id=>{
       if(!nextIds.has(id)) batch.delete(col.doc(id));
     });
     // 추가/수정: 내용이 바뀐 경우에만 set
@@ -2341,9 +2339,6 @@ async function sv(key, value){
     const prev=Array.isArray(PROJECTS_CACHE)?PROJECTS_CACHE.slice():[];
     PROJECTS_CACHE = value.slice();
     const col=db.collection('projects');
-    const snap=await col.get();
-    const existingIds=new Set();
-    snap.forEach(doc=>existingIds.add(doc.id));
     const nextIds=new Set();
     PROJECTS_CACHE.forEach(p=>{
       if(!p.id) p.id=col.doc().id;
@@ -2354,7 +2349,9 @@ async function sv(key, value){
       if(p.id) prevMap[p.id]=cleanForFirestore({...p,id:p.id});
     });
     const batch=db.batch();
-    existingIds.forEach(id=>{
+    // 삭제: 내 캐시(prev)에 있었는데 value에서 사라진 것만 삭제 (다른 사용자가 추가한 항목은 prev에 없으므로 삭제 안 함)
+    const prevIds=new Set(prev.filter(p=>p.id).map(p=>p.id));
+    prevIds.forEach(id=>{
       if(!nextIds.has(id)) batch.delete(col.doc(id));
     });
     PROJECTS_CACHE.forEach(p=>{
@@ -2439,9 +2436,6 @@ async function sv(key, value){
     const prev=Array.isArray(SETTLES_CACHE)?SETTLES_CACHE.slice():[];
     SETTLES_CACHE = value.slice();
     const col=db.collection('settles');
-    const snap=await col.get();
-    const existingIds=new Set();
-    snap.forEach(doc=>existingIds.add(doc.id));
     const nextIds=new Set();
     SETTLES_CACHE.forEach(s=>{
       if(!s.id) s.id=col.doc().id;
@@ -2452,7 +2446,9 @@ async function sv(key, value){
       if(s.id) prevMap[s.id]=cleanForFirestore({...s,id:s.id});
     });
     const batch=db.batch();
-    existingIds.forEach(id=>{
+    // 삭제: 내 캐시(prev)에 있었는데 value에서 사라진 것만 삭제 (다른 사용자가 추가한 항목은 prev에 없으므로 삭제 안 함)
+    const prevIds=new Set(prev.filter(s=>s.id).map(s=>s.id));
+    prevIds.forEach(id=>{
       if(!nextIds.has(id)) batch.delete(col.doc(id));
     });
     SETTLES_CACHE.forEach(s=>{
@@ -2471,9 +2467,6 @@ async function sv(key, value){
     const prev=Array.isArray(DEP_HIST_CACHE)?DEP_HIST_CACHE.slice():[];
     DEP_HIST_CACHE = value.slice();
     const col=db.collection('depositHistory');
-    const snap=await col.get();
-    const existingIds=new Set();
-    snap.forEach(doc=>existingIds.add(doc.id));
     const nextIds=new Set();
     DEP_HIST_CACHE.forEach(h=>{
       if(!h.id) h.id=col.doc().id;
@@ -2484,7 +2477,9 @@ async function sv(key, value){
       if(h.id) prevMap[h.id]=cleanForFirestore({...h,id:h.id});
     });
     const batch=db.batch();
-    existingIds.forEach(id=>{
+    // 삭제: 내 캐시(prev)에 있었는데 value에서 사라진 것만 삭제 (다른 사용자가 추가한 항목은 prev에 없으므로 삭제 안 함)
+    const prevIds=new Set(prev.filter(h=>h.id).map(h=>h.id));
+    prevIds.forEach(id=>{
       if(!nextIds.has(id)) batch.delete(col.doc(id));
     });
     DEP_HIST_CACHE.forEach(h=>{
