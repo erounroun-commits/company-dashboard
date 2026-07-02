@@ -4328,6 +4328,12 @@ function renderNBlogStatus(container, clientId){
     <td style="padding:8px 9px;border-bottom:1px solid var(--border)">${escHtml(r.invoiceNo||'')}</td>
     <td style="padding:8px 9px;border-bottom:1px solid var(--border)">${escHtml(r.blogUrl||'')}</td>
   </tr>`).join('');
+  const scheduleRowsHtml=(selected?.scheduleRows||[]).map(r=>`<tr>
+    <td style="padding:9px 10px;border-bottom:1px solid var(--border)">${escHtml(r.publishMonth||'')}</td>
+    <td style="padding:9px 10px;border-bottom:1px solid var(--border)">${escHtml(r.item||'')}</td>
+    <td style="padding:9px 10px;border-bottom:1px solid var(--border)">${escHtml(r.period||'')}</td>
+    <td style="padding:9px 10px;border-bottom:1px solid var(--border)">${escHtml(r.note||'')}</td>
+  </tr>`).join('');
   container.innerHTML=`<div style="display:grid;gap:12px;max-width:960px">
     <div style="padding:16px;border:1px solid var(--border);border-radius:12px;background:var(--card)">
       <div style="font-size:17px;font-weight:800;margin-bottom:8px">📝 N-블로그 현황</div>
@@ -4345,6 +4351,24 @@ function renderNBlogStatus(container, clientId){
         <thead><tr style="background:var(--bg2)"><th style="padding:9px 10px;text-align:left;border-bottom:1px solid var(--border)">프로젝트</th><th style="padding:9px 10px;text-align:right;border-bottom:1px solid var(--border)">요청 건수</th><th style="padding:9px 10px;text-align:right;border-bottom:1px solid var(--border)">일정</th><th style="padding:9px 10px;text-align:right;border-bottom:1px solid var(--border)">명단</th><th style="padding:9px 10px;text-align:right;border-bottom:1px solid var(--border)">URL 등록</th><th style="padding:9px 10px;text-align:left;border-bottom:1px solid var(--border)">진행률</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
+    </div>
+    <div style="border:1px solid var(--border);border-radius:12px;background:var(--card);overflow:hidden">
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700">
+        📅 진행 일정${selected?` · ${escHtml(selected.name||'')}`:''}
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="background:var(--bg2)">
+              <th style="padding:9px 10px;text-align:left;border-bottom:1px solid var(--border)">발행월</th>
+              <th style="padding:9px 10px;text-align:left;border-bottom:1px solid var(--border)">항목</th>
+              <th style="padding:9px 10px;text-align:left;border-bottom:1px solid var(--border)">기간</th>
+              <th style="padding:9px 10px;text-align:left;border-bottom:1px solid var(--border)">메모</th>
+            </tr>
+          </thead>
+          <tbody>${scheduleRowsHtml||'<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:18px">등록된 일정이 없습니다</td></tr>'}</tbody>
+        </table>
+      </div>
     </div>
     <div style="border:1px solid var(--border);border-radius:12px;background:var(--card);overflow:hidden">
       <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
