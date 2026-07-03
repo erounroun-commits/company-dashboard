@@ -1948,7 +1948,16 @@ async function loadDepositHistoryFromFirestore(){
 
 function depLd(){ return DEP_HIST_CACHE || []; }
 async function depSv(arr){ return await sv('dep', arr); }
-async function depClear(){ await sv('dep', []); }
+async function depClear(){
+  // 기존 입금 문서를 명시적으로 삭제 (sv('dep')는 set(merge)만 하므로 전체 삭제는 여기서 처리)
+  try{
+    if(typeof db!=='undefined'){
+      const ids=(DEP_HIST_CACHE||[]).map(h=>h.id).filter(Boolean);
+      await _deleteDocsByIds('depositHistory', ids);
+    }
+  }catch(e){ console.error('depClear doc.delete',e); }
+  await sv('dep', []);
+}
 
 // Firestore에서 미매칭 입금(depositUnmatched) 로드 + (1회) localStorage(wv_dep_unmatched) 마이그레이션
 async function loadDepositUnmatchedFromFirestore(){
@@ -2337,66 +2346,30 @@ async function sv(key, value){
   _svLocks[key]=true;
   try{
   if(key==='cl'){
-    // 변경분만 반영 (전체 삭제/재삽입 대신) → 1건 수정 시 1건만 쓰기
+    // 단순 저장: col.get()/batch.delete()/변경분비교 없이 set(merge:true)만.
+    // (삭제는 deleteClientCascadeFirestore 등 명시적 삭제 함수에서 doc.delete()로 처리)
     console.time('sv:cl');
-    const prev=Array.isArray(CLIENTS_CACHE)?CLIENTS_CACHE.slice():[];
     CLIENTS_CACHE = value.slice();
     const col=db.collection('clients');
-    const nextIds=new Set();
-    CLIENTS_CACHE.forEach(c=>{
-      if(!c.id) c.id=col.doc().id;
-      nextIds.add(c.id);
-    });
-    const prevMap={};
-    prev.forEach(c=>{
-      if(c.id) prevMap[c.id]=cleanForFirestore({...c,id:c.id});
-    });
     const batch=db.batch();
-    // 삭제: 내 캐시(prev)에 있었는데 value에서 사라진 것만 삭제 (다른 사용자가 추가한 항목은 prev에 없으므로 삭제 안 함)
-    const prevIds=new Set(prev.filter(c=>c.id).map(c=>c.id));
-    prevIds.forEach(id=>{
-      if(!nextIds.has(id)) batch.delete(col.doc(id));
-    });
-    // 추가/수정: 내용이 바뀐 경우에만 set
-    CLIENTS_CACHE.forEach(c=>{
-      const cleaned=cleanForFirestore({...c,id:c.id});
-      const prevClean=prevMap[c.id];
-      const changed=!prevClean || JSON.stringify(prevClean)!==JSON.stringify(cleaned);
-      if(changed){
-        batch.set(col.doc(cleaned.id),cleaned, { merge: true });
-      }
+    value.forEach(item=>{
+      if(!item.id) item.id=col.doc().id;
+      const cleaned=cleanForFirestore({...item,id:item.id});
+      batch.set(col.doc(item.id),cleaned, { merge: true });
     });
     await batch.commit();
     console.timeEnd('sv:cl');
   }else if(key==='pr'){
-    // 변경분만 반영 (col.get() 제거) → prev 캐시 기준 비교, 1건 수정 시 1건만 쓰기
+    // 단순 저장: col.get()/batch.delete()/변경분비교 없이 set(merge:true)만.
+    // (삭제는 deleteCurrentProject 등에서 doc.delete()로 명시적 처리)
     console.time('sv:pr');
-    const prev=Array.isArray(PROJECTS_CACHE)?PROJECTS_CACHE.slice():[];
     PROJECTS_CACHE = value.slice();
     const col=db.collection('projects');
-    const nextIds=new Set();
-    PROJECTS_CACHE.forEach(p=>{
-      if(!p.id) p.id=col.doc().id;
-      nextIds.add(p.id);
-    });
-    const prevMap={};
-    prev.forEach(p=>{
-      if(p.id) prevMap[p.id]=cleanForFirestore({...p,id:p.id});
-    });
     const batch=db.batch();
-    // 삭제: 내 캐시(prev)에 있었는데 value에서 사라진 것만 삭제 (다른 사용자가 추가한 항목은 prev에 없으므로 삭제 안 함)
-    const prevIds=new Set(prev.filter(p=>p.id).map(p=>p.id));
-    prevIds.forEach(id=>{
-      if(!nextIds.has(id)) batch.delete(col.doc(id));
-    });
-    // 추가/수정: 내용이 바뀐 경우에만 set
-    PROJECTS_CACHE.forEach(p=>{
-      const cleaned=cleanForFirestore({...p,id:p.id});
-      const prevClean=prevMap[p.id];
-      const changed=!prevClean || JSON.stringify(prevClean)!==JSON.stringify(cleaned);
-      if(changed){
-        batch.set(col.doc(cleaned.id),cleaned, { merge: true });
-      }
+    value.forEach(item=>{
+      if(!item.id) item.id=col.doc().id;
+      const cleaned=cleanForFirestore({...item,id:item.id});
+      batch.set(col.doc(item.id),cleaned, { merge: true });
     });
     await batch.commit();
     console.timeEnd('sv:pr');
@@ -2469,64 +2442,30 @@ async function sv(key, value){
     });
     await batch.commit();
   }else if(key==='st'){
-    // 변경분만 반영 (전체 삭제/재삽입 대신)
+    // 단순 저장: col.get()/batch.delete()/변경분비교 없이 set(merge:true)만.
+    // (삭제는 delSettleRow 등에서 doc.delete()로 명시적 처리)
     console.time('sv:st');
-    const prev=Array.isArray(SETTLES_CACHE)?SETTLES_CACHE.slice():[];
     SETTLES_CACHE = value.slice();
     const col=db.collection('settles');
-    const nextIds=new Set();
-    SETTLES_CACHE.forEach(s=>{
-      if(!s.id) s.id=col.doc().id;
-      nextIds.add(s.id);
-    });
-    const prevMap={};
-    prev.forEach(s=>{
-      if(s.id) prevMap[s.id]=cleanForFirestore({...s,id:s.id});
-    });
     const batch=db.batch();
-    // 삭제: 내 캐시(prev)에 있었는데 value에서 사라진 것만 삭제 (다른 사용자가 추가한 항목은 prev에 없으므로 삭제 안 함)
-    const prevIds=new Set(prev.filter(s=>s.id).map(s=>s.id));
-    prevIds.forEach(id=>{
-      if(!nextIds.has(id)) batch.delete(col.doc(id));
-    });
-    SETTLES_CACHE.forEach(s=>{
-      const cleaned=cleanForFirestore({...s,id:s.id});
-      const prevClean=prevMap[s.id];
-      const changed=!prevClean || JSON.stringify(prevClean)!==JSON.stringify(cleaned);
-      if(changed){
-        batch.set(col.doc(cleaned.id),cleaned, { merge: true });
-      }
+    value.forEach(item=>{
+      if(!item.id) item.id=col.doc().id;
+      const cleaned=cleanForFirestore({...item,id:item.id});
+      batch.set(col.doc(item.id),cleaned, { merge: true });
     });
     await batch.commit();
     console.timeEnd('sv:st');
   }else if(key==='dep'){
-    // 변경분만 반영 (전체 삭제/재삽입 대신)
+    // 단순 저장: col.get()/batch.delete()/변경분비교 없이 set(merge:true)만.
+    // (삭제는 depClear/_execDelDepHist 등에서 doc.delete()로 명시적 처리)
     console.time('sv:dep');
-    const prev=Array.isArray(DEP_HIST_CACHE)?DEP_HIST_CACHE.slice():[];
     DEP_HIST_CACHE = value.slice();
     const col=db.collection('depositHistory');
-    const nextIds=new Set();
-    DEP_HIST_CACHE.forEach(h=>{
-      if(!h.id) h.id=col.doc().id;
-      nextIds.add(h.id);
-    });
-    const prevMap={};
-    prev.forEach(h=>{
-      if(h.id) prevMap[h.id]=cleanForFirestore({...h,id:h.id});
-    });
     const batch=db.batch();
-    // 삭제: 내 캐시(prev)에 있었는데 value에서 사라진 것만 삭제 (다른 사용자가 추가한 항목은 prev에 없으므로 삭제 안 함)
-    const prevIds=new Set(prev.filter(h=>h.id).map(h=>h.id));
-    prevIds.forEach(id=>{
-      if(!nextIds.has(id)) batch.delete(col.doc(id));
-    });
-    DEP_HIST_CACHE.forEach(h=>{
-      const cleaned=cleanForFirestore({...h,id:h.id});
-      const prevClean=prevMap[h.id];
-      const changed=!prevClean || JSON.stringify(prevClean)!==JSON.stringify(cleaned);
-      if(changed){
-        batch.set(col.doc(cleaned.id),cleaned, { merge: true });
-      }
+    value.forEach(item=>{
+      if(!item.id) item.id=col.doc().id;
+      const cleaned=cleanForFirestore({...item,id:item.id});
+      batch.set(col.doc(item.id),cleaned, { merge: true });
     });
     await batch.commit();
     console.timeEnd('sv:dep');
@@ -5734,6 +5673,8 @@ async function _execDelDepHist(ids){
 
   // wv_dep에서 제거
   hist=hist.filter(h=>!ids.includes(h.id));
+  // Firestore에서 삭제 대상 입금 문서 명시적 삭제 (sv('dep')는 set(merge)만 하므로 삭제는 여기서 처리)
+  try{ if(typeof db!=='undefined') await _deleteDocsByIds('depositHistory', ids); }catch(e){ console.error('_execDelDepHist doc.delete',e); }
   await depSv(hist);
   ids.forEach(id=>DEP_HIST_CHECKED.delete(id));
 
@@ -6246,6 +6187,8 @@ async function delSettleRow(stId){
   let settles=[...stLd()];
   const st=settles.find(s=>s.id===stId);
   settles=settles.filter(s=>s.id!==stId);
+  // Firestore에서 정산 문서 명시적 삭제 (sv('st')는 set(merge)만 하므로 삭제는 여기서 처리)
+  try{ if(typeof db!=='undefined') await db.collection('settles').doc(stId).delete(); }catch(e){ console.error('delSettleRow doc.delete',e); }
   await stSv(settles);
   // 연결 견적서(quotes) 및 일/월 정산 행도 함께 삭제
   if(st?.qtId){
@@ -10723,10 +10666,13 @@ function deleteCurrentProject(){
     '- 프로젝트 정보\n' +
     '- 연결된 데이터 '+recCount+'건\n\n' +
     '삭제된 데이터는 복구할 수 없습니다.')){return;}
+  const _delProjId=SHEET_PROJ;
   // 프로젝트 삭제
   d.projects=d.projects.filter(x=>x.id!==SHEET_PROJ);
   // 연결 레코드 삭제
   d.records=d.records.filter(r=>r.projectId!==SHEET_PROJ);
+  // Firestore에서 프로젝트 문서 명시적 삭제 (sv('pr')는 set(merge)만 하므로 삭제는 여기서 처리)
+  try{ if(typeof db!=='undefined'&&_delProjId) db.collection('projects').doc(_delProjId).delete(); }catch(e){ console.error('deleteCurrentProject doc.delete',e); }
   sv('pr',d.projects);
   sv('rc',d.records);
   SHEET_PROJ=null;SHEET_ROWS=[];SHEET_DIRTY=false;
