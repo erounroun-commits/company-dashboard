@@ -2088,6 +2088,7 @@ async function loadSupplierBizFromFirestore(){
   // 기본 사업자 1개 보장
   if(!list.some(b=>b.isDefault)) list[0]={...list[0],isDefault:true};
   SUPPLIER_BIZ_CACHE=list;
+  try{ if(typeof renderSupplierBizList==='function') renderSupplierBizList(); }catch(e){}
 }
 
 function getSupplierBiz(){
