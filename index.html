@@ -439,6 +439,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
         <div><div class="page-title">전체 현황</div><div class="page-sub" id="ov-date"></div></div>
         <button class="btn btn-sm btn-gray" onclick="refreshAllData()" title="최신 데이터로 새로고침">🔄 새로고침</button>
       </div>
+      <div class="card" id="ov-supplier-biz" style="margin-bottom:16px"></div>
       <div class="stat-grid" id="ov-stats"></div>
       <div class="grid-2" style="margin-bottom:16px">
         <div class="card"><div class="card-title">플랫폼별</div><div id="ov-platform"></div></div>
@@ -1622,6 +1623,8 @@ let DEP_UNMATCHED_CACHE = [];
 let DEP_NAMES_CACHE = [];
 // 구글 시트 동기화 설정 캐시 (Firestore 연동) — 기존 localStorage(wv_gsync) 대체
 let GSYNC_CACHE = null;
+// 공급자(우리) 사업자 목록 캐시 (Firestore settings/supplierBiz)
+let SUPPLIER_BIZ_CACHE = null;
 // 일/월 정산 행 캐시 (Firestore 연동) — 기존 localStorage(wv_ds) 대체
 let DS_CACHE = [];
 // 은행 입금 tx 캐시 (Firestore 연동) — 기존 localStorage(wv_bank_tx) 대체
@@ -1649,6 +1652,7 @@ const ld=()=>({
   unmatchedDeposits: DEP_UNMATCHED_CACHE,
   depositNames: DEP_NAMES_CACHE,
   gsync: GSYNC_CACHE,
+  supplierBiz: SUPPLIER_BIZ_CACHE,
   ds: DS_CACHE,
   bankTx: BANK_TX_CACHE,
   companyExp: COMPANY_EXP_CACHE,
@@ -2052,6 +2056,99 @@ function gsyncSave(obj){
       db.collection('settings').doc('gsync').set(GSYNC_CACHE, {merge:true}).catch(console.error);
     }
   }catch(e){}
+}
+
+// ── 공급자(우리) 사업자 목록 ─────────────────────────────────
+const DEFAULT_SUPPLIER_BIZ={
+  id:'wave-default',
+  bizNo:'251-13-02377',
+  bizName:'웨이프로젝트',
+  bizCeo:'박지혜',
+  bizAddr:'전북특별자치도 전주시 완산구 효자동3가 1453-5, 금강빌라 101호',
+  bizType:'도매 및 소매업',
+  bizItem:'전자상거래 소매업',
+  bizPhone:'010-5723-8830',
+  bankInfo:'국민은행 512037-04-006086 박지혜(웨이프로젝트)',
+  isDefault:true,
+};
+
+async function loadSupplierBizFromFirestore(){
+  if(typeof db==='undefined'){ SUPPLIER_BIZ_CACHE=[{...DEFAULT_SUPPLIER_BIZ}]; return; }
+  const ref=db.collection('settings').doc('supplierBiz');
+  const snap=await ref.get().catch(()=>null);
+  let list=[];
+  if(snap && snap.exists){
+    const data=snap.data()||{};
+    list=Array.isArray(data.list)?data.list:[];
+  }
+  if(!list.length){
+    list=[{...DEFAULT_SUPPLIER_BIZ}];
+    try{ await ref.set({list},{merge:true}); }catch(e){}
+  }
+  // 기본 사업자 1개 보장
+  if(!list.some(b=>b.isDefault)) list[0]={...list[0],isDefault:true};
+  SUPPLIER_BIZ_CACHE=list;
+}
+
+function getSupplierBiz(){
+  if(!Array.isArray(SUPPLIER_BIZ_CACHE)||!SUPPLIER_BIZ_CACHE.length){
+    SUPPLIER_BIZ_CACHE=[{...DEFAULT_SUPPLIER_BIZ}];
+  }
+  return SUPPLIER_BIZ_CACHE;
+}
+
+function saveSupplierBiz(arr){
+  let list=Array.isArray(arr)?arr.slice():[];
+  if(!list.length) list=[{...DEFAULT_SUPPLIER_BIZ}];
+  if(!list.some(b=>b.isDefault)) list[0]={...list[0],isDefault:true};
+  SUPPLIER_BIZ_CACHE=list;
+  try{
+    if(typeof db!=='undefined'){
+      db.collection('settings').doc('supplierBiz').set({list:SUPPLIER_BIZ_CACHE},{merge:true}).catch(console.error);
+    }
+  }catch(e){}
+}
+
+function getDefaultSupplier(){
+  const list=getSupplierBiz();
+  return list.find(b=>b.isDefault)||list[0]||{...DEFAULT_SUPPLIER_BIZ};
+}
+
+function resolveSupplierForQuote(qt){
+  if(qt && (qt.fromBizNo||qt.fromBizName)){
+    return {
+      id:qt.supplierBizId||'',
+      bizNo:qt.fromBizNo||'',
+      bizName:qt.fromBizName||'',
+      bizCeo:qt.fromCeo||'',
+      bizAddr:qt.fromAddr||'',
+      bizType:qt.fromType||'',
+      bizItem:qt.fromItem||'',
+      bizPhone:qt.fromPhone||'',
+      bankInfo:qt.fromBankInfo||'',
+    };
+  }
+  if(qt && qt.supplierBizId){
+    const found=getSupplierBiz().find(b=>b.id===qt.supplierBizId);
+    if(found) return found;
+  }
+  return getDefaultSupplier();
+}
+
+function readSupplierFromQuoteForm(){
+  const id=document.getElementById('qn-supplier-biz')?.value||'';
+  const biz=getSupplierBiz().find(b=>b.id===id)||getDefaultSupplier();
+  return {
+    supplierBizId:biz?.id||'',
+    fromBizNo:biz?.bizNo||'',
+    fromBizName:biz?.bizName||'',
+    fromCeo:biz?.bizCeo||'',
+    fromAddr:biz?.bizAddr||'',
+    fromType:biz?.bizType||'',
+    fromItem:biz?.bizItem||'',
+    fromPhone:biz?.bizPhone||'',
+    fromBankInfo:biz?.bankInfo||'',
+  };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -2549,16 +2646,8 @@ async function sv(key, value){
     _svLocks[key]=false;
   }
 }
-// 공급자 고정 정보 (웨이프로젝트)
-const WAVE_BIZ={
-  bizNo:'251-13-02377',
-  bizName:'웨이프로젝트',
-  bizCeo:'박지혜',
-  bizAddr:'전북특별자치도 전주시 완산구 효자동3가 1453-5, 금강빌라 101호',
-  bizType:'도매 및 소매업',
-  bizItem:'전자상거래 소매업',
-  bizPhone:'010-5723-8830',
-};
+// 공급자 기본값 — getDefaultSupplier() / DEFAULT_SUPPLIER_BIZ 사용 (하위호환 alias)
+const WAVE_BIZ=DEFAULT_SUPPLIER_BIZ;
 // 견적서 항목 유형 — 4가지 고정
 // calc: fee1=진행비유형1, fee2=진행비유형2, delivery=택배대행비, product=상품금액, custom=직접입력
 function getQtTypeList(c){
@@ -2877,6 +2966,7 @@ async function refreshAllData(){
     if(typeof loadDepositUnmatchedFromFirestore==='function') await loadDepositUnmatchedFromFirestore();
     if(typeof loadDepNamesFromFirestore==='function') await loadDepNamesFromFirestore();
     if(typeof loadGsyncFromFirestore==='function') await loadGsyncFromFirestore();
+    if(typeof loadSupplierBizFromFirestore==='function') await loadSupplierBizFromFirestore();
     if(typeof loadDailySettleFromFirestore==='function') await loadDailySettleFromFirestore();
     if(typeof loadBankTxFromFirestore==='function') await loadBankTxFromFirestore();
     if(typeof loadCompanyExpFromFirestore==='function') await loadCompanyExpFromFirestore();
@@ -6782,6 +6872,8 @@ function renderOverview(){
   const todayBuy=activeRecs.filter(r=>purchaseDateNorm(r)===todayISO).length;
   const tmrBuy=activeRecs.filter(r=>purchaseDateNorm(r)===tmrISO).length;
 
+  try{ renderSupplierBizList(); }catch(e){ console.warn('renderSupplierBizList',e); }
+
   document.getElementById('ov-stats').innerHTML=`
     <div class="stat-card" style="border-top-color:var(--accent)"><div class="stat-label">총 거래처</div><div class="stat-value" style="color:var(--accent)">${d.clients.length}</div><div class="stat-sub">활성 ${d.clients.filter(c=>c.status==='활성').length}개</div></div>
     <div class="stat-card" style="border-top-color:var(--green)"><div class="stat-label">진행중 프로젝트</div><div class="stat-value" style="color:var(--green)">${d.projects.filter(p=>p.status==='진행중').length}</div><div class="stat-sub">전체 ${d.projects.length}개</div></div>
@@ -6832,6 +6924,143 @@ function renderOverview(){
   // 리뷰완료/미완료/총건수는 RECORDS_CACHE(거래처별 부분 로드)로는 알 수 없으므로
   // Firestore 집계 쿼리(count())로 서버에서 개수만 받아온다(전체 문서 다운로드 X).
   loadOverviewCounts();
+}
+
+// ── 공급자 사업자 목록 (전체현황 상단) ─────────────────────────
+function renderSupplierBizList(){
+  const el=document.getElementById('ov-supplier-biz');
+  if(!el)return;
+  const list=getSupplierBiz();
+  const rows=list.map(b=>`
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:13px;font-weight:700">${b.bizName||'—'}</span>
+          ${b.isDefault?'<span class="badge bg">기본</span>':''}
+        </div>
+        <div style="font-size:11px;color:var(--text2);margin-top:2px">
+          ${b.bizNo||''}${b.bizCeo?' · 대표 '+b.bizCeo:''}${b.bizPhone?' · '+b.bizPhone:''}
+        </div>
+        ${b.bankInfo?`<div style="font-size:10px;color:var(--text3);margin-top:2px">계좌: ${b.bankInfo}</div>`:''}
+      </div>
+      <div style="display:flex;gap:4px;flex-shrink:0">
+        ${b.isDefault?'':'<button class="btn btn-xs btn-gray" onclick="setDefaultSupplierBiz(\''+b.id+'\')">기본설정</button>'}
+        <button class="btn btn-xs btn-gray" onclick="editSupplierBiz('${b.id}')">수정</button>
+        <button class="btn btn-xs btn-red" onclick="delSupplierBiz('${b.id}')">삭제</button>
+      </div>
+    </div>`).join('');
+
+  el.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:8px;flex-wrap:wrap">
+      <div>
+        <div class="card-title" style="margin:0">🏢 사업자 목록 (공급자)</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:4px">견적서 공급자 항목에서 선택할 사업자를 관리합니다</div>
+      </div>
+      <button class="btn btn-sm btn-blue" onclick="openSupplierBizForm()">+ 사업자 추가</button>
+    </div>
+    <div id="ov-supplier-biz-list">${rows||'<div style="font-size:12px;color:var(--text3);padding:8px 0">등록된 사업자가 없습니다</div>'}</div>
+    <div id="ov-supplier-biz-form" class="hidden" style="margin-top:12px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:14px">
+      <input type="hidden" id="sb-edit-id" value="">
+      <div style="font-size:12px;font-weight:700;color:#065f46;margin-bottom:10px" id="sb-form-title">신규 사업자</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div class="fg" style="margin:0"><label class="fl">상호명 *</label><input class="fi" id="sb-name" placeholder="웨이프로젝트"></div>
+        <div class="fg" style="margin:0"><label class="fl">사업자번호 *</label><input class="fi" id="sb-no" placeholder="000-00-00000"></div>
+        <div class="fg" style="margin:0"><label class="fl">대표자</label><input class="fi" id="sb-ceo" placeholder="홍길동"></div>
+        <div class="fg" style="margin:0"><label class="fl">연락처</label><input class="fi" id="sb-phone" placeholder="010-0000-0000"></div>
+        <div class="fg" style="margin:0"><label class="fl">업태</label><input class="fi" id="sb-type" placeholder="도매 및 소매업"></div>
+        <div class="fg" style="margin:0"><label class="fl">종목</label><input class="fi" id="sb-item" placeholder="전자상거래 소매업"></div>
+        <div class="fg" style="margin:0;grid-column:1/3"><label class="fl">사업장 주소</label><input class="fi" id="sb-addr" placeholder="주소"></div>
+        <div class="fg" style="margin:0;grid-column:1/3"><label class="fl">입금 계좌</label><input class="fi" id="sb-bank" placeholder="은행명 계좌번호 예금주"></div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+        <button class="btn btn-gray btn-sm" onclick="cancelSupplierBizForm()">취소</button>
+        <button class="btn btn-green btn-sm" onclick="saveSupplierBizForm()">💾 저장</button>
+      </div>
+    </div>`;
+}
+
+function openSupplierBizForm(editId){
+  const form=document.getElementById('ov-supplier-biz-form');
+  if(!form)return;
+  show('ov-supplier-biz-form');
+  const title=document.getElementById('sb-form-title');
+  const hid=document.getElementById('sb-edit-id');
+  if(editId){
+    const biz=getSupplierBiz().find(b=>b.id===editId);
+    if(!biz){toast('사업자를 찾을 수 없습니다','error');return;}
+    if(hid)hid.value=editId;
+    if(title)title.textContent='사업자 수정';
+    document.getElementById('sb-name').value=biz.bizName||'';
+    document.getElementById('sb-no').value=biz.bizNo||'';
+    document.getElementById('sb-ceo').value=biz.bizCeo||'';
+    document.getElementById('sb-phone').value=biz.bizPhone||'';
+    document.getElementById('sb-type').value=biz.bizType||'';
+    document.getElementById('sb-item').value=biz.bizItem||'';
+    document.getElementById('sb-addr').value=biz.bizAddr||'';
+    document.getElementById('sb-bank').value=biz.bankInfo||'';
+  } else {
+    if(hid)hid.value='';
+    if(title)title.textContent='신규 사업자';
+    ['sb-name','sb-no','sb-ceo','sb-phone','sb-type','sb-item','sb-addr','sb-bank'].forEach(id=>{
+      const el=document.getElementById(id);if(el)el.value='';
+    });
+  }
+  try{ document.getElementById('sb-name')?.focus(); }catch(e){}
+}
+
+function cancelSupplierBizForm(){
+  hide('ov-supplier-biz-form');
+  const hid=document.getElementById('sb-edit-id');if(hid)hid.value='';
+}
+
+function saveSupplierBizForm(){
+  const name=(document.getElementById('sb-name')?.value||'').trim();
+  const no=(document.getElementById('sb-no')?.value||'').trim();
+  if(!name||!no){toast('상호명과 사업자번호는 필수입니다','error');return;}
+  const editId=(document.getElementById('sb-edit-id')?.value||'').trim();
+  const payload={
+    bizName:name,
+    bizNo:no,
+    bizCeo:(document.getElementById('sb-ceo')?.value||'').trim(),
+    bizPhone:(document.getElementById('sb-phone')?.value||'').trim(),
+    bizType:(document.getElementById('sb-type')?.value||'').trim(),
+    bizItem:(document.getElementById('sb-item')?.value||'').trim(),
+    bizAddr:(document.getElementById('sb-addr')?.value||'').trim(),
+    bankInfo:(document.getElementById('sb-bank')?.value||'').trim(),
+  };
+  const list=getSupplierBiz().slice();
+  if(editId){
+    const idx=list.findIndex(b=>b.id===editId);
+    if(idx<0){toast('수정할 사업자를 찾을 수 없습니다','error');return;}
+    list[idx]={...list[idx],...payload};
+  } else {
+    list.push({id:gid(),...payload,isDefault:list.length===0});
+  }
+  saveSupplierBiz(list);
+  renderSupplierBizList();
+  toast(editId?'사업자 수정 완료':'사업자 추가 완료');
+}
+
+function editSupplierBiz(id){ openSupplierBizForm(id); }
+
+function delSupplierBiz(id){
+  const list=getSupplierBiz();
+  if(list.length<=1){toast('최소 1개의 사업자가 필요합니다','error');return;}
+  const target=list.find(b=>b.id===id);
+  if(!target)return;
+  if(!confirm(`"${target.bizName}" 사업자를 삭제할까요?`))return;
+  let next=list.filter(b=>b.id!==id);
+  if(target.isDefault && next.length) next[0]={...next[0],isDefault:true};
+  saveSupplierBiz(next);
+  renderSupplierBizList();
+  toast('삭제됨');
+}
+
+function setDefaultSupplierBiz(id){
+  const list=getSupplierBiz().map(b=>({...b,isDefault:b.id===id}));
+  saveSupplierBiz(list);
+  renderSupplierBizList();
+  toast('기본 사업자로 설정됨');
 }
 
 // 전체현황 상단 카드(리뷰완료/미완료) — compat SDK는 count() 미지원 → get().size 사용
@@ -8380,15 +8609,20 @@ function renderDetQuote(){
 
       <!-- 공급자 / 공급받는자 2열 -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
-        <!-- 공급자 (고정: 웨이프로젝트) -->
+        <!-- 공급자 (사업자 선택) -->
         <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:14px">
-          <div style="font-size:11px;font-weight:700;color:#065f46;margin-bottom:10px">🏢 공급자 (고정)</div>
-          <table style="font-size:11px;width:100%;border-collapse:collapse">
-            <tr><td style="color:var(--text3);width:70px;padding:2px 0">사업자번호</td><td style="font-weight:600">${WAVE_BIZ.bizNo}</td></tr>
-            <tr><td style="color:var(--text3);padding:2px 0">상호</td><td style="font-weight:600">${WAVE_BIZ.bizName}</td></tr>
-            <tr><td style="color:var(--text3);padding:2px 0">대표자</td><td>${WAVE_BIZ.bizCeo}</td></tr>
-            <tr><td style="color:var(--text3);padding:2px 0">업태/종목</td><td>${WAVE_BIZ.bizType} / ${WAVE_BIZ.bizItem}</td></tr>
-            <tr><td style="color:var(--text3);padding:2px 0">연락처</td><td>${WAVE_BIZ.bizPhone}</td></tr>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
+            <div style="font-size:11px;font-weight:700;color:#065f46">🏢 공급자</div>
+            <select class="fs" style="font-size:11px;padding:4px 8px;width:auto;max-width:220px" id="qn-supplier-biz" onchange="fillSupplierFromBiz()">
+              ${getSupplierBiz().map(b=>`<option value="${b.id}" ${b.isDefault?'selected':''}>${b.bizName} (${b.bizNo})</option>`).join('')}
+            </select>
+          </div>
+          <table style="font-size:11px;width:100%;border-collapse:collapse" id="qn-supplier-preview">
+            <tr><td style="color:var(--text3);width:70px;padding:2px 0">사업자번호</td><td style="font-weight:600" id="qn-from-biz-no">${getDefaultSupplier().bizNo||''}</td></tr>
+            <tr><td style="color:var(--text3);padding:2px 0">상호</td><td style="font-weight:600" id="qn-from-biz-name">${getDefaultSupplier().bizName||''}</td></tr>
+            <tr><td style="color:var(--text3);padding:2px 0">대표자</td><td id="qn-from-ceo">${getDefaultSupplier().bizCeo||''}</td></tr>
+            <tr><td style="color:var(--text3);padding:2px 0">업태/종목</td><td id="qn-from-type">${(getDefaultSupplier().bizType||'')+(getDefaultSupplier().bizItem?' / '+getDefaultSupplier().bizItem:'')}</td></tr>
+            <tr><td style="color:var(--text3);padding:2px 0">연락처</td><td id="qn-from-phone">${getDefaultSupplier().bizPhone||''}</td></tr>
           </table>
         </div>
         <!-- 공급받는자 (거래처) -->
@@ -8574,6 +8808,7 @@ function openNewQuoteForm(){
   const d=ld();
   const cnt=(d.quotes.filter(q=>q.clientId===CUR_CLIENT).length||0)+1;
   document.getElementById('qn-no').value=`Q${new Date().toISOString().slice(0,7).replace('-','')}-${String(cnt).padStart(3,'0')}`;
+  try{ fillSupplierFromBiz(); }catch(e){}
 }
 function closeNewQuoteForm(){
   hide('qt-new-form');
@@ -8600,6 +8835,16 @@ function openEditQuoteForm(qtId){
   document.getElementById('qn-to-biz-name').value=qt.toBizName||'';
   document.getElementById('qn-to-ceo').value=qt.toCeo||'';
   document.getElementById('qn-to-type').value=qt.toType||'';
+  // 공급자 선택 복원
+  const supSel=document.getElementById('qn-supplier-biz');
+  if(supSel){
+    const sid=qt.supplierBizId||'';
+    const list=getSupplierBiz();
+    let pick=sid && list.find(b=>b.id===sid);
+    if(!pick && qt.fromBizNo) pick=list.find(b=>b.bizNo===qt.fromBizNo);
+    if(!pick) pick=getDefaultSupplier();
+    if(pick){ supSel.value=pick.id; fillSupplierFromBiz(); }
+  }
   // 세금 설정
   const taxEl=document.getElementById('qn-tax-yn');if(taxEl)taxEl.checked=!!qt.taxYn;
   const taxWrap=document.getElementById('qn-tax-items');if(taxWrap)taxWrap.style.display=(qt.taxYn)?'grid':'none';
@@ -8692,6 +8937,7 @@ function saveQuoteForm(){
   });
   const d=ld();
   const editId=QT_EDIT_ID||document.getElementById('qn-edit-id')?.value||'';
+  const supplierFields=readSupplierFromQuoteForm();
   if(editId){
     const idx=d.quotes.findIndex(q=>q.id===editId);
     if(idx<0){toast('수정할 견적서를 찾을 수 없습니다','error');return;}
@@ -8700,6 +8946,7 @@ function saveQuoteForm(){
       date:normalizeYMD(date),
       no:document.getElementById('qn-no')?.value||'',
       validity:document.getElementById('qn-validity')?.value||'30일',
+      ...supplierFields,
       toName:document.getElementById('qn-to-name')?.value||'',
       toBizNo:document.getElementById('qn-to-biz-no')?.value||'',
       toBizName:document.getElementById('qn-to-biz-name')?.value||'',
@@ -8864,6 +9111,17 @@ function onQtFeeRateChange(itemId,val){
   }
 }
 
+function fillSupplierFromBiz(){
+  const id=document.getElementById('qn-supplier-biz')?.value||'';
+  const biz=getSupplierBiz().find(b=>b.id===id)||getDefaultSupplier();
+  const set=(elId,val)=>{ const el=document.getElementById(elId); if(el) el.textContent=val||''; };
+  set('qn-from-biz-no', biz.bizNo);
+  set('qn-from-biz-name', biz.bizName);
+  set('qn-from-ceo', biz.bizCeo);
+  set('qn-from-type', (biz.bizType||'')+(biz.bizItem?' / '+biz.bizItem:''));
+  set('qn-from-phone', biz.bizPhone);
+}
+
 function fillReceiverFromBiz(){
   const d=ld(),c=d.clients.find(x=>x.id===CUR_CLIENT);if(!c)return;
   const idx=parseInt(document.getElementById('qn-receiver-biz')?.value);
@@ -8928,6 +9186,7 @@ function saveNewQuote(){
     date:normalizeYMD(date),
     no:document.getElementById('qn-no')?.value||'',
     validity:document.getElementById('qn-validity')?.value||'30일',
+    ...readSupplierFromQuoteForm(),
     toName:document.getElementById('qn-to-name')?.value||'',
     toBizNo:document.getElementById('qn-to-biz-no')?.value||'',
     toBizName:document.getElementById('qn-to-biz-name')?.value||'',
@@ -9432,6 +9691,7 @@ function buildQtDoc(qt){
   if(!qt.items)return '';
   const taxYn=qt.taxYn||false;
   const qti=qt.taxItems||{};
+  const from=resolveSupplierForQuote(qt);
   const rows=qt.items.map(it=>{
     const sup=(it.qty||0)*(it.unitPrice||0);
     const isProd=it.calc==='product';
@@ -9496,11 +9756,11 @@ function buildQtDoc(qt){
       <div style="padding:14px 18px;border-right:1px solid var(--border)">
         <div style="font-size:10px;font-weight:700;color:var(--text3);margin-bottom:6px">공 급 자</div>
         <table style="font-size:11px;border-collapse:collapse;width:100%">
-          <tr><td style="color:var(--text3);padding:2px 0;width:70px">사업자번호</td><td style="font-weight:700">${WAVE_BIZ.bizNo}</td></tr>
-          <tr><td style="color:var(--text3);padding:2px 0">상호(법인명)</td><td style="font-weight:700">${WAVE_BIZ.bizName}</td><td style="color:var(--text3);padding:2px 0 2px 10px;width:40px">성명</td><td>${WAVE_BIZ.bizCeo}</td></tr>
-          <tr><td style="color:var(--text3);padding:2px 0">사업장주소</td><td colspan="3">${WAVE_BIZ.bizAddr}</td></tr>
-          <tr><td style="color:var(--text3);padding:2px 0">업태</td><td>${WAVE_BIZ.bizType}</td><td style="color:var(--text3);padding:2px 0 2px 10px">품목</td><td>${WAVE_BIZ.bizItem}</td></tr>
-          <tr><td style="color:var(--text3);padding:2px 0">연락처</td><td colspan="3">${WAVE_BIZ.bizPhone}</td></tr>
+          <tr><td style="color:var(--text3);padding:2px 0;width:70px">사업자번호</td><td style="font-weight:700">${from.bizNo||'—'}</td></tr>
+          <tr><td style="color:var(--text3);padding:2px 0">상호(법인명)</td><td style="font-weight:700">${from.bizName||'—'}</td><td style="color:var(--text3);padding:2px 0 2px 10px;width:40px">성명</td><td>${from.bizCeo||'—'}</td></tr>
+          <tr><td style="color:var(--text3);padding:2px 0">사업장주소</td><td colspan="3">${from.bizAddr||'—'}</td></tr>
+          <tr><td style="color:var(--text3);padding:2px 0">업태</td><td>${from.bizType||'—'}</td><td style="color:var(--text3);padding:2px 0 2px 10px">품목</td><td>${from.bizItem||'—'}</td></tr>
+          <tr><td style="color:var(--text3);padding:2px 0">연락처</td><td colspan="3">${from.bizPhone||'—'}</td></tr>
         </table>
       </div>
       <div style="padding:14px 18px">
@@ -9555,7 +9815,7 @@ function buildQtDoc(qt){
     <div style="padding:10px 18px;border-top:1px dashed var(--border);background:#f9fafb;font-size:11px;color:#111827;text-align:right">
       <div style="display:inline-block;text-align:left">
         <div style="font-weight:700;margin-bottom:2px">입금 계좌 정보</div>
-        <div style="font-size:12px;color:#1f2937;font-weight:700">계좌번호 : 국민은행 512037-04-006086 박지혜(웨이프로젝트)</div>
+        <div style="font-size:12px;color:#1f2937;font-weight:700">계좌번호 : ${from.bankInfo||DEFAULT_SUPPLIER_BIZ.bankInfo}</div>
       </div>
     </div>
   </div>`;
@@ -12999,6 +13259,7 @@ function exportDsExcel(){
       loadDepositUnmatchedFromFirestore().catch(console.error);
       loadDepNamesFromFirestore().catch(console.error);
       loadGsyncFromFirestore().catch(console.error);
+      loadSupplierBizFromFirestore().catch(console.error);
       loadDailySettleFromFirestore().catch(console.error);
       loadBankTxFromFirestore().catch(console.error);
       loadCompanyExpFromFirestore().catch(console.error);
