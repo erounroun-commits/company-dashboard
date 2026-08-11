@@ -439,7 +439,34 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
         <div><div class="page-title">전체 현황</div><div class="page-sub" id="ov-date"></div></div>
         <button class="btn btn-sm btn-gray" onclick="refreshAllData()" title="최신 데이터로 새로고침">🔄 새로고침</button>
       </div>
-      <div class="card" id="ov-supplier-biz" style="margin-bottom:16px"></div>
+      <div class="card" id="ov-supplier-biz" style="margin-bottom:16px;border:2px solid #86efac;background:#f0fdf4">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:8px;flex-wrap:wrap">
+          <div>
+            <div class="card-title" style="margin:0;color:#065f46">🏢 사업자 목록 (공급자)</div>
+            <div style="font-size:11px;color:var(--text2);margin-top:4px">견적서 공급자 항목에서 선택할 사업자를 관리합니다</div>
+          </div>
+          <button class="btn btn-sm btn-blue" onclick="openSupplierBizForm()">+ 사업자 추가</button>
+        </div>
+        <div id="ov-supplier-biz-list" style="font-size:12px;color:var(--text3)">불러오는 중…</div>
+        <div id="ov-supplier-biz-form" class="hidden" style="margin-top:12px;background:#fff;border:1px solid #86efac;border-radius:10px;padding:14px">
+          <input type="hidden" id="sb-edit-id" value="">
+          <div style="font-size:12px;font-weight:700;color:#065f46;margin-bottom:10px" id="sb-form-title">신규 사업자</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div class="fg" style="margin:0"><label class="fl">상호명 *</label><input class="fi" id="sb-name" placeholder="웨이프로젝트"></div>
+            <div class="fg" style="margin:0"><label class="fl">사업자번호 *</label><input class="fi" id="sb-no" placeholder="000-00-00000"></div>
+            <div class="fg" style="margin:0"><label class="fl">대표자</label><input class="fi" id="sb-ceo" placeholder="홍길동"></div>
+            <div class="fg" style="margin:0"><label class="fl">연락처</label><input class="fi" id="sb-phone" placeholder="010-0000-0000"></div>
+            <div class="fg" style="margin:0"><label class="fl">업태</label><input class="fi" id="sb-type" placeholder="도매 및 소매업"></div>
+            <div class="fg" style="margin:0"><label class="fl">종목</label><input class="fi" id="sb-item" placeholder="전자상거래 소매업"></div>
+            <div class="fg" style="margin:0;grid-column:1/3"><label class="fl">사업장 주소</label><input class="fi" id="sb-addr" placeholder="주소"></div>
+            <div class="fg" style="margin:0;grid-column:1/3"><label class="fl">입금 계좌</label><input class="fi" id="sb-bank" placeholder="은행명 계좌번호 예금주"></div>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+            <button class="btn btn-gray btn-sm" onclick="cancelSupplierBizForm()">취소</button>
+            <button class="btn btn-green btn-sm" onclick="saveSupplierBizForm()">💾 저장</button>
+          </div>
+        </div>
+      </div>
       <div class="stat-grid" id="ov-stats"></div>
       <div class="grid-2" style="margin-bottom:16px">
         <div class="card"><div class="card-title">플랫폼별</div><div id="ov-platform"></div></div>
@@ -4479,6 +4506,7 @@ function initApp(){
   document.getElementById('ov-date').textContent='업데이트: '+new Date().toLocaleString('ko-KR');
   updateAdminUI();
   renderOverview();renderClients();renderExportPage();
+  try{ renderSupplierBizList(); }catch(e){}
   // 낡은 CSV URL → Apps Script URL 자동 교체
   (function(){
     try{
@@ -6840,6 +6868,7 @@ function showPage(n){
     openAdminMenu();
   }
   if(n==='export')renderExportPage();
+  if(n==='overview'){ try{renderOverview();}catch(e){}; try{renderSupplierBizList();}catch(e){} }
   if(n==='crm')renderCrmQuotes();
   if(n==='settle-all')renderSettleAll();
   if(n==='deposit'){showDepTab('names');updateUnmatchedBadge();}
@@ -6932,8 +6961,23 @@ function renderSupplierBizList(){
   const el=document.getElementById('ov-supplier-biz');
   if(!el)return;
   const list=getSupplierBiz();
+  const listEl=document.getElementById('ov-supplier-biz-list');
+  // 폼이 열려 있으면 유지 (재렌더로 입력값 날아감 방지)
+  const formOpen=document.getElementById('ov-supplier-biz-form') && !document.getElementById('ov-supplier-biz-form').classList.contains('hidden');
+  const editIdKeep=document.getElementById('sb-edit-id')?.value||'';
+  const draft={
+    name:document.getElementById('sb-name')?.value||'',
+    no:document.getElementById('sb-no')?.value||'',
+    ceo:document.getElementById('sb-ceo')?.value||'',
+    phone:document.getElementById('sb-phone')?.value||'',
+    type:document.getElementById('sb-type')?.value||'',
+    item:document.getElementById('sb-item')?.value||'',
+    addr:document.getElementById('sb-addr')?.value||'',
+    bank:document.getElementById('sb-bank')?.value||'',
+  };
+
   const rows=list.map(b=>`
-    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff;border:1px solid #bbf7d0;border-radius:8px;margin-bottom:6px">
       <div style="flex:1;min-width:0">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <span style="font-size:13px;font-weight:700">${b.bizName||'—'}</span>
@@ -6951,33 +6995,45 @@ function renderSupplierBizList(){
       </div>
     </div>`).join('');
 
-  el.innerHTML=`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:8px;flex-wrap:wrap">
-      <div>
-        <div class="card-title" style="margin:0">🏢 사업자 목록 (공급자)</div>
-        <div style="font-size:11px;color:var(--text2);margin-top:4px">견적서 공급자 항목에서 선택할 사업자를 관리합니다</div>
+  if(listEl){
+    listEl.innerHTML=rows||'<div style="font-size:12px;color:var(--text3);padding:8px 0">등록된 사업자가 없습니다. 오른쪽 버튼으로 추가하세요.</div>';
+  } else {
+    // 구형 DOM 대비: 카드 전체 재구성
+    el.innerHTML=`
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:8px;flex-wrap:wrap">
+        <div>
+          <div class="card-title" style="margin:0;color:#065f46">🏢 사업자 목록 (공급자)</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:4px">견적서 공급자 항목에서 선택할 사업자를 관리합니다</div>
+        </div>
+        <button class="btn btn-sm btn-blue" onclick="openSupplierBizForm()">+ 사업자 추가</button>
       </div>
-      <button class="btn btn-sm btn-blue" onclick="openSupplierBizForm()">+ 사업자 추가</button>
-    </div>
-    <div id="ov-supplier-biz-list">${rows||'<div style="font-size:12px;color:var(--text3);padding:8px 0">등록된 사업자가 없습니다</div>'}</div>
-    <div id="ov-supplier-biz-form" class="hidden" style="margin-top:12px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:14px">
-      <input type="hidden" id="sb-edit-id" value="">
-      <div style="font-size:12px;font-weight:700;color:#065f46;margin-bottom:10px" id="sb-form-title">신규 사업자</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-        <div class="fg" style="margin:0"><label class="fl">상호명 *</label><input class="fi" id="sb-name" placeholder="웨이프로젝트"></div>
-        <div class="fg" style="margin:0"><label class="fl">사업자번호 *</label><input class="fi" id="sb-no" placeholder="000-00-00000"></div>
-        <div class="fg" style="margin:0"><label class="fl">대표자</label><input class="fi" id="sb-ceo" placeholder="홍길동"></div>
-        <div class="fg" style="margin:0"><label class="fl">연락처</label><input class="fi" id="sb-phone" placeholder="010-0000-0000"></div>
-        <div class="fg" style="margin:0"><label class="fl">업태</label><input class="fi" id="sb-type" placeholder="도매 및 소매업"></div>
-        <div class="fg" style="margin:0"><label class="fl">종목</label><input class="fi" id="sb-item" placeholder="전자상거래 소매업"></div>
-        <div class="fg" style="margin:0;grid-column:1/3"><label class="fl">사업장 주소</label><input class="fi" id="sb-addr" placeholder="주소"></div>
-        <div class="fg" style="margin:0;grid-column:1/3"><label class="fl">입금 계좌</label><input class="fi" id="sb-bank" placeholder="은행명 계좌번호 예금주"></div>
-      </div>
-      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
-        <button class="btn btn-gray btn-sm" onclick="cancelSupplierBizForm()">취소</button>
-        <button class="btn btn-green btn-sm" onclick="saveSupplierBizForm()">💾 저장</button>
-      </div>
-    </div>`;
+      <div id="ov-supplier-biz-list">${rows||'<div style="font-size:12px;color:var(--text3);padding:8px 0">등록된 사업자가 없습니다</div>'}</div>
+      <div id="ov-supplier-biz-form" class="hidden" style="margin-top:12px;background:#fff;border:1px solid #86efac;border-radius:10px;padding:14px">
+        <input type="hidden" id="sb-edit-id" value="">
+        <div style="font-size:12px;font-weight:700;color:#065f46;margin-bottom:10px" id="sb-form-title">신규 사업자</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div class="fg" style="margin:0"><label class="fl">상호명 *</label><input class="fi" id="sb-name" placeholder="웨이프로젝트"></div>
+          <div class="fg" style="margin:0"><label class="fl">사업자번호 *</label><input class="fi" id="sb-no" placeholder="000-00-00000"></div>
+          <div class="fg" style="margin:0"><label class="fl">대표자</label><input class="fi" id="sb-ceo" placeholder="홍길동"></div>
+          <div class="fg" style="margin:0"><label class="fl">연락처</label><input class="fi" id="sb-phone" placeholder="010-0000-0000"></div>
+          <div class="fg" style="margin:0"><label class="fl">업태</label><input class="fi" id="sb-type" placeholder="도매 및 소매업"></div>
+          <div class="fg" style="margin:0"><label class="fl">종목</label><input class="fi" id="sb-item" placeholder="전자상거래 소매업"></div>
+          <div class="fg" style="margin:0;grid-column:1/3"><label class="fl">사업장 주소</label><input class="fi" id="sb-addr" placeholder="주소"></div>
+          <div class="fg" style="margin:0;grid-column:1/3"><label class="fl">입금 계좌</label><input class="fi" id="sb-bank" placeholder="은행명 계좌번호 예금주"></div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+          <button class="btn btn-gray btn-sm" onclick="cancelSupplierBizForm()">취소</button>
+          <button class="btn btn-green btn-sm" onclick="saveSupplierBizForm()">💾 저장</button>
+        </div>
+      </div>`;
+  }
+
+  if(formOpen){
+    show('ov-supplier-biz-form');
+    const hid=document.getElementById('sb-edit-id'); if(hid) hid.value=editIdKeep;
+    const map={name:'sb-name',no:'sb-no',ceo:'sb-ceo',phone:'sb-phone',type:'sb-type',item:'sb-item',addr:'sb-addr',bank:'sb-bank'};
+    Object.keys(map).forEach(k=>{ const i=document.getElementById(map[k]); if(i) i.value=draft[k]; });
+  }
 }
 
 function openSupplierBizForm(editId){
