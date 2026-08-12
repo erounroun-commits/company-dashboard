@@ -2549,16 +2549,47 @@ async function sv(key, value){
     _svLocks[key]=false;
   }
 }
-// 공급자 고정 정보 (웨이프로젝트)
-const WAVE_BIZ={
-  bizNo:'251-13-02377',
-  bizName:'웨이프로젝트',
-  bizCeo:'박지혜',
-  bizAddr:'전북특별자치도 전주시 완산구 효자동3가 1453-5, 금강빌라 101호',
-  bizType:'도매 및 소매업',
-  bizItem:'전자상거래 소매업',
-  bizPhone:'010-5723-8830',
+// 공급자 사업자 목록 (기본: 웨이프로젝트)
+const WAVE_BIZ_LIST={
+  wave_project:{
+    key:'wave_project',
+    bizNo:'251-13-02377',
+    bizName:'웨이프로젝트',
+    bizCeo:'박지혜',
+    bizAddr:'전북특별자치도 전주시 완산구 효자동3가 1453-5, 금강빌라 101호',
+    bizType:'도매 및 소매업',
+    bizItem:'전자상거래 소매업',
+    bizPhone:'010-5723-8830',
+    bankAccount:'국민은행 512037-04-006086 박지혜(웨이프로젝트)',
+  },
+  wave_commerce:{
+    key:'wave_commerce',
+    bizNo:'571-11-03204',
+    bizName:'웨이커머스',
+    bizCeo:'김소연',
+    bizAddr:'전북특별자치도 전주시 덕진구 전주천동로 453, 606호(진북동, 거성고속맨션)',
+    bizType:'도매 및 소매업',
+    bizItem:'전자상거래 소매업',
+    bizPhone:'010-2067-0237',
+    bankAccount:'기업은행 506-127807-01-014 김소연',
+  },
 };
+const WAVE_BIZ_DEFAULT_KEY='wave_project';
+const WAVE_BIZ=WAVE_BIZ_LIST[WAVE_BIZ_DEFAULT_KEY];
+function getWaveBiz(keyOrBiz){
+  if(keyOrBiz && typeof keyOrBiz==='object'){
+    const k=keyOrBiz.key||'';
+    if(k && WAVE_BIZ_LIST[k]) return {...WAVE_BIZ_LIST[k], ...keyOrBiz, key:k};
+    if(keyOrBiz.bizNo||keyOrBiz.bizName) return {...WAVE_BIZ, ...keyOrBiz};
+  }
+  const key=keyOrBiz||WAVE_BIZ_DEFAULT_KEY;
+  return WAVE_BIZ_LIST[key]||WAVE_BIZ;
+}
+function resolveQuoteSupplier(qt){
+  if(qt?.supplier) return getWaveBiz(qt.supplier);
+  if(qt?.supplierKey) return getWaveBiz(qt.supplierKey);
+  return getWaveBiz(WAVE_BIZ_DEFAULT_KEY);
+}
 // 견적서 항목 유형 — 4가지 고정
 // calc: fee1=진행비유형1, fee2=진행비유형2, delivery=택배대행비, product=상품금액, custom=직접입력
 function getQtTypeList(c){
@@ -8291,57 +8322,8 @@ function renderDetQuote(){
     return;
   }
   const d=ld(),c=d.clients.find(x=>x.id===CUR_CLIENT);if(!c)return;
-  // 거래처 정산에는 있는데 견적서 목록에는 없는 항목 보정
-  try{
-    const settlesForClient=stLd().filter(s=>s.clientId===CUR_CLIENT);
-    let quotesChanged=false;
-    const quotes=[...(d.quotes||[])];
-    const hasQuoteId=new Set(quotes.map(q=>q.id));
-    settlesForClient.forEach(s=>{
-      // qtId가 없거나, qtId는 있는데 해당 견적이 존재하지 않는 경우에만 보정
-      if(!s.qtId || !hasQuoteId.has(s.qtId)){
-        const qtId=s.qtId||gid();
-        const totalAmt=Number(s.total)||0;
-        const recoveredItems=totalAmt>0?[{
-          id:gid(),
-          typeIdx:0,
-          label:'정산 내역 합계',
-          calc:'custom',
-          qty:1,
-          unitPrice:totalAmt,
-          feeRate:0,
-          taxApply:false,
-          memo:'(정산 데이터에서 복구됨)'
-        }]:[];
-        const newQt={
-          id:qtId,
-          clientId:CUR_CLIENT,
-          date:s.date||new Date().toISOString().slice(0,10),
-          no:s.no||'',
-          toName:s.toName||c.name||'',
-          items:recoveredItems,
-          taxYn:!!s.taxYn,
-          taxItems:{fee:!!s.taxFee,delivery:!!s.taxDel,product:!!s.taxProd},
-          settled:!!s.settled,
-          _recoveredFromSettle:true,
-          createdAt:new Date().toISOString()
-        };
-        quotes.push(newQt);
-        hasQuoteId.add(qtId);
-        // 정산 행에도 qtId 연결이 없었다면 채워줌
-        if(!s.qtId){
-          s.qtId=qtId;
-        }
-        quotesChanged=true;
-      }
-    });
-    if(quotesChanged){
-      sv('qt',quotes);
-      // stLd 캐시 갱신을 위해 다시 저장
-      stSv(stLd());
-      d.quotes=quotes;
-    }
-  }catch(e){ console.warn('renderDetQuote recover missing quotes err',e); }
+  // 주의: 예전에 정산 데이터로 견적을 자동 복구하며 품명을 '정산 내역 합계'로
+  // 덮어쓰던 로직은 제거함. (캐시 미동기화 시 실제 견적 품명이 파괴되는 버그 원인)
 
   const myQuotes=(d.quotes||[]).filter(q=>q.clientId===CUR_CLIENT).sort((a,b)=>{
     const oa=a.order!=null?a.order:9999, ob=b.order!=null?b.order:9999;
@@ -8359,6 +8341,7 @@ function renderDetQuote(){
       <div style="font-size:13px;font-weight:700">📄 견적서 관리</div>
       <div style="display:flex;gap:8px;align-items:center">
         <button class="btn btn-green btn-sm" onclick="exportClientQuotesExcel()">📥 견적서 엑셀 추출</button>
+        <button class="btn btn-gray btn-sm" onclick="openCloneQuotePicker()">📋 견적서 복제하기</button>
         <button class="btn btn-blue btn-sm" onclick="openNewQuoteForm()">+ 견적서 작성</button>
       </div>
     </div>
@@ -8380,16 +8363,16 @@ function renderDetQuote(){
 
       <!-- 공급자 / 공급받는자 2열 -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
-        <!-- 공급자 (고정: 웨이프로젝트) -->
+        <!-- 공급자 (사업자 선택) -->
         <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:14px">
-          <div style="font-size:11px;font-weight:700;color:#065f46;margin-bottom:10px">🏢 공급자 (고정)</div>
-          <table style="font-size:11px;width:100%;border-collapse:collapse">
-            <tr><td style="color:var(--text3);width:70px;padding:2px 0">사업자번호</td><td style="font-weight:600">${WAVE_BIZ.bizNo}</td></tr>
-            <tr><td style="color:var(--text3);padding:2px 0">상호</td><td style="font-weight:600">${WAVE_BIZ.bizName}</td></tr>
-            <tr><td style="color:var(--text3);padding:2px 0">대표자</td><td>${WAVE_BIZ.bizCeo}</td></tr>
-            <tr><td style="color:var(--text3);padding:2px 0">업태/종목</td><td>${WAVE_BIZ.bizType} / ${WAVE_BIZ.bizItem}</td></tr>
-            <tr><td style="color:var(--text3);padding:2px 0">연락처</td><td>${WAVE_BIZ.bizPhone}</td></tr>
-          </table>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
+            <div style="font-size:11px;font-weight:700;color:#065f46">🏢 공급자</div>
+            <select class="fs" style="font-size:11px;padding:4px 8px;width:auto;min-width:160px" id="qn-supplier-key" onchange="onSupplierBizChange()">
+              <option value="wave_project">251-13-02377 (웨이프로젝트)</option>
+              <option value="wave_commerce">571-11-03204 (웨이커머스)</option>
+            </select>
+          </div>
+          <div id="qn-supplier-info"></div>
         </div>
         <!-- 공급받는자 (거래처) -->
         <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:14px">
@@ -8482,6 +8465,7 @@ function renderDetQuote(){
           <div style="display:flex;gap:6px;align-items:center">
             <span style="font-size:12px;font-weight:700;color:${settled?'var(--green)':'var(--accent)'}">${fmtN(calcQtTotal(q))}원</span>
             <button class="btn btn-xs btn-gray" onclick="event.stopPropagation();openEditQuoteForm('${q.id}')">수정</button>
+            <button class="btn btn-xs btn-blue" onclick="event.stopPropagation();openDuplicateQuoteForm('${q.id}')">복제</button>
             ${!settled?`<button class="btn btn-xs btn-green" onclick="event.stopPropagation();markQtSettled('${q.id}')">정산완료</button>`:''}
             <button class="btn btn-xs btn-red" onclick="event.stopPropagation();delQt('${q.id}')">삭제</button>
             <span style="font-size:12px;color:var(--text3)">${collapsed?'▼':'▲'}</span>
@@ -8549,6 +8533,35 @@ function getQtTaxItems(){
     product:document.getElementById('qn-ti-prod')?.checked||false,
   };
 }
+function renderSupplierInfo(key){
+  const biz=getWaveBiz(key||WAVE_BIZ_DEFAULT_KEY);
+  const wrap=document.getElementById('qn-supplier-info');
+  if(!wrap)return;
+  wrap.innerHTML=`<table style="font-size:11px;width:100%;border-collapse:collapse">
+    <tr><td style="color:var(--text3);width:70px;padding:2px 0">사업자번호</td><td style="font-weight:600">${biz.bizNo}</td></tr>
+    <tr><td style="color:var(--text3);padding:2px 0">상호</td><td style="font-weight:600">${biz.bizName}</td></tr>
+    <tr><td style="color:var(--text3);padding:2px 0">대표자</td><td>${biz.bizCeo}</td></tr>
+    <tr><td style="color:var(--text3);padding:2px 0">사업장주소</td><td>${biz.bizAddr}</td></tr>
+    <tr><td style="color:var(--text3);padding:2px 0">업태/종목</td><td>${biz.bizType} / ${biz.bizItem}</td></tr>
+    <tr><td style="color:var(--text3);padding:2px 0">연락처</td><td>${biz.bizPhone}</td></tr>
+    <tr><td style="color:var(--text3);padding:6px 0 2px 0;vertical-align:top">입금계좌</td><td style="font-weight:700;padding-top:6px">${biz.bankAccount||''}</td></tr>
+  </table>`;
+}
+function onSupplierBizChange(){
+  const key=document.getElementById('qn-supplier-key')?.value||WAVE_BIZ_DEFAULT_KEY;
+  renderSupplierInfo(key);
+}
+function setSupplierSelect(key){
+  const sel=document.getElementById('qn-supplier-key');
+  const k=(key && WAVE_BIZ_LIST[key])?key:WAVE_BIZ_DEFAULT_KEY;
+  if(sel) sel.value=k;
+  renderSupplierInfo(k);
+}
+function getSelectedSupplier(){
+  const key=document.getElementById('qn-supplier-key')?.value||WAVE_BIZ_DEFAULT_KEY;
+  const biz=getWaveBiz(key);
+  return {supplierKey:biz.key||key, supplier:{...biz}};
+}
 function openNewQuoteForm(){
   QT_EDIT_ID=null;
   const hid=document.getElementById('qn-edit-id');if(hid)hid.value='';
@@ -8567,6 +8580,7 @@ function openNewQuoteForm(){
       setQtTaxItem(t,ti[key]||false);
     });
   }
+  setSupplierSelect(WAVE_BIZ_DEFAULT_KEY);
   renderQtNewItems();
   QT_FORM_OPEN=true;
   show('qt-new-form');
@@ -8584,30 +8598,21 @@ function closeNewQuoteForm(){
   const ttl=document.getElementById('qn-form-title');if(ttl)ttl.textContent='✏️ 견적서 작성';
 }
 
-function openEditQuoteForm(qtId){
-  const d=ld();
-  const qt=(d.quotes||[]).find(q=>q.id===qtId);
-  if(!qt){toast('견적서를 찾을 수 없습니다','error');return;}
-  QT_EDIT_ID=qtId;
-  const hid=document.getElementById('qn-edit-id');if(hid)hid.value=qtId;
-  const ttl=document.getElementById('qn-form-title');if(ttl)ttl.textContent='✏️ 견적서 수정';
-  // 기본 필드 채우기
+function fillQuoteFormFields(qt, opts={}){
   document.getElementById('qn-date').value=qt.date||getKSTDate();
-  document.getElementById('qn-no').value=qt.no||'';
+  document.getElementById('qn-no').value=opts.no!=null?opts.no:(qt.no||'');
   document.getElementById('qn-validity').value=qt.validity||'30일';
   document.getElementById('qn-to-name').value=qt.toName||'';
   document.getElementById('qn-to-biz-no').value=qt.toBizNo||'';
   document.getElementById('qn-to-biz-name').value=qt.toBizName||'';
   document.getElementById('qn-to-ceo').value=qt.toCeo||'';
   document.getElementById('qn-to-type').value=qt.toType||'';
-  // 세금 설정
   const taxEl=document.getElementById('qn-tax-yn');if(taxEl)taxEl.checked=!!qt.taxYn;
   const taxWrap=document.getElementById('qn-tax-items');if(taxWrap)taxWrap.style.display=(qt.taxYn)?'grid':'none';
   const ti=qt.taxItems||{};
   setQtTaxItem('fee', !!ti.fee);
   setQtTaxItem('del', !!ti.delivery);
   setQtTaxItem('prod', !!ti.product);
-  // 항목
   QT_NEW_ITEMS=(qt.items||[]).map(it=>{
     let productName=it.productName||'';
     if(!productName && (it.calc==='product'||String(it.label||'').startsWith('상품금액'))){
@@ -8615,7 +8620,7 @@ function openEditQuoteForm(qtId){
       if(m) productName=m[1]||'';
     }
     return {
-      id:it.id||gid(),
+      id:opts.newItemIds?gid():(it.id||gid()),
       typeIdx: (it.typeIdx!=null?it.typeIdx:0),
       label: it.label||'',
       calc: it.calc||'custom',
@@ -8628,16 +8633,58 @@ function openEditQuoteForm(qtId){
     };
   });
   if(!QT_NEW_ITEMS.length){
-    const cl=d.clients.find(x=>x.id===CUR_CLIENT);
+    const d=ld(),cl=d.clients.find(x=>x.id===CUR_CLIENT);
     const types=getQtTypeList(cl);
     QT_NEW_ITEMS=[{id:gid(),typeIdx:0,label:types[0].label,calc:types[0].calc,qty:1,unitPrice:types[0].defaultPrice||0,feeRate:types[0].feeRate||0,memo:'',productName:''}];
   }
   document.getElementById('qn-notes').value=qt.notes||'';
+  const supplier=resolveQuoteSupplier(qt);
+  setSupplierSelect(supplier.key||WAVE_BIZ_DEFAULT_KEY);
   renderQtNewItems();
+}
+
+function openEditQuoteForm(qtId){
+  const d=ld();
+  const qt=(d.quotes||[]).find(q=>q.id===qtId);
+  if(!qt){toast('견적서를 찾을 수 없습니다','error');return;}
+  QT_EDIT_ID=qtId;
+  const hid=document.getElementById('qn-edit-id');if(hid)hid.value=qtId;
+  const ttl=document.getElementById('qn-form-title');if(ttl)ttl.textContent='✏️ 견적서 수정';
+  fillQuoteFormFields(qt);
   QT_FORM_OPEN=true;
   show('qt-new-form');
-  // 폼으로 스크롤
   setTimeout(()=>{ try{ document.getElementById('qt-new-form')?.scrollIntoView({behavior:'smooth',block:'start'}); }catch(e){} },20);
+}
+
+function openDuplicateQuoteForm(qtId){
+  const d=ld();
+  const qt=(d.quotes||[]).find(q=>q.id===qtId);
+  if(!qt){toast('견적서를 찾을 수 없습니다','error');return;}
+  QT_EDIT_ID=null;
+  const hid=document.getElementById('qn-edit-id');if(hid)hid.value='';
+  const ttl=document.getElementById('qn-form-title');if(ttl)ttl.textContent='📋 견적서 복제 — 날짜/상세내역 수정 후 저장';
+  const cnt=(d.quotes.filter(q=>q.clientId===CUR_CLIENT).length||0)+1;
+  const newNo=`Q${new Date().toISOString().slice(0,7).replace('-','')}-${String(cnt).padStart(3,'0')}`;
+  fillQuoteFormFields(qt, {newItemIds:true, no:newNo});
+  // 복제본은 기본적으로 오늘 날짜로 두고, 사용자가 바로 수정 가능
+  const dateEl=document.getElementById('qn-date');
+  if(dateEl) dateEl.value=getKSTDate();
+  QT_FORM_OPEN=true;
+  show('qt-new-form');
+  setTimeout(()=>{ try{ document.getElementById('qt-new-form')?.scrollIntoView({behavior:'smooth',block:'start'}); }catch(e){} },20);
+  toast('동일 내역으로 복제됨 — 날짜·상세를 수정한 뒤 저장하세요');
+}
+
+function openCloneQuotePicker(){
+  const d=ld();
+  const list=(d.quotes||[]).filter(q=>q.clientId===CUR_CLIENT).sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+  if(!list.length){toast('복제할 견적서가 없습니다','error');return;}
+  const lines=list.map((q,i)=>`${i+1}. ${q.date||'-'} | #${q.no||'-'} | ${q.toName||''} | ${fmtN(calcQtTotal(q))}원`).join('\n');
+  const ans=prompt(`복제할 견적서 번호를 입력하세요 (1~${list.length})\n\n${lines}`);
+  if(ans==null||ans==='')return;
+  const idx=parseInt(ans,10)-1;
+  if(!(idx>=0 && idx<list.length)){toast('올바른 번호를 입력하세요','error');return;}
+  openDuplicateQuoteForm(list[idx].id);
 }
 
 async function updateSettleFromQuote(qt){
@@ -8692,6 +8739,7 @@ function saveQuoteForm(){
   });
   const d=ld();
   const editId=QT_EDIT_ID||document.getElementById('qn-edit-id')?.value||'';
+  const supplierInfo=getSelectedSupplier();
   if(editId){
     const idx=d.quotes.findIndex(q=>q.id===editId);
     if(idx<0){toast('수정할 견적서를 찾을 수 없습니다','error');return;}
@@ -8707,6 +8755,8 @@ function saveQuoteForm(){
       toType:document.getElementById('qn-to-type')?.value||'',
       taxYn,taxItems,items,
       notes:document.getElementById('qn-notes')?.value||'',
+      supplierKey:supplierInfo.supplierKey,
+      supplier:supplierInfo.supplier,
     };
     d.quotes[idx]=qt;
     sv('qt',d.quotes);
@@ -8923,6 +8973,7 @@ function saveNewQuote(){
       taxApply: it.calc==='custom' ? (it.taxApply!==false) : it.taxApply
     };
   });
+  const supplierInfo=getSelectedSupplier();
   const qt={
     id:gid(),clientId:CUR_CLIENT,
     date:normalizeYMD(date),
@@ -8936,6 +8987,8 @@ function saveNewQuote(){
     taxYn,taxItems,
     items,
     notes:document.getElementById('qn-notes')?.value||'',
+    supplierKey:supplierInfo.supplierKey,
+    supplier:supplierInfo.supplier,
     settled:false,collapsed:true,
     createdAt:new Date().toISOString(),
   };
@@ -9432,6 +9485,7 @@ function buildQtDoc(qt){
   if(!qt.items)return '';
   const taxYn=qt.taxYn||false;
   const qti=qt.taxItems||{};
+  const supplier=resolveQuoteSupplier(qt);
   const rows=qt.items.map(it=>{
     const sup=(it.qty||0)*(it.unitPrice||0);
     const isProd=it.calc==='product';
@@ -9496,11 +9550,11 @@ function buildQtDoc(qt){
       <div style="padding:14px 18px;border-right:1px solid var(--border)">
         <div style="font-size:10px;font-weight:700;color:var(--text3);margin-bottom:6px">공 급 자</div>
         <table style="font-size:11px;border-collapse:collapse;width:100%">
-          <tr><td style="color:var(--text3);padding:2px 0;width:70px">사업자번호</td><td style="font-weight:700">${WAVE_BIZ.bizNo}</td></tr>
-          <tr><td style="color:var(--text3);padding:2px 0">상호(법인명)</td><td style="font-weight:700">${WAVE_BIZ.bizName}</td><td style="color:var(--text3);padding:2px 0 2px 10px;width:40px">성명</td><td>${WAVE_BIZ.bizCeo}</td></tr>
-          <tr><td style="color:var(--text3);padding:2px 0">사업장주소</td><td colspan="3">${WAVE_BIZ.bizAddr}</td></tr>
-          <tr><td style="color:var(--text3);padding:2px 0">업태</td><td>${WAVE_BIZ.bizType}</td><td style="color:var(--text3);padding:2px 0 2px 10px">품목</td><td>${WAVE_BIZ.bizItem}</td></tr>
-          <tr><td style="color:var(--text3);padding:2px 0">연락처</td><td colspan="3">${WAVE_BIZ.bizPhone}</td></tr>
+          <tr><td style="color:var(--text3);padding:2px 0;width:70px">사업자번호</td><td style="font-weight:700">${supplier.bizNo}</td></tr>
+          <tr><td style="color:var(--text3);padding:2px 0">상호(법인명)</td><td style="font-weight:700">${supplier.bizName}</td><td style="color:var(--text3);padding:2px 0 2px 10px;width:40px">성명</td><td>${supplier.bizCeo}</td></tr>
+          <tr><td style="color:var(--text3);padding:2px 0">사업장주소</td><td colspan="3">${supplier.bizAddr}</td></tr>
+          <tr><td style="color:var(--text3);padding:2px 0">업태</td><td>${supplier.bizType}</td><td style="color:var(--text3);padding:2px 0 2px 10px">품목</td><td>${supplier.bizItem}</td></tr>
+          <tr><td style="color:var(--text3);padding:2px 0">연락처</td><td colspan="3">${supplier.bizPhone}</td></tr>
         </table>
       </div>
       <div style="padding:14px 18px">
@@ -9555,7 +9609,7 @@ function buildQtDoc(qt){
     <div style="padding:10px 18px;border-top:1px dashed var(--border);background:#f9fafb;font-size:11px;color:#111827;text-align:right">
       <div style="display:inline-block;text-align:left">
         <div style="font-weight:700;margin-bottom:2px">입금 계좌 정보</div>
-        <div style="font-size:12px;color:#1f2937;font-weight:700">계좌번호 : 국민은행 512037-04-006086 박지혜(웨이프로젝트)</div>
+        <div style="font-size:12px;color:#1f2937;font-weight:700">계좌번호 : ${supplier.bankAccount||WAVE_BIZ.bankAccount}</div>
       </div>
     </div>
   </div>`;
