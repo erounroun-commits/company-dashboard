@@ -2072,7 +2072,7 @@ async function loadDailySettleFromFirestore(){
 function dsLd(){ return DS_CACHE || []; }
 function dsSv(arr){
   DS_CACHE = Array.isArray(arr)?arr.slice():[];
-  sv('ds', DS_CACHE).catch(console.error);
+  return sv('ds', DS_CACHE);
 }
 
 async function loadBankTxFromFirestore(){
@@ -2337,14 +2337,20 @@ function cleanForFirestore(val){
 
 // Firestore에 개별 키별로 저장하던 helper 대체
 const _svLocks={};
+const _svQueued={}; // 잠금 중 최신 value만 유지 (스킵하지 않고 이어쓰기)
 async function sv(key, value){
   if(typeof db === 'undefined'){return;}
   if(_svLocks[key]){
-    console.warn(`sv(${key}) 이미 실행 중 - 스킵`);
-    return;
+    // 이전 동작(스킵)은 최신 변경을 버려 정산완료가 되돌아가는 원인이 됨 → 최신값 큐잉
+    return await new Promise((resolve,reject)=>{
+      _svQueued[key]={value, resolve, reject};
+    });
   }
   _svLocks[key]=true;
   try{
+  // 아래 분기에서 await 중에 스냅샷이 캐시를 덮어쓸 수 있으므로,
+  // 저장 대상은 항상 인자 value의 로컬 복사본을 사용한다.
+  const toWrite=Array.isArray(value)?value.slice():value;
   if(key==='cl'){
     // 단순 저장: col.get()/batch.delete()/변경분비교 없이 set(merge:true)만.
     // (삭제는 deleteClientCascadeFirestore 등 명시적 삭제 함수에서 doc.delete()로 처리)
@@ -2419,13 +2425,14 @@ async function sv(key, value){
   }else if(key==='qt'){
     // 견적서는 전체 삭제/재삽입 대신 변경분만 반영하여 Firestore 쿼터 사용을 줄인다
     const prev=Array.isArray(QUOTES_CACHE)?QUOTES_CACHE.slice():[];
-    QUOTES_CACHE = value.slice();
+    const rows=toWrite.slice();
+    QUOTES_CACHE = rows.slice();
     const col=db.collection('quotes');
     const snap=await col.get();
     const existingIds=new Set();
     snap.forEach(doc=>existingIds.add(doc.id));
     const nextIds=new Set();
-    QUOTES_CACHE.forEach(q=>{
+    rows.forEach(q=>{
       if(!q.id) q.id=col.doc().id;
       nextIds.add(q.id);
     });
@@ -2435,11 +2442,12 @@ async function sv(key, value){
       if(!nextIds.has(id)) batch.delete(col.doc(id));
     });
     // 추가/수정은 모두 set(merge:false)
-    QUOTES_CACHE.forEach(q=>{
+    rows.forEach(q=>{
       // Firestore는 undefined 값을 허용하지 않으므로, 안전하게 정제
       const cleaned=cleanForFirestore({...q,id:q.id});
       batch.set(col.doc(cleaned.id),cleaned, { merge: true });
     });
+    QUOTES_CACHE = rows.slice();
     await batch.commit();
   }else if(key==='st'){
     // 단순 저장: col.get()/batch.delete()/변경분비교 없이 set(merge:true)만.
@@ -2470,76 +2478,95 @@ async function sv(key, value){
     await batch.commit();
     console.timeEnd('sv:dep');
   }else if(key==='um'){
-    DEP_UNMATCHED_CACHE = value.slice();
+    const rows=toWrite.slice();
+    DEP_UNMATCHED_CACHE = rows.slice();
     const col=db.collection('depositUnmatched');
     const snap=await col.get();
     const batch=db.batch();
     snap.forEach(doc=>batch.delete(doc.ref));
-    DEP_UNMATCHED_CACHE.forEach(h=>{
+    rows.forEach(h=>{
       const id=h.id||db.collection('depositUnmatched').doc().id;
+      h.id=id;
       const data={...h,id};
       batch.set(col.doc(id),data, { merge: true });
     });
+    DEP_UNMATCHED_CACHE = rows.slice();
     await batch.commit();
   }else if(key==='dn'){
-    DEP_NAMES_CACHE = value.slice();
+    const rows=toWrite.slice();
+    DEP_NAMES_CACHE = rows.slice();
     const col=db.collection('depNames');
     const snap=await col.get();
     const batch=db.batch();
     snap.forEach(doc=>batch.delete(doc.ref));
-    DEP_NAMES_CACHE.forEach(r=>{
+    rows.forEach(r=>{
       const id=r.id||db.collection('depNames').doc().id;
+      r.id=id;
       const data={...r,id};
       batch.set(col.doc(id),data, { merge: true });
     });
+    DEP_NAMES_CACHE = rows.slice();
     await batch.commit();
   }else if(key==='ds'){
-    DS_CACHE = value.slice();
+    // await 중 스냅샷이 DS_CACHE를 덮어쓸 수 있으므로 toWrite 고정본으로 저장
+    const rows=toWrite.slice();
+    DS_CACHE = rows.slice();
     const col=db.collection('dailySettleRows');
     const snap=await col.get();
     const batch=db.batch();
     snap.forEach(doc=>batch.delete(doc.ref));
-    DS_CACHE.forEach(r=>{
+    rows.forEach(r=>{
       const id=r.id||db.collection('dailySettleRows').doc().id;
+      r.id=id;
       const data={...r,id};
       batch.set(col.doc(id),data, { merge: true });
     });
+    DS_CACHE = rows.slice();
     await batch.commit();
   }else if(key==='bank'){
-    BANK_TX_CACHE = value.slice();
+    const rows=toWrite.slice();
+    BANK_TX_CACHE = rows.slice();
     const col=db.collection('bankTransactions');
     const snap=await col.get();
     const batch=db.batch();
     snap.forEach(doc=>batch.delete(doc.ref));
-    BANK_TX_CACHE.forEach(r=>{
+    rows.forEach(r=>{
       const id=r.id||db.collection('bankTransactions').doc().id;
+      r.id=id;
       const data={...r,id};
       batch.set(col.doc(id),data, { merge: true });
     });
+    BANK_TX_CACHE = rows.slice();
     await batch.commit();
   }else if(key==='exp'){
-    COMPANY_EXP_CACHE = value.slice();
+    const rows=toWrite.slice();
+    COMPANY_EXP_CACHE = rows.slice();
     const col=db.collection('companyExpenses');
     const snap=await col.get();
     const batch=db.batch();
     snap.forEach(doc=>batch.delete(doc.ref));
-    COMPANY_EXP_CACHE.forEach(r=>{
+    rows.forEach(r=>{
       const id=r.id||db.collection('companyExpenses').doc().id;
+      r.id=id;
       const data={...r,id};
       batch.set(col.doc(id),data, { merge: true });
     });
+    COMPANY_EXP_CACHE = rows.slice();
     await batch.commit();
   }else if(key==='bp'){
-    BLOG_PROJECTS_CACHE = value.slice();
+    const rows=toWrite.slice();
+    BLOG_PROJECTS_CACHE = rows.slice();
     const col=db.collection('blogProjects');
     const snap=await col.get();
     const batch=db.batch();
     snap.forEach(doc=>batch.delete(doc.ref));
-    BLOG_PROJECTS_CACHE.forEach(r=>{
+    rows.forEach(r=>{
       const id=r.id||db.collection('blogProjects').doc().id;
+      r.id=id;
       const data=cleanForFirestore({...r,id});
       batch.set(col.doc(id),data, { merge: true });
     });
+    BLOG_PROJECTS_CACHE = rows.slice();
     await batch.commit();
   }
   }catch(e){
@@ -2547,6 +2574,11 @@ async function sv(key, value){
     throw e; // 에러 다시 던지기
   }finally{
     _svLocks[key]=false;
+    const queued=_svQueued[key];
+    if(queued){
+      _svQueued[key]=null;
+      sv(key, queued.value).then(queued.resolve).catch(queued.reject);
+    }
   }
 }
 // 공급자 사업자 목록 (기본: 웨이프로젝트)
@@ -5382,6 +5414,11 @@ function deleteAllDepMatches(){
 async function applyDepositMatches(){
   let count=0;
   const hist=[...depLd()];
+  const current=[...stLd()];
+  const d=ld();
+  const quotes=[...(d.quotes||[])];
+  let quotesChanged=false;
+
   DEP_MATCHES.forEach((dep,i)=>{
     const cb=document.getElementById(`dep-apply-${i}`);
     // 매칭은 되었지만 체크를 해제한 건 → 미매칭으로 되돌리기
@@ -5396,18 +5433,22 @@ async function applyDepositMatches(){
     }
     if(!dep.matched)return;
     if(cb&&!cb.checked)return;
-    const settles=[...stLd()];
-    const idx=settles.findIndex(s=>s.id===dep.stId);
-    if(idx>=0&&!settles[idx].settled){
-      settles[idx].settled=true;
-      settles[idx].depositDate=dep.date;
-      settles[idx].depositor=dep.content||dep.rawDate||dep.name||'';
-      settles[idx].depositAmt=dep.amount;
-      // async 저장은 아래에서 일괄 처리
-      const d=ld();
-      const qi=d.quotes.findIndex(q=>q.id===settles[idx].qtId);
-      if(qi>=0){d.quotes[qi].settled=true;}
-      count++;
+    const idx=current.findIndex(s=>s.id===dep.stId);
+    if(idx>=0){
+      const wasSettled=!!current[idx].settled;
+      current[idx]={
+        ...current[idx],
+        settled:true,
+        depositDate:dep.date||current[idx].depositDate||'',
+        depositor:dep.content||dep.rawDate||dep.name||current[idx].depositor||'',
+        depositAmt:dep.amount!=null?dep.amount:(current[idx].depositAmt||0)
+      };
+      if(!wasSettled) count++;
+      const qi=quotes.findIndex(q=>q.id===current[idx].qtId);
+      if(qi>=0 && !quotes[qi].settled){
+        quotes[qi]={...quotes[qi], settled:true};
+        quotesChanged=true;
+      }
     }
     // 입금내역 저장
     if(!hist.find(h=>h.stId===dep.stId&&h.date===dep.date&&h.amount===dep.amount)){
@@ -5416,37 +5457,22 @@ async function applyDepositMatches(){
         savedAt:new Date().toISOString()});
     }
   });
+
   if(hist.length!==depLd().length) await depSv(hist);
-  // settles 저장 + quotes 동기화 (최소 1건이라도 변경되었을 때)
-  if(count>0){
-    // 현재 루프에서 매번 새 settles 배열을 만들었으므로, 최종 상태를 다시 계산
-    // (DEP_MATCHES 기준으로 적용)
-    const current=[...stLd()];
-    let changed=false;
-    DEP_MATCHES.forEach(dep=>{
-      if(!dep.matched || !dep.stId) return;
-      const i=current.findIndex(s=>s.id===dep.stId);
-      if(i<0) return;
-      if(!current[i].settled){
-        current[i].settled=true;
-        current[i].depositDate=dep.date;
-        current[i].depositor=dep.content||dep.rawDate||dep.name||'';
-        current[i].depositAmt=dep.amount;
-        changed=true;
-      }
-    });
-    if(changed) await stSv(current);
-    // quotes settled 반영
-    const d=ld();
-    const qset=new Set(current.filter(s=>s.settled&&s.qtId).map(s=>s.qtId));
-    if(qset.size){
-      const nextQuotes=(d.quotes||[]).map(q=>qset.has(q.id)?({...q,settled:true}):q);
-      // 견적서가 아직 메모리/캐시에만 있고 Firestore 동기 전이라면,
-      // 최소한 로컬 저장은 유지하되, 삭제는 절대 하지 않는다.
-      await sv('qt', nextQuotes);
+
+  // 정산/견적/일별정산을 순서대로 await 저장 (중간에 스킵·레이스가 나면 다음날 미완료로 되돌아감)
+  const touchedIds=DEP_MATCHES.filter((dep,i)=>{
+    const cb=document.getElementById(`dep-apply-${i}`);
+    return dep.matched && dep.stId && !(cb&&!cb.checked);
+  }).map(dep=>dep.stId);
+  if(touchedIds.length){
+    await stSv(current);
+    if(quotesChanged) await sv('qt', quotes);
+    try{
+      await syncAllDsRowsFromSettle();
+    }catch(e){
+      console.warn('syncAllDsRowsFromSettle after deposit match err',e);
     }
-    // 거래처 정산 → 일/월 정산 전체 동기화 (입금일자/입금명/정산여부)
-    try{ syncAllDsRowsFromSettle(); }catch(e){ console.warn('syncAllDsRowsFromSettle after deposit match err',e); }
   }
   toast(`${count}건 정산완료 처리됨`,'success');
   // 체크 해제 등 반영 후 화면/미매칭 상태 재계산
@@ -7375,15 +7401,25 @@ function syncDsRowFromSettle(stId){
     const st=settles.find(s=>s.id===stId);
     if(!st)return;
 
-    let dsArr=dsLd();
+    let dsArr=dsLd().slice();
     let idx=dsArr.findIndex(r=>r.qtId===st.qtId);
-    // 연결된 dsRow가 없으면 견적서 기준으로 생성 후 다시 찾기
+    // 연결된 dsRow가 없으면 견적서 기준으로 메모리에서 생성 (중간 dsSv 금지)
     if(idx<0){
       const q=(ld().quotes||[]).find(x=>x.id===st.qtId);
       if(q){
-        syncQtToDailySettle(q);
-        dsArr=dsLd();
-        idx=dsArr.findIndex(r=>r.qtId===st.qtId);
+        const d=ld();
+        const client=d.clients.find(cl=>cl.id===q.clientId);
+        const extracted=extractQtDsData(q);
+        dsArr.push({
+          id:gid(), qtId:q.id,
+          date:normalizeYMD(q.date)||q.date, clientId:q.clientId,
+          clientName:client?client.name:(q.toName||''),
+          payDate:'', payName:'',
+          paid:false, ...extracted,
+          expReview:'', expMgr:'',
+          memo:'', bankTxId:''
+        });
+        idx=dsArr.length-1;
       }
     }
     if(idx<0)return;
@@ -7399,22 +7435,35 @@ function syncDsRowFromSettle(stId){
 }
 
 // 모든 wv_st 행을 일괄 동기화 (페이지 진입시, 전체 동기화용)
-function syncAllDsRowsFromSettle(){
+// 주의: 중간에 syncQtToDailySettle(dsSv)를 호출하면 동시 저장 레이스로 paid 반영이 유실될 수 있음
+async function syncAllDsRowsFromSettle(){
   try {
     const settles=stLd();
-    let dsArr=dsLd();
-    const quoteMap=new Map((ld().quotes||[]).map(q=>[q.id,q]));
+    let dsArr=dsLd().slice();
+    const d=ld();
+    const quoteMap=new Map((d.quotes||[]).map(q=>[q.id,q]));
+    const clientMap=new Map((d.clients||[]).map(c=>[c.id,c]));
     let changed=false;
     settles.forEach(st=>{
       if(!st.qtId)return;
       let idx=dsArr.findIndex(r=>r.qtId===st.qtId);
-      // 누락된 dsRow는 자동 생성 (입금 업로드 후 연동 누락 방지)
+      // 누락된 dsRow는 메모리에서만 생성 (중간 dsSv 호출 금지)
       if(idx<0){
         const q=quoteMap.get(st.qtId);
         if(q){
-          syncQtToDailySettle(q);
-          dsArr=dsLd();
-          idx=dsArr.findIndex(r=>r.qtId===st.qtId);
+          const client=clientMap.get(q.clientId);
+          const extracted=extractQtDsData(q);
+          dsArr.push({
+            id:gid(), qtId:q.id,
+            date:normalizeYMD(q.date)||q.date, clientId:q.clientId,
+            clientName:client?client.name:(q.toName||''),
+            payDate:'', payName:'',
+            paid:false, ...extracted,
+            expReview:'', expMgr:'',
+            memo:'', bankTxId:''
+          });
+          idx=dsArr.length-1;
+          changed=true;
         }
       }
       if(idx<0)return;
@@ -7423,13 +7472,11 @@ function syncAllDsRowsFromSettle(){
       const newPayName=st.depositor||'';
       const newPaid=!!st.settled;
       if(prev.payDate!==newPayDate||prev.payName!==newPayName||prev.paid!==newPaid){
-        dsArr[idx].payDate=newPayDate;
-        dsArr[idx].payName=newPayName;
-        dsArr[idx].paid=newPaid;
+        dsArr[idx]={...prev, payDate:newPayDate, payName:newPayName, paid:newPaid};
         changed=true;
       }
     });
-    if(changed)dsSv(dsArr);
+    if(changed) await dsSv(dsArr);
   } catch(e){ console.warn('syncAllDsRowsFromSettle err:', e); }
 }
 
@@ -7440,13 +7487,23 @@ async function syncSettlesFromDaily(){
     const settles=[...stLd()];
     const d=ld();
     const quotes=[...(d.quotes||[])];
-    let stChanged=false, qtChanged=false;
+    let stChanged=false, qtChanged=false, dsHealed=false;
     dsArr.forEach(r=>{
       if(!r.qtId)return;
       const idx=settles.findIndex(s=>s.qtId===r.qtId);
       if(idx<0)return;
       const st=settles[idx];
       const paid=!!r.paid;
+      // 안전장치: 거래처 정산이 입금매칭으로 이미 완료됐는데 일별 paid만 false인 경우
+      // (동기화 유실) → 거래처 정산을 미완료로 되돌리지 않고 일별을 맞춤
+      // 의도적 해제는 dsPaidChange에서 settle을 먼저 미완료로 바꾼 뒤 호출됨
+      if(!paid && st.settled && (st.depositor||st.depositDate)){
+        r.paid=true;
+        if(!r.payDate && st.depositDate) r.payDate=st.depositDate;
+        if(!r.payName && st.depositor) r.payName=st.depositor;
+        dsHealed=true;
+        return;
+      }
       const newDate= paid ? (r.payDate||'').slice(0,10) : '';
       const newName= paid ? (r.payName||'') : '';
       const next={...st,
@@ -7468,6 +7525,9 @@ async function syncSettlesFromDaily(){
         }
       }
     });
+    if(dsHealed){
+      try{ await dsSv(dsArr); }catch(_){}
+    }
     if(stChanged) await stSv(settles);
     if(qtChanged) await sv('qt',quotes);
   }catch(e){ console.warn('syncSettlesFromDaily err:',e); }
@@ -12265,6 +12325,22 @@ function dsPaidChange(el){
   const idx=arr.findIndex(r=>r.id===id);
   if(idx<0)return;
   arr[idx].paid=el.checked;
+  // 사용자가 일별에서 정산 해제한 경우: 거래처 정산을 먼저 미완료로 바꿔
+  // syncSettlesFromDaily 안전장치(입금매칭 보호)에 막히지 않게 함
+  if(!el.checked && arr[idx].qtId){
+    const settles=[...stLd()];
+    const si=settles.findIndex(s=>s.qtId===arr[idx].qtId);
+    if(si>=0 && settles[si].settled){
+      settles[si]={...settles[si], settled:false, depositDate:'', depositor:'', depositAmt:0};
+      stSv(settles).catch(console.error);
+      const d=ld();
+      const qi=(d.quotes||[]).findIndex(q=>q.id===arr[idx].qtId);
+      if(qi>=0 && d.quotes[qi].settled){
+        d.quotes[qi]={...d.quotes[qi], settled:false};
+        sv('qt', d.quotes).catch(console.error);
+      }
+    }
+  }
   dsSv(arr);
   syncSettlesFromDaily().then(()=>{ try{ scheduleRerender(); }catch(_){} }).catch(console.error);
 }
