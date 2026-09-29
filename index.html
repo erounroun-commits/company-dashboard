@@ -1431,6 +1431,7 @@ async function loadUsersFromFirestore(){
 
 // Firestore users 실시간 구독 (멀티 PC 즉시 반영)
 let _unsubUsers = null;
+let _usersSnapReady = false;
 function subscribeUsersFromFirestore(){
   if(typeof db === 'undefined') return;
   if(_unsubUsers) return;
@@ -1446,7 +1447,12 @@ function subscribeUsersFromFirestore(){
       await batch.commit();
       USERS_CACHE = def;
     } else {
-      USERS_CACHE = snap.docs.map(doc=>({ id: doc.id, ...doc.data() }));
+      if(!Array.isArray(USERS_CACHE)) USERS_CACHE=[];
+      _applyDocChangesToRows(USERS_CACHE, snap.docChanges(), null, null);
+      if(!_usersSnapReady){
+        _usersSnapReady=true;
+        _pruneRowsToSnap(USERS_CACHE, snap, null);
+      }
     }
     try{
       const active = document.querySelector('.page.active')?.id || '';
@@ -1675,6 +1681,7 @@ let _unsubBlogProjects = null;
 let _unsubUiCols = null;
 
 let _renderTimer = null;
+let _renderCols = new Set();
 let _mainSubErrNotified = false;
 function refreshDetailProjectSelectors(){
   try{
@@ -1715,10 +1722,19 @@ function refreshDetailProjectSelectors(){
     }
   }catch(e){}
 }
-function scheduleRerender(){
+function _renderColsHit(cols, names){
+  if(!cols || cols.has('*')) return true;
+  for(let i=0;i<names.length;i++){ if(cols.has(names[i])) return true; }
+  return false;
+}
+function scheduleRerender(collectionName){
+  if(collectionName) _renderCols.add(String(collectionName));
+  else _renderCols.add('*');
   if(_renderTimer) return;
   _renderTimer = setTimeout(()=>{
     _renderTimer = null;
+    const cols=_renderCols;
+    _renderCols=new Set();
     try{
       // 동시에 여러 사용자가 수정할 때, 내 화면에서 입력/편집 중이면
       // Firestore 실시간 변경으로 인한 강제 리렌더를 최대한 막아서
@@ -1737,16 +1753,18 @@ function scheduleRerender(){
         return;
       }
     }catch(e){}
+    const active = document.querySelector('.page.active')?.id || '';
     try{
       const clientScreen=document.getElementById('client-screen');
-      if(clientScreen&&!clientScreen.classList.contains('hidden')&&CV_CURRENT_CODE){
+      if(clientScreen&&!clientScreen.classList.contains('hidden')&&CV_CURRENT_CODE
+        && _renderColsHit(cols, ['clients','projects','records','quotes','blogProjects'])){
         refreshClientView();
       }
     }catch(e){}
     try{ updateAdminUI(); }catch(e){}
-    try{ renderOverview(); }catch(e){}
-    try{ renderClients(); }catch(e){}
-    try{ renderExportPage(); }catch(e){}
+    try{ if(active==='page-overview' && _renderColsHit(cols, ['clients','projects','records'])) renderOverview(); }catch(e){}
+    try{ if(active==='page-clients' && _renderColsHit(cols, ['clients','projects'])) renderClients(); }catch(e){}
+    try{ if(active==='page-export' && _renderColsHit(cols, ['clients','projects','records'])) renderExportPage(); }catch(e){}
     try{
       // 여러 사용자가 동시 작업 시, 편집 중인 상태에서 화면이 갑자기 바뀌거나 작업이 날아가지 않도록
       // 데이터 입력 미저장(SHEET_DIRTY)이거나 거래처 상세 안에서 입력 중이면 상세 패널은 다시 그리지 않음
@@ -1755,21 +1773,31 @@ function scheduleRerender(){
       const isEditingInDetail=detailEl&&activeEl&&detailEl.contains(activeEl)&&
         (activeEl.tagName==='INPUT'||activeEl.tagName==='TEXTAREA'||activeEl.tagName==='SELECT'||activeEl.isContentEditable);
       const skipDetailRerender=(typeof SHEET_DIRTY==='boolean'&&SHEET_DIRTY)||isEditingInDetail;
-      if(CUR_CLIENT&&!skipDetailRerender){
-        renderDetDash();renderDetProjView();renderDetQuote();renderDetSettle();
-        const d=ld(); const c=d.clients.find(x=>x.id===CUR_CLIENT);
-        if(c) renderInfoForm(c);
-        refreshDetailProjectSelectors();
+      const detailHit=_renderColsHit(cols, ['clients','projects','records','quotes','settles','uiCols']);
+      if(CUR_CLIENT&&!skipDetailRerender&&detailHit){
+        const hitCl=_renderColsHit(cols, ['clients']);
+        const hitPr=_renderColsHit(cols, ['projects','uiCols']);
+        const hitRc=_renderColsHit(cols, ['records']);
+        const hitQt=_renderColsHit(cols, ['quotes']);
+        const hitSt=_renderColsHit(cols, ['settles']);
+        if(hitCl||hitPr||hitRc){ try{ renderDetDash(); }catch(e){} }
+        if(hitPr||hitRc){ try{ renderDetProjView(); }catch(e){} }
+        if(hitQt){ try{ renderDetQuote(); }catch(e){} }
+        if(hitQt||hitSt){ try{ renderDetSettle(); }catch(e){} }
+        if(hitCl){
+          const d=ld(); const c=d.clients.find(x=>x.id===CUR_CLIENT);
+          if(c) renderInfoForm(c);
+        }
+        if(hitPr) refreshDetailProjectSelectors();
       }
     }catch(e){}
     try{
-      const active = document.querySelector('.page.active')?.id || '';
-      if(active==='page-settle-all') renderSettleAll();
-      if(active==='page-deposit'){ updateUnmatchedBadge(); renderDepositHistory?.(); }
-      if(active==='page-user-mgmt') renderUserMgmt();
-      if(active==='page-crm') renderCrmQuotes();
+      if(active==='page-settle-all' && _renderColsHit(cols, ['settles','quotes','clients'])) renderSettleAll();
+      if(active==='page-deposit' && _renderColsHit(cols, ['depositHistory','depositUnmatched','depNames','settles','clients'])){ updateUnmatchedBadge(); renderDepositHistory?.(); }
+      if(active==='page-user-mgmt' && _renderColsHit(cols, ['users'])) renderUserMgmt();
+      if(active==='page-crm' && _renderColsHit(cols, ['quotes','clients'])) renderCrmQuotes();
     }catch(e){}
-  }, 80);
+  }, 300);
 }
 
 function subscribeMainDataFromFirestore(){
@@ -1815,7 +1843,7 @@ function subscribeAuxCollectionsFromFirestore(){
   if(!_unsubMonthlyCnt){
     _unsubMonthlyCnt = db.collection('settings').doc('monthlyCnt').onSnapshot(doc=>{
       MONTHLY_CNT_CACHE = (doc && doc.exists && (doc.data()?.data)) ? (doc.data().data||{}) : {};
-      scheduleRerender();
+      scheduleRerender('monthlyCnt');
     });
   }
   if(!_unsubBlogProjects){
@@ -1824,7 +1852,7 @@ function subscribeAuxCollectionsFromFirestore(){
   if(!_unsubUiCols){
     _unsubUiCols = db.collection('settings').doc('uiCols').onSnapshot(doc=>{
       applyUiColsFirestoreData(doc && doc.exists ? (doc.data()||{}) : {});
-      scheduleRerender();
+      scheduleRerender('uiCols');
     });
   }
 }
@@ -1917,6 +1945,21 @@ function _applyRecordsRows(clientId, rows){
   RECORDS_CACHE=Array.isArray(rows)?rows:[];
   RECORDS_CLIENT_ID=clientId;
   _svAcceptServerRows('rc', RECORDS_CACHE);
+  _svReindex('rc', RECORDS_CACHE);
+  if(SHEET_DIRTY) return;
+  if(SHEET_PROJ && CUR_CLIENT===clientId){
+    try{ loadSheet(SHEET_PROJ); }catch(e){ console.error(e); }
+  }
+}
+function _patchRecordsCache(clientId, changes){
+  if(!changes||!changes.length) return;
+  if(CUR_CLIENT && clientId!==CUR_CLIENT) return;
+  if(!Array.isArray(RECORDS_CACHE)) RECORDS_CACHE=[];
+  const index=_svEnsureIndex('rc', RECORDS_CACHE);
+  const sync=_svSync.rc||(_svSync.rc=new Map());
+  _applyDocChangesToRows(RECORDS_CACHE, changes, index, sync);
+  RECORDS_CLIENT_ID=clientId;
+  _svLoaded.rc=true;
   if(SHEET_DIRTY) return;
   if(SHEET_PROJ && CUR_CLIENT===clientId){
     try{ loadSheet(SHEET_PROJ); }catch(e){ console.error(e); }
@@ -1955,13 +1998,22 @@ function subscribeRecordsForClient(clientId){
       merged.push(rec);
     }));
     _applyRecordsRows(clientId, merged);
-    try{ scheduleRerender(); }catch(e){}
+    try{ scheduleRerender('records'); }catch(e){}
     if(!settled){ settled=true; resolveReady(); }
   };
+  let bootstrapped=false;
   chunks.forEach((chunk, idx)=>{
     const unsub=db.collection('records').where('projectId','in',chunk).onSnapshot(snap=>{
-      partials[idx]=snap.docs.map(d=>({id:d.id,...(d.data()||{})}));
-      publish();
+      const changes=snap.docChanges();
+      if(partials[idx]===null) partials[idx]=[];
+      _applyDocChangesToRows(partials[idx], changes, null, null);
+      if(!bootstrapped){
+        publish();
+        if(partials.every(p=>p!==null)) bootstrapped=true;
+        return;
+      }
+      _patchRecordsCache(clientId, changes);
+      try{ scheduleRerender('records'); }catch(e){}
     }, err=>{
       console.error('records snapshot', err);
       _svLoadFailed('rc', err);
@@ -2360,6 +2412,8 @@ const SV_COL={
 const _svLoaded={cl:false,pr:false,rc:false,qt:false,st:false,dep:false,um:false,dn:false,ds:false,bank:false,exp:false,bp:false};
 // key별 마지막 서버 동기화 상태 (id → JSON 문자열). 스냅샷/로드 시 갱신.
 const _svSync={};
+// key별 캐시 배열의 id→index. 전체 스냅샷을 다시 맵으로 만들지 않고 변경분 반영에 쓴다.
+const _svRowIndex={};
 
 function _svGetCache(key){
   switch(key){
@@ -2378,6 +2432,46 @@ function _svGetCache(key){
     default: return [];
   }
 }
+function _svReindex(key, rows){
+  const index=new Map();
+  (rows||[]).forEach((item,i)=>{ if(item&&item.id!=null&&item.id!=='') index.set(item.id, i); });
+  _svRowIndex[key]=index;
+  return index;
+}
+function _svEnsureIndex(key, rows){
+  const index=_svRowIndex[key];
+  if(index) return index;
+  return _svReindex(key, rows);
+}
+function _applyDocChangesToRows(rows, changes, index, sync){
+  (changes||[]).forEach(ch=>{
+    if(!ch||!ch.doc) return;
+    const id=ch.doc.id;
+    if(id==null||id==='') return;
+    const at=index?index.get(id):rows.findIndex(r=>r&&r.id===id);
+    if(ch.type==='removed'){
+      if(at==null||at<0) return;
+      rows.splice(at,1);
+      if(index){
+        index.delete(id);
+        index.forEach((idx,k)=>{ if(idx>at) index.set(k, idx-1); });
+      }
+      if(sync) sync.delete(id);
+      return;
+    }
+    const item={id, ...(ch.doc.data()||{})};
+    if(at==null||at<0){
+      if(index) index.set(id, rows.length);
+      rows.push(item);
+    }else{
+      rows[at]=item;
+    }
+    if(sync){
+      const json=_svItemJson(item);
+      if(json!=null) sync.set(id, json);
+    }
+  });
+}
 function _svSetCache(key, rows){
   const next=Array.isArray(rows)?rows:[];
   switch(key){
@@ -2394,6 +2488,7 @@ function _svSetCache(key, rows){
     case 'exp': COMPANY_EXP_CACHE=next; break;
     case 'bp': BLOG_PROJECTS_CACHE=next; break;
   }
+  _svReindex(key, next);
 }
 function _svItemJson(item){
   if(!item||item.id==null||item.id==='') return null;
@@ -2430,15 +2525,40 @@ function _svAcceptServerRows(key, rows){
     if(json!=null) map.set(item.id, json);
   });
   _svSync[key]=map;
+  _svReindex(key, _svGetCache(key));
+}
+const _svSnapReady={};
+function _pruneRowsToSnap(rows, snap, sync){
+  const live=new Set();
+  snap.docs.forEach(d=>{ if(d&&d.id!=null&&d.id!=='') live.add(d.id); });
+  for(let i=rows.length-1;i>=0;i--){
+    const id=rows[i]&&rows[i].id;
+    if(id==null||id===''||live.has(id)) continue;
+    rows.splice(i,1);
+    if(sync&&id!=null) sync.delete(id);
+  }
 }
 function _svOnSnap(key, snap){
-  const rows=snap.docs.map(d=>({id:d.id,...(d.data()||{})}));
-  _svSetCache(key, rows);
-  _svAcceptServerRows(key, rows);
+  _svLoaded[key]=true;
+  const changes=snap.docChanges();
+  let rows=_svGetCache(key);
+  if(!Array.isArray(rows)){
+    rows=[];
+    _svSetCache(key, rows);
+  }
+  const index=_svEnsureIndex(key, rows);
+  const sync=_svSync[key]||(_svSync[key]=new Map());
+  if(changes.length) _applyDocChangesToRows(rows, changes, index, sync);
+  const firstSnap=!_svSnapReady[key];
+  if(firstSnap){
+    _svSnapReady[key]=true;
+    _pruneRowsToSnap(rows, snap, sync);
+    _svReindex(key, rows);
+  }
   if(key==='pr'){
     try{ refreshRecordsSubscriptionIfProjectsChanged(); }catch(e){}
   }
-  scheduleRerender();
+  if(changes.length||firstSnap) scheduleRerender(SV_COL[key]||key);
 }
 function _svRequireLoaded(key){
   if(!_svLoaded[key]) throw new Error('데이터 로드 전 저장 차단');
@@ -6044,9 +6164,12 @@ function renderSettleAll(){
   const clientMap={};
   const clientById={};
   d.clients.forEach(cl=>{clientMap[cl.id]=cl.name;clientById[cl.id]=cl;});
+  const quotesByClient=_groupRows(d.quotes, q=>q.clientId);
   const quoteOrder={};
   const quoteMap={};
-  (d.quotes||[]).forEach(q=>{ quoteOrder[q.id]=q.order!=null?q.order:9999; quoteMap[q.id]=q; });
+  quotesByClient.forEach(list=>{
+    list.forEach(q=>{ quoteOrder[q.id]=q.order!=null?q.order:9999; quoteMap[q.id]=q; });
+  });
 
   let filtered=settles.filter(s=>{
     const cname=(clientMap[s.clientId]||'').toLowerCase();
@@ -6930,6 +7053,8 @@ function showPage(n){
     document.getElementById('nav-admin-toggle').classList.add('active');
     openAdminMenu();
   }
+  if(n==='overview')renderOverview();
+  if(n==='clients')renderClients();
   if(n==='export')renderExportPage();
   if(n==='crm')renderCrmQuotes();
   if(n==='settle-all')renderSettleAll();
@@ -6953,13 +7078,34 @@ function openAdminMenu(){
 // ═══════════════════════════════════════════
 // OVERVIEW
 // ═══════════════════════════════════════════
+function _groupRows(rows, keyFn){
+  const map=new Map();
+  (rows||[]).forEach(row=>{
+    if(!row) return;
+    const k=keyFn(row);
+    let arr=map.get(k);
+    if(!arr){ arr=[]; map.set(k, arr); }
+    arr.push(row);
+  });
+  return map;
+}
+function _indexById(rows){
+  const map=new Map();
+  (rows||[]).forEach(row=>{ if(row&&row.id!=null) map.set(row.id, row); });
+  return map;
+}
 function renderOverview(){
   const d=ld();
   const tot=d.records.length,rev=d.records.filter(r=>r.reviewUrl).length,pend=tot-rev;
   const todayISO=getKSTDate(),tmrISO=getKSTDate(1);
   function nd(s){if(!s)return'';const m=String(s).match(/(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/);if(m)return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;return s;}
-  const activeProjs=d.projects.filter(p=>p.status!=='진행중단');
-  const activeRecs=d.records.filter(r=>activeProjs.some(p=>p.id===r.projectId));
+  const projectsByClient=_groupRows(d.projects, p=>p.clientId);
+  const projectsById=_indexById(d.projects);
+  const recordsByProject=_groupRows(d.records, r=>r.projectId);
+  const clientsById=_indexById(d.clients);
+  const activeProjIds=new Set();
+  (d.projects||[]).forEach(p=>{ if(p&&p.id&&p.status!=='진행중단') activeProjIds.add(p.id); });
+  const activeRecs=d.records.filter(r=>activeProjIds.has(r.projectId));
   const purchaseDateNorm=(r)=>purchaseDateToYYYYMMDD(r.purchaseDate)||nd(r.purchaseDate);
   const todayBuy=activeRecs.filter(r=>purchaseDateNorm(r)===todayISO).length;
   const tmrBuy=activeRecs.filter(r=>purchaseDateNorm(r)===tmrISO).length;
@@ -6973,7 +7119,7 @@ function renderOverview(){
     <div class="stat-card" style="border-top-color:var(--orange)"><div class="stat-label">📅 익일 구매</div><div class="stat-value" style="color:var(--orange)">${tmrBuy}</div><div class="stat-sub">${tmrISO} 예정</div></div>`;
 
   const plats={};
-  d.records.forEach(r=>{const p=d.projects.find(x=>x.id===r.projectId);if(!p)return;p.platform.split('+').map(s=>s.trim()).forEach(pl=>{plats[pl]=(plats[pl]||0)+1;});});
+  d.records.forEach(r=>{const p=projectsById.get(r.projectId);if(!p||!p.platform)return;p.platform.split('+').map(s=>s.trim()).forEach(pl=>{plats[pl]=(plats[pl]||0)+1;});});
   const pt=Object.values(plats).reduce((a,b)=>a+b,0)||1;
   const pc={'쿠팡':'#ff6b35','네이버':'#03c75a'};
   document.getElementById('ov-platform').innerHTML=Object.entries(plats).map(([n,c])=>{
@@ -6982,10 +7128,12 @@ function renderOverview(){
   }).join('')||'<div style="font-size:12px;color:var(--text3)">데이터 없음</div>';
 
   document.getElementById('ov-clients').innerHTML=d.clients.slice(0,6).map(c=>{
-    const pr=d.projects.filter(p=>p.clientId===c.id);
+    const pr=projectsByClient.get(c.id)||[];
     const activePr=pr.filter(p=>p.status!=='진행중단');
-    const rc=d.records.filter(r=>pr.some(p=>p.id===r.projectId));
-    const activeRc=rc.filter(r=>activePr.some(p=>p.id===r.projectId));
+    const activePrIds=new Set(activePr.map(p=>p.id));
+    const rc=[];
+    pr.forEach(p=>{ const list=recordsByProject.get(p.id); if(list) list.forEach(r=>rc.push(r)); });
+    const activeRc=rc.filter(r=>activePrIds.has(r.projectId));
     const rv=rc.filter(r=>r.reviewUrl).length,pp=rc.length>0?~~((rv/rc.length)*100):0;
     const cToday=activeRc.filter(r=>nd(r.purchaseDate)===todayISO).length;
     const cTmr=activeRc.filter(r=>nd(r.purchaseDate)===tmrISO).length;
@@ -6999,9 +7147,9 @@ function renderOverview(){
   const ovProjSorted=[...d.projects].sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
   document.getElementById('ov-projects').innerHTML=`<table><thead><tr><th>프로젝트명</th><th>거래처</th><th>플랫폼</th><th>진행률</th><th>상태</th></tr></thead><tbody>
     ${ovProjSorted.map(p=>{
-      const rc=d.records.filter(r=>r.projectId===p.id);
+      const rc=recordsByProject.get(p.id)||[];
       const rv=rc.filter(r=>r.reviewUrl).length,tt=p.total||rc.length||1,pp=~~((rv/tt)*100);
-      const cl=d.clients.find(c=>c.id===p.clientId);
+      const cl=clientsById.get(p.clientId);
       return `<tr style="cursor:pointer" onclick="openDetail('${p.clientId}');showPage('clients')">
         <td style="font-weight:600">${p.name}</td><td>${cl?cl.name:'-'}</td>
         <td><span class="tag">${p.platform}</span></td>
@@ -7045,10 +7193,11 @@ function loadOverviewCounts(){
 // ═══════════════════════════════════════════
 function renderClients(){
   const d=ld(),q=(document.getElementById('cl-search')?.value||'').toLowerCase();
+  const projectsByClient=_groupRows(d.projects, p=>p.clientId);
   const fl=d.clients.filter(c=>c.name.toLowerCase().includes(q)||(c.manager||'').toLowerCase().includes(q));
   document.getElementById('cl-count').textContent=`총 ${fl.length}개`;
   document.getElementById('cl-tbody').innerHTML=fl.map((c,i)=>{
-    const pc=d.projects.filter(p=>p.clientId===c.id).length;
+    const pc=(projectsByClient.get(c.id)||[]).length;
     return `<tr data-entity-type="client" data-entity-id="${c.id}" oncontextmenu="showChangeLogContext('client','${c.id}',event)">
       <td style="color:var(--text3)">${i+1}</td>
       <td><span style="font-weight:800;color:var(--accent);cursor:pointer" ondblclick="openDetail('${c.id}')" title="더블클릭: 상세 / 우클릭: 수정 이력">${c.name}</span> <span style="font-size:10px;color:var(--text3)">(더블클릭)</span></td>
@@ -7069,6 +7218,8 @@ function renderClients(){
 // CLIENT DETAIL
 // ═══════════════════════════════════════════
 async function openDetail(cid){
+  console.time('거래처 열기');
+  try{
   clearSheetScope();
   unsubscribeRecords();
   RECORDS_CLIENT_ID=null;
@@ -7088,6 +7239,9 @@ async function openDetail(cid){
   sel.value='';
   document.getElementById('sheet-container').innerHTML='<div style="text-align:center;padding:60px;color:var(--text3);font-size:13px">프로젝트를 선택하면 스프레드시트가 열립니다</div>';
   document.getElementById('imp-proj').innerHTML=projs.map(p=>`<option value="${p.id}">${p.name}</option>`).join('');
+  }finally{
+    console.timeEnd('거래처 열기');
+  }
 }
 function backToList(){
   if(SHEET_DIRTY&&!confirm('저장하지 않은 변경사항이 있습니다. 나가시겠습니까?'))return;
@@ -8643,7 +8797,7 @@ function renderDetQuote(){
     html+=`<div style="font-size:10px;color:var(--text3);margin-bottom:8px">⋮⋮ 드래그하여 순서 변경</div>`;
     myQuotes.forEach(q=>{
       const settled=q.settled||false;
-      const collapsed=!!q.collapsed;
+      const collapsed=qtUiCollapsed(q,'quote');
       html+=`<div class="qt-card-dragover-target" data-quote-id="${q.id}" style="background:var(--card);border:1px solid ${settled?'#86efac':'var(--border)'};border-radius:12px;margin-bottom:10px;overflow:hidden;box-shadow:var(--sh)" ondragover="event.preventDefault();this.classList.add('qt-card-dragover')" ondragleave="this.classList.remove('qt-card-dragover')" ondrop="qtDrop(event)">
         <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;background:${settled?'#f0fdf4':'var(--bg2)'}" onclick="toggleQt('${q.id}')">
           <div style="display:flex;align-items:center;gap:10px">
@@ -8885,6 +9039,8 @@ async function updateSettleFromQuote(qt){
 }
 
 async function saveQuoteForm(){
+  console.time('견적 저장');
+  try{
   const date=document.getElementById('qn-date')?.value;
   if(!date){toast('견적일자를 입력하세요','error');return;}
   if(!QT_NEW_ITEMS.length){toast('견적 항목을 1개 이상 추가하세요','error');return;}
@@ -8939,6 +9095,9 @@ async function saveQuoteForm(){
     toast('견적서 수정 완료');
   } else {
     await saveNewQuote();
+  }
+  }finally{
+    console.timeEnd('견적 저장');
   }
 }
 
@@ -9200,13 +9359,36 @@ function qtDrop(ev){
   sv('qt',updated).then(()=>{ renderDetQuote(); toast('순서 변경됨'); }).catch(e=>{ console.error(e); toast('저장 실패','error'); });
 }
 
+const QT_COLLAPSE_KEY='wv_qt_collapsed';
+let QT_COLLAPSE=null;
+function _qtCollapseMap(){
+  if(QT_COLLAPSE) return QT_COLLAPSE;
+  QT_COLLAPSE={};
+  try{
+    const raw=localStorage.getItem(QT_COLLAPSE_KEY);
+    if(raw) QT_COLLAPSE=JSON.parse(raw)||{};
+  }catch(e){}
+  return QT_COLLAPSE;
+}
+function qtUiCollapsed(q, mode){
+  if(!q) return mode==='crm';
+  const map=_qtCollapseMap();
+  if(q.id!=null && Object.prototype.hasOwnProperty.call(map, q.id)) return !!map[q.id];
+  if(mode==='crm') return q.collapsed!==false;
+  return !!q.collapsed;
+}
+function qtSetCollapsed(id, collapsed){
+  if(id==null||id==='') return;
+  const map=_qtCollapseMap();
+  map[id]=!!collapsed;
+  try{ localStorage.setItem(QT_COLLAPSE_KEY, JSON.stringify(map)); }catch(e){}
+}
 function toggleQt(qtId){
-  const d=ld();
-  const idx=d.quotes.findIndex(q=>q.id===qtId);if(idx<0)return;
-  d.quotes[idx].collapsed=!d.quotes[idx].collapsed;
-  sv('qt',d.quotes);
+  const q=(ld().quotes||[]).find(x=>x.id===qtId);if(!q)return;
+  const next=!qtUiCollapsed(q,'quote');
+  qtSetCollapsed(qtId, next);
   const el=document.getElementById('qt-body-'+qtId);
-  if(el)el.style.display=d.quotes[idx].collapsed?'none':'';
+  if(el)el.style.display=next?'none':'';
   // 화살표 업데이트 – re-render 없이 간단히
   renderDetQuote();
 }
@@ -9439,7 +9621,7 @@ function renderCrmQuotes(){
   }else{
     html+=list.map(q=>{
       // 기본은 접힘: collapsed가 명시적으로 false인 경우만 펼침
-      const collapsed=(q.collapsed!==false);
+      const collapsed=qtUiCollapsed(q,'crm');
       const linked=q.linkedClientId?`<span class="badge bg">연결완료</span>`:'';
       return `<div style="border:1px solid var(--border);border-radius:10px;margin-bottom:8px;overflow:hidden">
         <div style="padding:10px 12px;background:var(--bg2);display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="crmToggle('${q.id}')">
@@ -9558,7 +9740,10 @@ async function saveCrmQuote(){
     if(!CRM_NEW_ITEMS.length){toast('항목을 1개 이상 입력하세요','error');return;}
     const d=ld();
     const arr=[...(d.quotes||[])];
-    const prevCollapsed = CRM_EDIT_ID ? ((arr.find(x=>x.id===CRM_EDIT_ID)||{}).collapsed) : undefined;
+    const prevQt=CRM_EDIT_ID?arr.find(x=>x.id===CRM_EDIT_ID):null;
+    if(prevQt&&prevQt.id!=null&&!Object.prototype.hasOwnProperty.call(_qtCollapseMap(), prevQt.id)){
+      qtSetCollapsed(prevQt.id, prevQt.collapsed!==false);
+    }
     const basePricing={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:parseInt(document.getElementById('crm-p3')?.value)||0};
     const quote={
       id:CRM_EDIT_ID||gid(),
@@ -9576,8 +9761,6 @@ async function saveCrmQuote(){
       items:CRM_NEW_ITEMS.map(it=>({...it,label:(it.calc==='product'?'상품금액'+((it.productName||'').trim()?`(${it.productName.trim()})`:''):(it.label||''))})),
       notes:document.getElementById('crm-notes')?.value||'',
       crmMode:true,
-      // 기본은 접힘. 수정 시엔 기존 상태 유지(없으면 접힘).
-      collapsed: prevCollapsed===false ? false : true,
       createdAt:CRM_EDIT_ID?((arr.find(x=>x.id===CRM_EDIT_ID)||{}).createdAt||new Date().toISOString()):new Date().toISOString(),
     };
     const idx=arr.findIndex(x=>x.id===quote.id);
@@ -9592,10 +9775,8 @@ async function saveCrmQuote(){
   }
 }
 function crmToggle(id){
-  const d=ld(); const arr=[...(d.quotes||[])];
-  const i=arr.findIndex(x=>x.id===id); if(i<0)return;
-  arr[i].collapsed=!arr[i].collapsed;
-  sv('qt',arr);
+  const q=(ld().quotes||[]).find(x=>x.id===id); if(!q)return;
+  qtSetCollapsed(id, !qtUiCollapsed(q,'crm'));
   renderCrmQuotes();
 }
 async function delCrmQuote(id){
@@ -9612,11 +9793,7 @@ function openCrmLinkClient(id){
   const body=document.getElementById('crm-body-'+id);
   if(body && body.style.display==='none'){
     body.style.display='';
-    try{
-      const arr=[...(ld().quotes||[])];
-      const i=arr.findIndex(x=>x.id===id);
-      if(i>=0){ arr[i].collapsed=false; sv('qt',arr); }
-    }catch(e){}
+    qtSetCollapsed(id, false);
   }
   const el=document.getElementById('crm-link-'+id);
   if(!el)return;
@@ -11115,6 +11292,8 @@ function delExtraCol(ci){
 }
 
 async function saveSheet(){
+  console.time('시트 저장');
+  try{
   if(!SHEET_PROJ){toast('프로젝트를 선택하세요','error');return;}
   if(!guardRecordsSave()) return;
   (SHEET_ROWS||[]).forEach(r=>{ if(r && !r.id) r.id=gid(); });
@@ -11173,6 +11352,9 @@ async function saveSheet(){
     toast('저장 중 오류가 발생했습니다: '+(e&&e.message?e.message:e),'error');
   }finally{
     if(saveBtn){saveBtn.disabled=false;saveBtn.textContent='💾 저장';}
+  }
+  }finally{
+    console.timeEnd('시트 저장');
   }
 }
 
