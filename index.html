@@ -420,6 +420,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
       <div class="nav-item nav-sub" onclick="showPage('user-mgmt');renderUserMgmt()" data-page="user-mgmt"><span class="nav-icon" style="font-size:12px">🔐</span>로그인 관리</div>
       <div class="nav-item nav-sub" onclick="showPage('gsync-settings');renderGsyncSettings()" data-page="gsync-settings"><span class="nav-icon" style="font-size:12px">🔗</span>시트 연동 설정</div>
       <div class="nav-item nav-sub" onclick="openChangeLogModal()"><span class="nav-icon" style="font-size:12px">📜</span>수정 이력</div>
+      <div class="nav-item nav-sub" onclick="cleanupOrphanSettles()"><span class="nav-icon" style="font-size:12px">🧹</span>고아 정산 정리</div>
     </div>
     <div class="nav-item" onclick="showPage('export')" data-page="export"><span class="nav-icon">📤</span>엑셀 추출</div>
     <div style="padding:10px 20px;border-top:1px solid var(--border);margin-top:auto">
@@ -1479,7 +1480,7 @@ async function saveUsers(arr){
 }
 // 하위호환 ADMINS (로그인 검증용)
 const ADMINS=null; // 더 이상 사용 안 함
-let CUR_ADMIN=null,CUR_CLIENT=null,SHEET_PROJ=null,SHEET_ROWS=[],SHEET_DIRTY=false,IMP_DATA=[],PEND_RECS=[];
+let CUR_ADMIN=null,CUR_CLIENT=null,SHEET_PROJ=null,SHEET_ROWS=[],SHEET_ORIG_IDS=[],SHEET_DIRTY=false,IMP_DATA=[],PEND_RECS=[];
 let _sheetFilterTimer=null;
 let _ALLDATA_FILTER_TIMER=null,_ALLDATA_FILTER_COMPOSING=false;
 
@@ -1611,6 +1612,7 @@ let MOVE_MODE=false,MOVE_SRC=null,MOVE_TIMER=null;
 let CLIENTS_CACHE = [];
 let PROJECTS_CACHE = [];
 let RECORDS_CACHE = [];
+let RECORDS_CLIENT_ID = null;
 let QUOTES_CACHE = [];
 // 정산(입금 매칭) 캐시 (Firestore 연동) — 기존 localStorage(wv_st) 대체
 let SETTLES_CACHE = [];
@@ -1692,12 +1694,18 @@ function refreshDetailProjectSelectors(){
     const sel=document.getElementById('sheet-proj-sel');
     if(sel){
       const cur=sel.value;
-      sel.innerHTML='<option value="">선택하세요</option><option value="__new__">+ 신규 프로젝트 생성</option>'
+      sel.innerHTML='<option value="">선택하세요</option><option value="__all__">[전체 프로젝트]</option><option value="__new__">+ 신규 프로젝트 생성</option>'
         +projs.map(p=>`<option value="${p.id}">${p.name}</option>`).join('');
-      // 선택 유지(가능하면)
-      if(cur && projs.some(p=>p.id===cur)) sel.value=cur;
+      if(cur==='__all__'||(cur && projs.some(p=>p.id===cur))) sel.value=cur;
       else if(cur==='__new__') sel.value='__new__';
       else sel.value='';
+    }
+    if(SHEET_PROJ && SHEET_PROJ!=='__all__' && !projs.some(p=>p.id===SHEET_PROJ)){
+      clearSheetScope();
+      const box=document.getElementById('sheet-container');
+      if(box) box.innerHTML='<div style="text-align:center;padding:60px;color:var(--text3);font-size:13px">프로젝트를 선택하면 스프레드시트가 열립니다</div>';
+      const delBtn=document.getElementById('btn-del-proj');
+      if(delBtn) delBtn.style.display='none';
     }
     const imp=document.getElementById('imp-proj');
     if(imp){
@@ -1767,10 +1775,6 @@ function scheduleRerender(){
 function subscribeMainDataFromFirestore(){
   if(typeof db === 'undefined') return;
   if(_unsubMain) return; // 중복 구독 방지
-  const makeHandler = (setter)=> (snap)=>{
-    setter(snap.docs.map(d=>({id:d.id,...d.data()})));
-    scheduleRerender();
-  };
   const onSubErr = (err)=>{
     console.error('main snapshot error', err);
     if(!_mainSubErrNotified){
@@ -1779,56 +1783,34 @@ function subscribeMainDataFromFirestore(){
     }
   };
   const unsubs = [];
-  unsubs.push(db.collection('clients').onSnapshot(makeHandler(v=>CLIENTS_CACHE=v), onSubErr));
-  unsubs.push(db.collection('projects').onSnapshot(makeHandler(v=>PROJECTS_CACHE=v), onSubErr));
-  // records 전체 구독 제거: 거래처 선택 시 loadRecordsByClient(clientId)로 해당 거래처만 로드
-  unsubs.push(db.collection('quotes').onSnapshot(makeHandler(v=>QUOTES_CACHE=v), onSubErr));
+  unsubs.push(db.collection('clients').onSnapshot(snap=>_svOnSnap('cl', snap), onSubErr));
+  unsubs.push(db.collection('projects').onSnapshot(snap=>_svOnSnap('pr', snap), onSubErr));
+  unsubs.push(db.collection('quotes').onSnapshot(snap=>_svOnSnap('qt', snap), onSubErr));
   _unsubMain = ()=>{ unsubs.forEach(fn=>{try{fn&&fn();}catch(e){}}); _unsubMain=null; };
 }
 
 function subscribeAuxCollectionsFromFirestore(){
   if(typeof db === 'undefined') return;
   if(!_unsubSettles){
-    _unsubSettles = db.collection('settles').onSnapshot(snap=>{
-      SETTLES_CACHE = snap.docs.map(d=>({id:d.id,...d.data()}));
-      scheduleRerender();
-    });
+    _unsubSettles = db.collection('settles').onSnapshot(snap=>_svOnSnap('st', snap));
   }
   if(!_unsubDepHist){
-    _unsubDepHist = db.collection('depositHistory').onSnapshot(snap=>{
-      DEP_HIST_CACHE = snap.docs.map(d=>({id:d.id,...d.data()}));
-      scheduleRerender();
-    });
+    _unsubDepHist = db.collection('depositHistory').onSnapshot(snap=>_svOnSnap('dep', snap));
   }
   if(!_unsubUnmatched){
-    _unsubUnmatched = db.collection('depositUnmatched').onSnapshot(snap=>{
-      DEP_UNMATCHED_CACHE = snap.docs.map(d=>({id:d.id,...d.data()}));
-      scheduleRerender();
-    });
+    _unsubUnmatched = db.collection('depositUnmatched').onSnapshot(snap=>_svOnSnap('um', snap));
   }
   if(!_unsubDepNames){
-    _unsubDepNames = db.collection('depNames').onSnapshot(snap=>{
-      DEP_NAMES_CACHE = snap.docs.map(d=>({id:d.id,...d.data()}));
-      scheduleRerender();
-    });
+    _unsubDepNames = db.collection('depNames').onSnapshot(snap=>_svOnSnap('dn', snap));
   }
   if(!_unsubDs){
-    _unsubDs = db.collection('dailySettleRows').onSnapshot(snap=>{
-      DS_CACHE = snap.docs.map(d=>({id:d.id,...d.data()}));
-      scheduleRerender();
-    });
+    _unsubDs = db.collection('dailySettleRows').onSnapshot(snap=>_svOnSnap('ds', snap));
   }
   if(!_unsubBankTx){
-    _unsubBankTx = db.collection('bankTransactions').onSnapshot(snap=>{
-      BANK_TX_CACHE = snap.docs.map(d=>({id:d.id,...d.data()}));
-      scheduleRerender();
-    });
+    _unsubBankTx = db.collection('bankTransactions').onSnapshot(snap=>_svOnSnap('bank', snap));
   }
   if(!_unsubCompanyExp){
-    _unsubCompanyExp = db.collection('companyExpenses').onSnapshot(snap=>{
-      COMPANY_EXP_CACHE = snap.docs.map(d=>({id:d.id,...d.data()}));
-      scheduleRerender();
-    });
+    _unsubCompanyExp = db.collection('companyExpenses').onSnapshot(snap=>_svOnSnap('exp', snap));
   }
   if(!_unsubMonthlyCnt){
     _unsubMonthlyCnt = db.collection('settings').doc('monthlyCnt').onSnapshot(doc=>{
@@ -1837,10 +1819,7 @@ function subscribeAuxCollectionsFromFirestore(){
     });
   }
   if(!_unsubBlogProjects){
-    _unsubBlogProjects = db.collection('blogProjects').onSnapshot(snap=>{
-      BLOG_PROJECTS_CACHE = snap.docs.map(d=>({id:d.id,...d.data()}));
-      scheduleRerender();
-    }, err=>{ console.warn('blogProjects snapshot error', err); });
+    _unsubBlogProjects = db.collection('blogProjects').onSnapshot(snap=>_svOnSnap('bp', snap), err=>{ console.warn('blogProjects snapshot error', err); });
   }
   if(!_unsubUiCols){
     _unsubUiCols = db.collection('settings').doc('uiCols').onSnapshot(doc=>{
@@ -1861,137 +1840,231 @@ async function loadMainDataFromFirestore(force = false){
     if(typeof ensureFirebaseReadAuth==='function'){
       try{ await ensureFirebaseReadAuth(); }catch(e){ console.warn('main data auth',e); }
     }
-    // clients
-    const clSnap = await db.collection('clients').get();
-    CLIENTS_CACHE = clSnap.docs.map(d=>({id:d.id,...d.data()}));
-    // projects
-    const prSnap = await db.collection('projects').get();
-    PROJECTS_CACHE = prSnap.docs.map(d=>({id:d.id,...d.data()}));
-    // records 전체 로드 제거: 거래처 선택 시 loadRecordsByClient(clientId)로 해당 거래처만 로드
-    // quotes (기존 구조 유지, 나중에 필요 시 확장)
-    const qtSnap = await db.collection('quotes').get().catch(()=>null);
-    QUOTES_CACHE = qtSnap && !qtSnap.empty ? qtSnap.docs.map(d=>({id:d.id,...d.data()})) : [];
-    _mainDataLoaded = true; // 실제 로드가 끝난 뒤에만 완료 처리(실패 시 재시도 가능)
+    let ok=true;
+    try{
+      const clSnap = await db.collection('clients').get();
+      CLIENTS_CACHE = clSnap.docs.map(d=>({id:d.id,...(d.data()||{})}));
+      _svAcceptServerRows('cl', CLIENTS_CACHE);
+    }catch(e){
+      ok=false;
+      console.error(e);
+      _svMarkUnloaded('cl');
+    }
+    try{
+      const prSnap = await db.collection('projects').get();
+      PROJECTS_CACHE = prSnap.docs.map(d=>({id:d.id,...(d.data()||{})}));
+      _svAcceptServerRows('pr', PROJECTS_CACHE);
+    }catch(e){
+      ok=false;
+      console.error(e);
+      _svMarkUnloaded('pr');
+    }
+    try{
+      const qtSnap = await db.collection('quotes').get();
+      QUOTES_CACHE = qtSnap.docs.map(d=>({id:d.id,...(d.data()||{})}));
+      _svAcceptServerRows('qt', QUOTES_CACHE);
+    }catch(e){
+      ok=false;
+      console.error(e);
+      _svMarkUnloaded('qt');
+    }
+    if(!ok){
+      try{ toast('데이터 불러오기 실패 - 새로고침 필요','error'); }catch(_){}
+      return;
+    }
+    _mainDataLoaded = true;
   })();
   _mainDataPromise = p;
   try{ await p; }
   finally { if(_mainDataPromise===p) _mainDataPromise=null; }
 }
 
-// 특정 거래처의 records만 로드 (records 전체 구독 제거 대체)
-// 주의: records 문서에는 clientId가 없고 projectId만 있으므로,
-//       해당 거래처의 프로젝트 id 목록으로 조회한다.
-// 성능: 거래처별 결과를 캐시해 재진입 시 네트워크 요청 없이 즉시 표시한다.
-//       (저장 시 sv('rc')에서 해당 clientId 캐시를 무효화함 / force=true면 캐시 무시)
-const _recordsClientCache = {}; // clientId → records 배열
-async function loadRecordsByClient(clientId, force=false){
-  if(typeof db === 'undefined'){return;}
-  if(!clientId){ RECORDS_CACHE = []; return; }
-  // 이미 로드한 적 있으면 캐시 사용 (재진입 즉시 표시)
-  if(!force && _recordsClientCache[clientId]){
-    RECORDS_CACHE = _recordsClientCache[clientId];
-    return;
-  }
-  const projIds=(PROJECTS_CACHE||[]).filter(p=>p.clientId===clientId).map(p=>p.id).filter(Boolean);
-  if(!projIds.length){ RECORDS_CACHE = []; _recordsClientCache[clientId]=[]; return; }
-  const out=[];
-  // Firestore 'in' 쿼리는 한 번에 최대 10개까지만 허용 → 10개씩 나눠 조회
-  for(let i=0;i<projIds.length;i+=10){
-    const chunk=projIds.slice(i,i+10);
-    const snap=await db.collection('records').where('projectId','in',chunk).get();
-    snap.docs.forEach(dd=>out.push({id:dd.id,...dd.data()}));
-  }
-  _recordsClientCache[clientId] = out;
-  RECORDS_CACHE = out;
+function _svMarkUnloaded(key){
+  if(key && typeof _svLoaded!=='undefined' && Object.prototype.hasOwnProperty.call(_svLoaded, key)) _svLoaded[key]=false;
 }
-// 특정 프로젝트들이 속한 거래처의 records 캐시를 무효화
-function invalidateRecordsCacheByProjectIds(projIds){
-  if(!projIds || !projIds.size) return;
-  const affected=new Set();
-  (PROJECTS_CACHE||[]).forEach(p=>{ if(p&&projIds.has(p.id)&&p.clientId!=null) affected.add(p.clientId); });
-  affected.forEach(cid=>{ delete _recordsClientCache[cid]; });
+function _svLoadFailed(key, err){
+  console.error('데이터 불러오기 실패', key||'', err||'');
+  _svMarkUnloaded(key);
+  try{ toast('데이터 불러오기 실패 - 새로고침 필요','error'); }catch(_){}
 }
+function guardRecordsSave(){
+  if(!CUR_CLIENT) return true;
+  if(RECORDS_CLIENT_ID!==CUR_CLIENT){
+    toast('거래처 데이터 로딩 중입니다. 잠시 후 다시 저장하세요','error');
+    return false;
+  }
+  if(SHEET_PROJ && SHEET_PROJ!=='__all__' && !(PROJECTS_CACHE||[]).some(p=>p&&p.id===SHEET_PROJ&&p.clientId===CUR_CLIENT)){
+    toast('거래처 데이터 로딩 중입니다. 잠시 후 다시 저장하세요','error');
+    return false;
+  }
+  return true;
+}
+function _clientProjectIds(clientId){
+  return (PROJECTS_CACHE||[]).filter(p=>p&&p.clientId===clientId&&p.id).map(p=>p.id);
+}
+let _recordsLoadToken=0;
+let _recordsUnsubs=[];
+let _recordsSubClientId=null;
+let _recordsSubProjKey='';
+function unsubscribeRecords(){
+  (_recordsUnsubs||[]).forEach(fn=>{ try{ fn(); }catch(e){} });
+  _recordsUnsubs=[];
+  _recordsSubClientId=null;
+  _recordsSubProjKey='';
+}
+function _applyRecordsRows(clientId, rows){
+  if(CUR_CLIENT && clientId!==CUR_CLIENT) return;
+  RECORDS_CACHE=Array.isArray(rows)?rows:[];
+  RECORDS_CLIENT_ID=clientId;
+  _svAcceptServerRows('rc', RECORDS_CACHE);
+  if(SHEET_DIRTY) return;
+  if(SHEET_PROJ && CUR_CLIENT===clientId){
+    try{ loadSheet(SHEET_PROJ); }catch(e){ console.error(e); }
+  }
+}
+function subscribeRecordsForClient(clientId){
+  unsubscribeRecords();
+  if(typeof db==='undefined' || !clientId) return Promise.resolve();
+  if(clientId===CUR_CLIENT){
+    RECORDS_CACHE=[];
+    RECORDS_CLIENT_ID=null;
+    _svMarkUnloaded('rc');
+  }
+  const projIds=_clientProjectIds(clientId);
+  _recordsSubClientId=clientId;
+  _recordsSubProjKey=projIds.slice().sort().join(',');
+  if(!projIds.length){
+    _applyRecordsRows(clientId, []);
+    return Promise.resolve();
+  }
+  const chunks=[];
+  for(let i=0;i<projIds.length;i+=30) chunks.push(projIds.slice(i,i+30));
+  const partials=chunks.map(()=>null);
+  let resolveReady;
+  const ready=new Promise(r=>{ resolveReady=r; });
+  let settled=false;
+  const publish=()=>{
+    if(_recordsSubClientId!==clientId) return;
+    if(CUR_CLIENT && clientId!==CUR_CLIENT) return;
+    if(partials.some(p=>p===null)) return;
+    const seen=new Set();
+    const merged=[];
+    partials.forEach(list=>(list||[]).forEach(rec=>{
+      if(!rec||!rec.id||seen.has(rec.id)) return;
+      seen.add(rec.id);
+      merged.push(rec);
+    }));
+    _applyRecordsRows(clientId, merged);
+    try{ scheduleRerender(); }catch(e){}
+    if(!settled){ settled=true; resolveReady(); }
+  };
+  chunks.forEach((chunk, idx)=>{
+    const unsub=db.collection('records').where('projectId','in',chunk).onSnapshot(snap=>{
+      partials[idx]=snap.docs.map(d=>({id:d.id,...(d.data()||{})}));
+      publish();
+    }, err=>{
+      console.error('records snapshot', err);
+      _svLoadFailed('rc', err);
+      if(!settled){ settled=true; resolveReady(); }
+    });
+    _recordsUnsubs.push(unsub);
+  });
+  return ready;
+}
+function refreshRecordsSubscriptionIfProjectsChanged(){
+  if(!_recordsSubClientId || _recordsSubClientId!==CUR_CLIENT) return;
+  const key=_clientProjectIds(_recordsSubClientId).slice().sort().join(',');
+  if(key===_recordsSubProjKey) return;
+  subscribeRecordsForClient(_recordsSubClientId);
+}
+function _recordsAdminVisible(){
+  const app=document.getElementById('app');
+  return !!(app && !app.classList.contains('hidden'));
+}
+async function loadRecordsByClient(clientId){
+  if(typeof db==='undefined') return;
+  const token=++_recordsLoadToken;
+  if(!clientId) return;
+  try{
+    const projIds=_clientProjectIds(clientId);
+    const out=[];
+    for(let i=0;i<projIds.length;i+=30){
+      const chunk=projIds.slice(i,i+30);
+      const snap=await db.collection('records').where('projectId','in',chunk).get();
+      snap.docs.forEach(dd=>out.push({id:dd.id,...(dd.data()||{})}));
+    }
+    if(token!==_recordsLoadToken) return;
+    if(_recordsAdminVisible() && clientId!==CUR_CLIENT) return;
+    RECORDS_CACHE=out;
+    RECORDS_CLIENT_ID=clientId;
+    _svAcceptServerRows('rc', out);
+  }catch(e){
+    if(token!==_recordsLoadToken) return;
+    if(_recordsAdminVisible() && clientId!==CUR_CLIENT) return;
+    _svLoadFailed('rc', e);
+  }
+}
+function invalidateRecordsCacheByProjectIds(){}
 
-// Firestore에서 정산(settles) 로드 + (1회) localStorage(wv_st) 마이그레이션
 async function loadSettlesFromFirestore(){
   if(typeof db === 'undefined'){return;}
-  const stSnap = await db.collection('settles').get().catch(()=>null);
-  SETTLES_CACHE = stSnap && !stSnap.empty ? stSnap.docs.map(d=>({id:d.id,...d.data()})) : [];
-
-  // 기존 로컬 데이터가 남아있으면(그리고 Firestore가 비었으면) 1회 업로드 후 제거
   try{
-    const local = JSON.parse(localStorage.getItem('wv_st')||'[]');
-    if(Array.isArray(local) && local.length && (!SETTLES_CACHE || SETTLES_CACHE.length===0)){
-      await sv('st', local);
-      localStorage.removeItem('wv_st');
-    }
-  }catch(e){}
+    const stSnap = await db.collection('settles').get();
+    SETTLES_CACHE = stSnap.docs.map(d=>({id:d.id,...(d.data()||{})}));
+    _svAcceptServerRows('st', SETTLES_CACHE);
+  }catch(e){
+    _svLoadFailed('st', e);
+  }
 }
 
 function stLd(){ return SETTLES_CACHE || []; }
 async function stSv(arr){ return await sv('st', arr); }
 
-// Firestore에서 입금내역(depositHistory) 로드 + (1회) localStorage(wv_dep) 마이그레이션
 async function loadDepositHistoryFromFirestore(){
   if(typeof db === 'undefined'){return;}
-  const depSnap = await db.collection('depositHistory').get().catch(()=>null);
-  DEP_HIST_CACHE = depSnap && !depSnap.empty ? depSnap.docs.map(d=>({id:d.id,...d.data()})) : [];
-
   try{
-    const local = JSON.parse(localStorage.getItem('wv_dep')||'[]');
-    if(Array.isArray(local) && local.length && (!DEP_HIST_CACHE || DEP_HIST_CACHE.length===0)){
-      await sv('dep', local);
-      localStorage.removeItem('wv_dep');
-    }
-  }catch(e){}
+    const depSnap = await db.collection('depositHistory').get();
+    DEP_HIST_CACHE = depSnap.docs.map(d=>({id:d.id,...(d.data()||{})}));
+    _svAcceptServerRows('dep', DEP_HIST_CACHE);
+  }catch(e){
+    _svLoadFailed('dep', e);
+  }
 }
 
 function depLd(){ return DEP_HIST_CACHE || []; }
 async function depSv(arr){ return await sv('dep', arr); }
 async function depClear(){
-  // 기존 입금 문서를 명시적으로 삭제 (sv('dep')는 set(merge)만 하므로 전체 삭제는 여기서 처리)
-  try{
-    if(typeof db!=='undefined'){
-      const ids=(DEP_HIST_CACHE||[]).map(h=>h.id).filter(Boolean);
-      await _deleteDocsByIds('depositHistory', ids);
-    }
-  }catch(e){ console.error('depClear doc.delete',e); }
-  await sv('dep', []);
+  const ids=(DEP_HIST_CACHE||[]).map(h=>h.id).filter(Boolean);
+  await svDelete('dep', ids);
 }
 
-// Firestore에서 미매칭 입금(depositUnmatched) 로드 + (1회) localStorage(wv_dep_unmatched) 마이그레이션
 async function loadDepositUnmatchedFromFirestore(){
   if(typeof db === 'undefined'){return;}
-  const umSnap = await db.collection('depositUnmatched').get().catch(()=>null);
-  DEP_UNMATCHED_CACHE = umSnap && !umSnap.empty ? umSnap.docs.map(d=>({id:d.id,...d.data()})) : [];
-
   try{
-    const local = JSON.parse(localStorage.getItem('wv_dep_unmatched')||'[]');
-    if(Array.isArray(local) && local.length && (!DEP_UNMATCHED_CACHE || DEP_UNMATCHED_CACHE.length===0)){
-      await sv('um', local);
-      localStorage.removeItem('wv_dep_unmatched');
-    }
-  }catch(e){}
+    const umSnap = await db.collection('depositUnmatched').get();
+    DEP_UNMATCHED_CACHE = umSnap.docs.map(d=>({id:d.id,...(d.data()||{})}));
+    _svAcceptServerRows('um', DEP_UNMATCHED_CACHE);
+  }catch(e){
+    _svLoadFailed('um', e);
+  }
 }
 
 function umLd(){ return DEP_UNMATCHED_CACHE || []; }
 async function umSv(arr){ return await sv('um', arr); }
-async function umClear(){ await sv('um', []); }
+async function umClear(){
+  const ids=(DEP_UNMATCHED_CACHE||[]).map(h=>h.id).filter(Boolean);
+  await svDelete('um', ids);
+}
 
-// Firestore에서 입금자명 매핑(depNames) 로드 + (1회) localStorage(wv_depnames) 마이그레이션
 async function loadDepNamesFromFirestore(){
   if(typeof db === 'undefined'){return;}
-  const dnSnap = await db.collection('depNames').get().catch(()=>null);
-  DEP_NAMES_CACHE = dnSnap && !dnSnap.empty ? dnSnap.docs.map(d=>({id:d.id,...d.data()})) : [];
-
   try{
-    const local = JSON.parse(localStorage.getItem('wv_depnames')||'[]');
-    if(Array.isArray(local) && local.length && (!DEP_NAMES_CACHE || DEP_NAMES_CACHE.length===0)){
-      // 기존 구조는 [{client,name}] 이므로 그대로 저장
-      await sv('dn', local.map(x=>({id:x.id||gid(), ...x})));
-      localStorage.removeItem('wv_depnames');
-    }
-  }catch(e){}
+    const dnSnap = await db.collection('depNames').get();
+    DEP_NAMES_CACHE = dnSnap.docs.map(d=>({id:d.id,...(d.data()||{})}));
+    _svAcceptServerRows('dn', DEP_NAMES_CACHE);
+  }catch(e){
+    _svLoadFailed('dn', e);
+  }
 }
 
 function getDepNames(){ return DEP_NAMES_CACHE || []; }
@@ -2001,27 +2074,14 @@ function saveDepNames(arr){
   sv('dn', DEP_NAMES_CACHE).catch(console.error);
 }
 
-// Firestore에서 gsync 설정 로드 + (1회) localStorage(wv_gsync) 마이그레이션
 async function loadGsyncFromFirestore(){
   if(typeof db === 'undefined'){return;}
-  const ref=db.collection('settings').doc('gsync');
-  const snap=await ref.get().catch(()=>null);
-  if(snap && snap.exists){
-    GSYNC_CACHE = snap.data() || {};
-  } else {
-    GSYNC_CACHE = {};
-  }
-
   try{
-    const local = JSON.parse(localStorage.getItem('wv_gsync')||'{}');
-    const hasLocal = local && typeof local==='object' && Object.keys(local).length>0;
-    const hasRemote = GSYNC_CACHE && typeof GSYNC_CACHE==='object' && Object.keys(GSYNC_CACHE).length>0;
-    if(hasLocal && !hasRemote){
-      GSYNC_CACHE = {...local};
-      await ref.set(GSYNC_CACHE, {merge:true});
-      localStorage.removeItem('wv_gsync');
-    }
-  }catch(e){}
+    const snap=await db.collection('settings').doc('gsync').get();
+    GSYNC_CACHE = snap.exists ? (snap.data()||{}) : {};
+  }catch(e){
+    _svLoadFailed('gsync', e);
+  }
 }
 
 function _gsyncDefaults(s){
@@ -2059,15 +2119,13 @@ function gsyncSave(obj){
 // ─────────────────────────────────────────────────────────────
 async function loadDailySettleFromFirestore(){
   if(typeof db === 'undefined'){return;}
-  const snap = await db.collection('dailySettleRows').get().catch(()=>null);
-  DS_CACHE = snap && !snap.empty ? snap.docs.map(d=>({id:d.id,...d.data()})) : [];
   try{
-    const local = JSON.parse(localStorage.getItem('wv_ds')||'[]');
-    if(Array.isArray(local) && local.length && (!DS_CACHE || DS_CACHE.length===0)){
-      await sv('ds', local);
-      localStorage.removeItem('wv_ds');
-    }
-  }catch(e){}
+    const snap = await db.collection('dailySettleRows').get();
+    DS_CACHE = snap.docs.map(d=>({id:d.id,...(d.data()||{})}));
+    _svAcceptServerRows('ds', DS_CACHE);
+  }catch(e){
+    _svLoadFailed('ds', e);
+  }
 }
 function dsLd(){ return DS_CACHE || []; }
 function dsSv(arr){
@@ -2077,15 +2135,13 @@ function dsSv(arr){
 
 async function loadBankTxFromFirestore(){
   if(typeof db === 'undefined'){return;}
-  const snap = await db.collection('bankTransactions').get().catch(()=>null);
-  BANK_TX_CACHE = snap && !snap.empty ? snap.docs.map(d=>({id:d.id,...d.data()})) : [];
   try{
-    const local = JSON.parse(localStorage.getItem('wv_bank_tx')||'[]');
-    if(Array.isArray(local) && local.length && (!BANK_TX_CACHE || BANK_TX_CACHE.length===0)){
-      await sv('bank', local);
-      localStorage.removeItem('wv_bank_tx');
-    }
-  }catch(e){}
+    const snap = await db.collection('bankTransactions').get();
+    BANK_TX_CACHE = snap.docs.map(d=>({id:d.id,...(d.data()||{})}));
+    _svAcceptServerRows('bank', BANK_TX_CACHE);
+  }catch(e){
+    _svLoadFailed('bank', e);
+  }
 }
 function bankLd(){ return BANK_TX_CACHE || []; }
 function bankSv(arr){
@@ -2095,15 +2151,13 @@ function bankSv(arr){
 
 async function loadCompanyExpFromFirestore(){
   if(typeof db === 'undefined'){return;}
-  const snap = await db.collection('companyExpenses').get().catch(()=>null);
-  COMPANY_EXP_CACHE = snap && !snap.empty ? snap.docs.map(d=>({id:d.id,...d.data()})) : [];
   try{
-    const local = JSON.parse(localStorage.getItem('wv_company_exp')||'[]');
-    if(Array.isArray(local) && local.length && (!COMPANY_EXP_CACHE || COMPANY_EXP_CACHE.length===0)){
-      await sv('exp', local);
-      localStorage.removeItem('wv_company_exp');
-    }
-  }catch(e){}
+    const snap = await db.collection('companyExpenses').get();
+    COMPANY_EXP_CACHE = snap.docs.map(d=>({id:d.id,...(d.data()||{})}));
+    _svAcceptServerRows('exp', COMPANY_EXP_CACHE);
+  }catch(e){
+    _svLoadFailed('exp', e);
+  }
 }
 function expLd(){ return COMPANY_EXP_CACHE || []; }
 function expSv(arr){
@@ -2113,19 +2167,12 @@ function expSv(arr){
 
 async function loadMonthlyCntFromFirestore(){
   if(typeof db === 'undefined'){return;}
-  const ref = db.collection('settings').doc('monthlyCnt');
-  const snap = await ref.get().catch(()=>null);
-  MONTHLY_CNT_CACHE = (snap && snap.exists && (snap.data()?.data)) ? (snap.data().data||{}) : {};
   try{
-    const local = JSON.parse(localStorage.getItem('wv_monthly_cnt')||'{}');
-    const hasLocal = local && typeof local==='object' && Object.keys(local).length>0;
-    const hasRemote = MONTHLY_CNT_CACHE && typeof MONTHLY_CNT_CACHE==='object' && Object.keys(MONTHLY_CNT_CACHE).length>0;
-    if(hasLocal && !hasRemote){
-      MONTHLY_CNT_CACHE = {...local};
-      await ref.set({data: MONTHLY_CNT_CACHE},{merge:true});
-      localStorage.removeItem('wv_monthly_cnt');
-    }
-  }catch(e){}
+    const snap = await db.collection('settings').doc('monthlyCnt').get();
+    MONTHLY_CNT_CACHE = (snap.exists && snap.data()?.data) ? (snap.data().data||{}) : {};
+  }catch(e){
+    _svLoadFailed('monthlyCnt', e);
+  }
 }
 function monthlyCntLd(){ return MONTHLY_CNT_CACHE || {}; }
 function monthlyCntSv(obj){
@@ -2138,44 +2185,14 @@ function monthlyCntSv(obj){
 }
 
 async function loadBlogProjectsFromFirestore(){
-  // 1) 기본값: 로컬 백업 먼저 읽어두기 (네트워크 실패 대비)
-  let localBackup = [];
+  if(typeof db === 'undefined'){return;}
   try{
-    const raw=localStorage.getItem(BLOG_LOCAL_KEY)||'[]';
-    const parsed=JSON.parse(raw);
-    if(Array.isArray(parsed)) localBackup=parsed;
-  }catch(_){}
-
-  // 2) Firestore 우선 로드
-  if(typeof db !== 'undefined'){
-    try{
-      const snap = await db.collection('blogProjects').get();
-      const remote = snap && !snap.empty ? snap.docs.map(d=>({id:d.id,...d.data()})) : [];
-      BLOG_PROJECTS_CACHE = Array.isArray(remote) ? remote : [];
-      // 원격이 정상이라면 로컬 백업 갱신
-      try{ localStorage.setItem(BLOG_LOCAL_KEY, JSON.stringify(BLOG_PROJECTS_CACHE)); }catch(_){}
-      // 원격이 비었고 로컬 백업이 있으면 임시 복구 후 서버 재동기화 시도
-      if((!BLOG_PROJECTS_CACHE.length) && localBackup.length){
-        BLOG_PROJECTS_CACHE = localBackup.slice();
-        try{
-          await sv('bp', BLOG_PROJECTS_CACHE);
-        }catch(e){
-          console.warn('blog remote restore failed', e);
-        }
-      }
-      return;
-    }catch(e){
-      console.error('loadBlogProjectsFromFirestore error', e);
-      // Firestore 실패 시 로컬 백업으로 복구
-      BLOG_PROJECTS_CACHE = localBackup.slice();
-      if(localBackup.length){
-        try{ toast('블로그 데이터 원격 불러오기 실패: 로컬 백업으로 복구했습니다','error'); }catch(_){}
-      }
-      return;
-    }
+    const snap = await db.collection('blogProjects').get();
+    BLOG_PROJECTS_CACHE = snap.docs.map(d=>({id:d.id,...(d.data()||{})}));
+    _svAcceptServerRows('bp', BLOG_PROJECTS_CACHE);
+  }catch(e){
+    _svLoadFailed('bp', e);
   }
-  // 3) db 자체가 없으면 로컬 백업 사용
-  BLOG_PROJECTS_CACHE = localBackup.slice();
 }
 function blogLd(){ return BLOG_PROJECTS_CACHE || []; }
 function blogSv(arr){
@@ -2223,23 +2240,12 @@ function applyUiColsFirestoreData(d){
 }
 async function loadUiColsFromFirestore(){
   if(typeof db === 'undefined'){return;}
-  const ref = db.collection('settings').doc('uiCols');
-  const snap = await ref.get().catch(()=>null);
-  const d = snap && snap.exists ? (snap.data()||{}) : {};
-  applyUiColsFirestoreData(d);
   try{
-    const localExtra = JSON.parse(localStorage.getItem('wv_extra_cols')||'[]');
-    const localOrder = JSON.parse(localStorage.getItem('wv_col_order')||'[]');
-    const hasLocal = (Array.isArray(localExtra)&&localExtra.length) || (Array.isArray(localOrder)&&localOrder.length);
-    const g=UI_COLS_CACHE._global||{};
-    const hasRemote = (g.extraCols?.length||0) || (g.colOrder?.length||0) || Object.keys(UI_COLS_CACHE).some(k=>k!=='_global'&&UI_COLS_CACHE[k]&&((UI_COLS_CACHE[k].extraCols?.length)||(UI_COLS_CACHE[k].colOrder?.length)));
-    if(hasLocal && !hasRemote){
-      UI_COLS_CACHE={...UI_COLS_CACHE,_global:{extraCols:Array.isArray(localExtra)?localExtra:[],colOrder:Array.isArray(localOrder)?localOrder:[]}};
-      await ref.set({extraCols:UI_COLS_CACHE._global.extraCols,colOrder:UI_COLS_CACHE._global.colOrder},{merge:true});
-      localStorage.removeItem('wv_extra_cols');
-      localStorage.removeItem('wv_col_order');
-    }
-  }catch(e){}
+    const snap = await db.collection('settings').doc('uiCols').get();
+    applyUiColsFirestoreData(snap.exists ? (snap.data()||{}) : {});
+  }catch(e){
+    _svLoadFailed('uiCols', e);
+  }
 }
 function uiColsLd(clientId){
   const key=clientId||CUR_CLIENT||'_global';
@@ -2335,250 +2341,196 @@ function cleanForFirestore(val){
   return val;
 }
 
-// Firestore에 개별 키별로 저장하던 helper 대체
-const _svLocks={};
-const _svQueued={}; // 잠금 중 최신 value만 유지 (스킵하지 않고 이어쓰기)
+// Firestore 저장은 upsert만 한다. 문서 삭제는 svDelete만 수행한다.
+const SV_COL={
+  cl:'clients',
+  pr:'projects',
+  rc:'records',
+  qt:'quotes',
+  st:'settles',
+  dep:'depositHistory',
+  um:'depositUnmatched',
+  dn:'depNames',
+  ds:'dailySettleRows',
+  bank:'bankTransactions',
+  exp:'companyExpenses',
+  bp:'blogProjects',
+};
+// key별 로드 성공 플래그. 성공 전에 sv/svDelete는 저장하지 않는다.
+const _svLoaded={cl:false,pr:false,rc:false,qt:false,st:false,dep:false,um:false,dn:false,ds:false,bank:false,exp:false,bp:false};
+// key별 마지막 서버 동기화 상태 (id → JSON 문자열). 스냅샷/로드 시 갱신.
+const _svSync={};
+
+function _svGetCache(key){
+  switch(key){
+    case 'cl': return CLIENTS_CACHE;
+    case 'pr': return PROJECTS_CACHE;
+    case 'rc': return RECORDS_CACHE;
+    case 'qt': return QUOTES_CACHE;
+    case 'st': return SETTLES_CACHE;
+    case 'dep': return DEP_HIST_CACHE;
+    case 'um': return DEP_UNMATCHED_CACHE;
+    case 'dn': return DEP_NAMES_CACHE;
+    case 'ds': return DS_CACHE;
+    case 'bank': return BANK_TX_CACHE;
+    case 'exp': return COMPANY_EXP_CACHE;
+    case 'bp': return BLOG_PROJECTS_CACHE;
+    default: return [];
+  }
+}
+function _svSetCache(key, rows){
+  const next=Array.isArray(rows)?rows:[];
+  switch(key){
+    case 'cl': CLIENTS_CACHE=next; break;
+    case 'pr': PROJECTS_CACHE=next; break;
+    case 'rc': RECORDS_CACHE=next; break;
+    case 'qt': QUOTES_CACHE=next; break;
+    case 'st': SETTLES_CACHE=next; break;
+    case 'dep': DEP_HIST_CACHE=next; break;
+    case 'um': DEP_UNMATCHED_CACHE=next; break;
+    case 'dn': DEP_NAMES_CACHE=next; break;
+    case 'ds': DS_CACHE=next; break;
+    case 'bank': BANK_TX_CACHE=next; break;
+    case 'exp': COMPANY_EXP_CACHE=next; break;
+    case 'bp': BLOG_PROJECTS_CACHE=next; break;
+  }
+}
+function _svItemJson(item){
+  if(!item||item.id==null||item.id==='') return null;
+  const cleaned=cleanForFirestore({...item,id:item.id});
+  return JSON.stringify(cleaned);
+}
+function _svMergeRows(prev, rows){
+  const prevArr=Array.isArray(prev)?prev:[];
+  const incoming=new Map();
+  (Array.isArray(rows)?rows:[]).forEach(item=>{
+    if(item&&item.id!=null&&item.id!=='') incoming.set(item.id, item);
+  });
+  const seen=new Set();
+  const merged=[];
+  prevArr.forEach(item=>{
+    if(!item||item.id==null||item.id===''){ merged.push(item); return; }
+    seen.add(item.id);
+    merged.push(incoming.has(item.id)?incoming.get(item.id):item);
+  });
+  (Array.isArray(rows)?rows:[]).forEach(item=>{
+    if(!item||item.id==null||item.id==='') return;
+    if(seen.has(item.id)) return;
+    seen.add(item.id);
+    merged.push(item);
+  });
+  return merged;
+}
+function _svAcceptServerRows(key, rows){
+  if(!SV_COL[key]) return;
+  _svLoaded[key]=true;
+  const map=new Map();
+  (Array.isArray(rows)?rows:[]).forEach(item=>{
+    const json=_svItemJson(item);
+    if(json!=null) map.set(item.id, json);
+  });
+  _svSync[key]=map;
+}
+function _svOnSnap(key, snap){
+  const rows=snap.docs.map(d=>({id:d.id,...(d.data()||{})}));
+  _svSetCache(key, rows);
+  _svAcceptServerRows(key, rows);
+  if(key==='pr'){
+    try{ refreshRecordsSubscriptionIfProjectsChanged(); }catch(e){}
+  }
+  scheduleRerender();
+}
+function _svRequireLoaded(key){
+  if(!_svLoaded[key]) throw new Error('데이터 로드 전 저장 차단');
+}
+function _svBackupBlog(){
+  try{ localStorage.setItem(BLOG_LOCAL_KEY, JSON.stringify(BLOG_PROJECTS_CACHE||[])); }catch(_){}
+}
+function _svInvalidateRc(projIds){
+  try{ invalidateRecordsCacheByProjectIds(projIds); }catch(_){}
+}
+
 async function sv(key, value){
-  if(typeof db === 'undefined'){return;}
-  if(_svLocks[key]){
-    // 이전 동작(스킵)은 최신 변경을 버려 정산완료가 되돌아가는 원인이 됨 → 최신값 큐잉
-    return await new Promise((resolve,reject)=>{
-      _svQueued[key]={value, resolve, reject};
-    });
-  }
-  _svLocks[key]=true;
+  if(typeof db==='undefined') return;
+  if(!SV_COL[key]) return;
+  if(key==='rc' && !guardRecordsSave()) return;
+  _svRequireLoaded(key);
+  const rows=Array.isArray(value)?value.slice():[];
+  const col=db.collection(SV_COL[key]);
+  rows.forEach(item=>{
+    if(!item||typeof item!=='object') return;
+    if(!item.id) item.id=col.doc().id;
+  });
+  _svSetCache(key, _svMergeRows(_svGetCache(key), rows));
+  const sync=_svSync[key]||(_svSync[key]=new Map());
+  const pending=new Map();
+  rows.forEach(item=>{
+    if(!item||typeof item!=='object') return;
+    const cleaned=cleanForFirestore({...item,id:item.id});
+    const json=JSON.stringify(cleaned);
+    if(sync.get(item.id)!==json) pending.set(item.id,{id:item.id,cleaned,json});
+  });
+  const changed=[...pending.values()];
   try{
-  // 아래 분기에서 await 중에 스냅샷이 캐시를 덮어쓸 수 있으므로,
-  // 저장 대상은 항상 인자 value의 로컬 복사본을 사용한다.
-  const toWrite=Array.isArray(value)?value.slice():value;
-  if(key==='cl'){
-    // 단순 저장: col.get()/batch.delete()/변경분비교 없이 set(merge:true)만.
-    // (삭제는 deleteClientCascadeFirestore 등 명시적 삭제 함수에서 doc.delete()로 처리)
-    console.time('sv:cl');
-    CLIENTS_CACHE = value.slice();
-    const col=db.collection('clients');
-    const batch=db.batch();
-    value.forEach(item=>{
-      if(!item.id) item.id=col.doc().id;
-      const cleaned=cleanForFirestore({...item,id:item.id});
-      batch.set(col.doc(item.id),cleaned, { merge: true });
-    });
-    await batch.commit();
-    console.timeEnd('sv:cl');
-  }else if(key==='pr'){
-    // 단순 저장: col.get()/batch.delete()/변경분비교 없이 set(merge:true)만.
-    // (삭제는 deleteCurrentProject 등에서 doc.delete()로 명시적 처리)
-    console.time('sv:pr');
-    PROJECTS_CACHE = value.slice();
-    const col=db.collection('projects');
-    const batch=db.batch();
-    value.forEach(item=>{
-      if(!item.id) item.id=col.doc().id;
-      const cleaned=cleanForFirestore({...item,id:item.id});
-      batch.set(col.doc(item.id),cleaned, { merge: true });
-    });
-    await batch.commit();
-    console.timeEnd('sv:pr');
-  }else if(key==='rc'){
-    // records는 전체 삭제/재삽입 대신,
-    // 이전 스냅샷과 비교하여 변경/삭제된 것만 최소한으로 반영
-    const prev=Array.isArray(RECORDS_CACHE)?RECORDS_CACHE.slice():[];
-    RECORDS_CACHE = value.slice();
-    const col=db.collection('records');
-    const snap=await col.get();
-    const existingIds=new Set();
-    const existingProjById={};
-    snap.forEach(doc=>{ existingIds.add(doc.id); existingProjById[doc.id]=(doc.data()||{}).projectId; });
-    // records를 거래처별로만 로드하므로(전체 구독 제거), RECORDS_CACHE에는
-    // 현재 거래처의 records만 들어있다. 따라서 삭제는 "현재 로드된 거래처 범위"의
-    // projectId에 속한 문서로만 제한해 다른 거래처 records가 삭제되지 않도록 한다.
-    const scopeProjIds=new Set();
-    prev.forEach(r=>{ if(r&&r.projectId!=null) scopeProjIds.add(r.projectId); });
-    RECORDS_CACHE.forEach(r=>{ if(r&&r.projectId!=null) scopeProjIds.add(r.projectId); });
-    // id 부여 및 다음 상태 id 집합 계산
-    const nextIds=new Set();
-    RECORDS_CACHE.forEach(r=>{
-      if(!r.id) r.id=col.doc().id;
-      nextIds.add(r.id);
-    });
-    const prevMap={};
-    prev.forEach(r=>{
-      if(r.id) prevMap[r.id]=cleanForFirestore({...r,id:r.id});
-    });
-    const batch=db.batch();
-    // 삭제: 이전에 있었지만 지금은 없는 id만 삭제 (단, 현재 거래처 범위의 projectId 문서로 제한)
-    existingIds.forEach(id=>{
-      if(!nextIds.has(id) && scopeProjIds.has(existingProjById[id])) batch.delete(col.doc(id));
-    });
-    // 추가/수정: 내용이 바뀐 경우에만 set
-    RECORDS_CACHE.forEach(r=>{
-      const cleaned=cleanForFirestore({...r,id:r.id});
-      const prevClean=prevMap[r.id];
-      const changed=!prevClean || JSON.stringify(prevClean)!==JSON.stringify(cleaned);
-      if(changed){
-        batch.set(col.doc(cleaned.id),cleaned, { merge: true });
-      }
-    });
-    await batch.commit();
-    // 저장된 records가 속한 거래처의 캐시 무효화 (다음 진입 시 최신 재조회)
-    try{ invalidateRecordsCacheByProjectIds(scopeProjIds); }catch(_){}
-  }else if(key==='qt'){
-    // 견적서는 전체 삭제/재삽입 대신 변경분만 반영하여 Firestore 쿼터 사용을 줄인다
-    const prev=Array.isArray(QUOTES_CACHE)?QUOTES_CACHE.slice():[];
-    const rows=toWrite.slice();
-    QUOTES_CACHE = rows.slice();
-    const col=db.collection('quotes');
-    const snap=await col.get();
-    const existingIds=new Set();
-    snap.forEach(doc=>existingIds.add(doc.id));
-    const nextIds=new Set();
-    rows.forEach(q=>{
-      if(!q.id) q.id=col.doc().id;
-      nextIds.add(q.id);
-    });
-    const batch=db.batch();
-    // 삭제 필요한 것만 삭제
-    existingIds.forEach(id=>{
-      if(!nextIds.has(id)) batch.delete(col.doc(id));
-    });
-    // 추가/수정은 모두 set(merge:false)
-    rows.forEach(q=>{
-      // Firestore는 undefined 값을 허용하지 않으므로, 안전하게 정제
-      const cleaned=cleanForFirestore({...q,id:q.id});
-      batch.set(col.doc(cleaned.id),cleaned, { merge: true });
-    });
-    QUOTES_CACHE = rows.slice();
-    await batch.commit();
-  }else if(key==='st'){
-    // 단순 저장: col.get()/batch.delete()/변경분비교 없이 set(merge:true)만.
-    // (삭제는 delSettleRow 등에서 doc.delete()로 명시적 처리)
-    console.time('sv:st');
-    SETTLES_CACHE = value.slice();
-    const col=db.collection('settles');
-    const batch=db.batch();
-    value.forEach(item=>{
-      if(!item.id) item.id=col.doc().id;
-      const cleaned=cleanForFirestore({...item,id:item.id});
-      batch.set(col.doc(item.id),cleaned, { merge: true });
-    });
-    await batch.commit();
-    console.timeEnd('sv:st');
-  }else if(key==='dep'){
-    // 단순 저장: col.get()/batch.delete()/변경분비교 없이 set(merge:true)만.
-    // (삭제는 depClear/_execDelDepHist 등에서 doc.delete()로 명시적 처리)
-    console.time('sv:dep');
-    DEP_HIST_CACHE = value.slice();
-    const col=db.collection('depositHistory');
-    const batch=db.batch();
-    value.forEach(item=>{
-      if(!item.id) item.id=col.doc().id;
-      const cleaned=cleanForFirestore({...item,id:item.id});
-      batch.set(col.doc(item.id),cleaned, { merge: true });
-    });
-    await batch.commit();
-    console.timeEnd('sv:dep');
-  }else if(key==='um'){
-    const rows=toWrite.slice();
-    DEP_UNMATCHED_CACHE = rows.slice();
-    const col=db.collection('depositUnmatched');
-    const snap=await col.get();
-    const batch=db.batch();
-    snap.forEach(doc=>batch.delete(doc.ref));
-    rows.forEach(h=>{
-      const id=h.id||db.collection('depositUnmatched').doc().id;
-      h.id=id;
-      const data={...h,id};
-      batch.set(col.doc(id),data, { merge: true });
-    });
-    DEP_UNMATCHED_CACHE = rows.slice();
-    await batch.commit();
-  }else if(key==='dn'){
-    const rows=toWrite.slice();
-    DEP_NAMES_CACHE = rows.slice();
-    const col=db.collection('depNames');
-    const snap=await col.get();
-    const batch=db.batch();
-    snap.forEach(doc=>batch.delete(doc.ref));
-    rows.forEach(r=>{
-      const id=r.id||db.collection('depNames').doc().id;
-      r.id=id;
-      const data={...r,id};
-      batch.set(col.doc(id),data, { merge: true });
-    });
-    DEP_NAMES_CACHE = rows.slice();
-    await batch.commit();
-  }else if(key==='ds'){
-    // await 중 스냅샷이 DS_CACHE를 덮어쓸 수 있으므로 toWrite 고정본으로 저장
-    const rows=toWrite.slice();
-    DS_CACHE = rows.slice();
-    const col=db.collection('dailySettleRows');
-    const snap=await col.get();
-    const batch=db.batch();
-    snap.forEach(doc=>batch.delete(doc.ref));
-    rows.forEach(r=>{
-      const id=r.id||db.collection('dailySettleRows').doc().id;
-      r.id=id;
-      const data={...r,id};
-      batch.set(col.doc(id),data, { merge: true });
-    });
-    DS_CACHE = rows.slice();
-    await batch.commit();
-  }else if(key==='bank'){
-    const rows=toWrite.slice();
-    BANK_TX_CACHE = rows.slice();
-    const col=db.collection('bankTransactions');
-    const snap=await col.get();
-    const batch=db.batch();
-    snap.forEach(doc=>batch.delete(doc.ref));
-    rows.forEach(r=>{
-      const id=r.id||db.collection('bankTransactions').doc().id;
-      r.id=id;
-      const data={...r,id};
-      batch.set(col.doc(id),data, { merge: true });
-    });
-    BANK_TX_CACHE = rows.slice();
-    await batch.commit();
-  }else if(key==='exp'){
-    const rows=toWrite.slice();
-    COMPANY_EXP_CACHE = rows.slice();
-    const col=db.collection('companyExpenses');
-    const snap=await col.get();
-    const batch=db.batch();
-    snap.forEach(doc=>batch.delete(doc.ref));
-    rows.forEach(r=>{
-      const id=r.id||db.collection('companyExpenses').doc().id;
-      r.id=id;
-      const data={...r,id};
-      batch.set(col.doc(id),data, { merge: true });
-    });
-    COMPANY_EXP_CACHE = rows.slice();
-    await batch.commit();
-  }else if(key==='bp'){
-    const rows=toWrite.slice();
-    BLOG_PROJECTS_CACHE = rows.slice();
-    const col=db.collection('blogProjects');
-    const snap=await col.get();
-    const batch=db.batch();
-    snap.forEach(doc=>batch.delete(doc.ref));
-    rows.forEach(r=>{
-      const id=r.id||db.collection('blogProjects').doc().id;
-      r.id=id;
-      const data=cleanForFirestore({...r,id});
-      batch.set(col.doc(id),data, { merge: true });
-    });
-    BLOG_PROJECTS_CACHE = rows.slice();
-    await batch.commit();
-  }
-  }catch(e){
-    console.error('sv() 에러 발생 key='+key, e); // 진단: 묻히던 에러 강제 출력
-    throw e; // 에러 다시 던지기
-  }finally{
-    _svLocks[key]=false;
-    const queued=_svQueued[key];
-    if(queued){
-      _svQueued[key]=null;
-      sv(key, queued.value).then(queued.resolve).catch(queued.reject);
+    for(let i=0;i<changed.length;i+=400){
+      const chunk=changed.slice(i,i+400);
+      const batch=db.batch();
+      chunk.forEach(c=>batch.set(col.doc(c.id), c.cleaned, {merge:true}));
+      await batch.commit();
+      const cur=_svSync[key]||(_svSync[key]=new Map());
+      chunk.forEach(c=>cur.set(c.id, c.json));
     }
+    if(key==='rc'){
+      const scope=new Set();
+      rows.forEach(r=>{ if(r&&r.projectId!=null) scope.add(r.projectId); });
+      _svInvalidateRc(scope);
+    }
+    if(key==='bp') _svBackupBlog();
+  }catch(e){
+    console.error('sv() 에러 발생 key='+key, e);
+    throw e;
+  }
+}
+
+async function svDelete(key, ids){
+  if(typeof db==='undefined') return;
+  if(!SV_COL[key]) return;
+  _svRequireLoaded(key);
+  const unique=[];
+  const seen=new Set();
+  (Array.isArray(ids)?ids:[]).forEach(id=>{
+    if(id==null||id==='') return;
+    if(seen.has(id)) return;
+    seen.add(id);
+    unique.push(id);
+  });
+  if(!unique.length) return;
+  const idSet=new Set(unique);
+  const cache=_svGetCache(key)||[];
+  let rcProjIds=null;
+  if(key==='rc'){
+    rcProjIds=new Set();
+    cache.forEach(item=>{
+      if(item&&idSet.has(item.id)&&item.projectId!=null) rcProjIds.add(item.projectId);
+    });
+  }
+  const col=db.collection(SV_COL[key]);
+  try{
+    for(let i=0;i<unique.length;i+=400){
+      const chunk=unique.slice(i,i+400);
+      const batch=db.batch();
+      chunk.forEach(id=>batch.delete(col.doc(id)));
+      await batch.commit();
+    }
+    const latest=_svGetCache(key)||cache;
+    _svSetCache(key, latest.filter(item=>!item||!idSet.has(item.id)));
+    const sync=_svSync[key];
+    if(sync) unique.forEach(id=>sync.delete(id));
+    if(rcProjIds) _svInvalidateRc(rcProjIds);
+    if(key==='bp') _svBackupBlog();
+  }catch(e){
+    console.error('svDelete() 에러 발생 key='+key, e);
+    throw e;
   }
 }
 // 공급자 사업자 목록 (기본: 웨이프로젝트)
@@ -2931,10 +2883,8 @@ async function refreshClientViewFromServer(){
 async function refreshAllData(){
   try{
     // 전체 새로고침: records 거래처별 캐시 비우기 (최신 데이터 재조회 위해)
-    try{ Object.keys(_recordsClientCache).forEach(k=>delete _recordsClientCache[k]); }catch(_){}
     if(typeof loadMainDataFromFirestore==='function') await loadMainDataFromFirestore(true);
-    // 현재 열려있는 거래처가 있으면 records도 강제 재조회
-    if(CUR_CLIENT && typeof loadRecordsByClient==='function'){ try{ await loadRecordsByClient(CUR_CLIENT, true); }catch(_){} }
+    if(CUR_CLIENT && typeof subscribeRecordsForClient==='function'){ try{ await subscribeRecordsForClient(CUR_CLIENT); }catch(_){} }
     if(typeof loadSettlesFromFirestore==='function') await loadSettlesFromFirestore();
     if(typeof loadDepositHistoryFromFirestore==='function') await loadDepositHistoryFromFirestore();
     if(typeof loadDepositUnmatchedFromFirestore==='function') await loadDepositUnmatchedFromFirestore();
@@ -4190,14 +4140,28 @@ function blogCreateProject(){
   toast('블로그 프로젝트 생성 완료');
   renderBlogInputPanel(document.getElementById('dp-bloginput-inner'), CUR_CLIENT);
 }
-function blogDeleteProject(){
+async function blogDeleteProject(){
   if(!BLOG_EDIT_PROJECT_ID){toast('삭제할 프로젝트를 선택하세요','error');return;}
   if(!confirm('선택한 블로그 프로젝트를 삭제하시겠습니까?')) return;
-  const arr=blogLd().filter(p=>p.id!==BLOG_EDIT_PROJECT_ID);
-  blogSv(arr);
-  BLOG_EDIT_PROJECT_ID='';
-  toast('블로그 프로젝트 삭제 완료');
-  renderBlogInputPanel(document.getElementById('dp-bloginput-inner'), CUR_CLIENT);
+  const id=BLOG_EDIT_PROJECT_ID;
+  const arr=blogLd().filter(p=>p.id!==id);
+  // 진행 중인 저장이 끝난 뒤 삭제한다. 대기 큐에 남은 전체 배열이 삭제 문서를 다시 쓰지 않게 비운다.
+  BLOG_SAVE_PENDING=arr.slice();
+  const started=Date.now();
+  while(BLOG_SAVE_IN_FLIGHT){
+    await new Promise(r=>setTimeout(r,40));
+    if(Date.now()-started>12000) break;
+  }
+  BLOG_SAVE_PENDING=null;
+  try{
+    await svDelete('bp',[id]);
+    BLOG_EDIT_PROJECT_ID='';
+    toast('블로그 프로젝트 삭제 완료');
+    renderBlogInputPanel(document.getElementById('dp-bloginput-inner'), CUR_CLIENT);
+  }catch(e){
+    console.error(e);
+    toast('삭제 실패: '+(e?.message||e),'error');
+  }
 }
 function blogAddRow(section){
   const arr=blogLd().slice();
@@ -4526,9 +4490,19 @@ function confirmAddDepName(){
   toast(`입금자명 저장: ${client} → ${name}`);
 }
 
-function delDepName(idx){
-  const arr=getDepNames();arr.splice(idx,1);saveDepNames(arr);
-  renderDepNameTable();toast('삭제됨');
+async function delDepName(idx){
+  const arr=getDepNames();
+  const removed=arr[idx];
+  if(!removed) return;
+  try{
+    if(removed.id) await svDelete('dn',[removed.id]);
+    else arr.splice(idx,1);
+    renderDepNameTable();
+    toast('삭제됨');
+  }catch(e){
+    console.error(e);
+    toast('삭제 실패: '+(e?.message||e),'error');
+  }
 }
 
 function uploadDepNameExcel(input){
@@ -4636,16 +4610,26 @@ function renderUnmatchedTable(){
   </table>`;
 }
 
-function delUnmatched(id){
-  umSv(umLd().filter(r=>r.id!==id)).catch(console.error);
-  renderUnmatchedTable();
+async function delUnmatched(id){
+  try{
+    await svDelete('um',[id]);
+    renderUnmatchedTable();
+  }catch(e){
+    console.error(e);
+    toast('삭제 실패: '+(e?.message||e),'error');
+  }
 }
 
-function clearAllUnmatched(){
+async function clearAllUnmatched(){
   if(!confirm('미매칭 내역을 모두 삭제하시겠습니까?'))return;
-  umSv([]).catch(console.error);
-  renderUnmatchedTable();
-  toast('미매칭 내역 삭제됨');
+  try{
+    await umClear();
+    renderUnmatchedTable();
+    toast('미매칭 내역 삭제됨');
+  }catch(e){
+    console.error(e);
+    toast('삭제 실패: '+(e?.message||e),'error');
+  }
 }
 
 async function applyUnmatchedManual(umId){
@@ -4664,9 +4648,15 @@ async function applyUnmatchedManual(umId){
   await stSv(settles);
   const d=ld();const qi=d.quotes.findIndex(q=>q.id===settles[idx].qtId);
   if(qi>=0){d.quotes[qi].settled=true;await sv('qt',d.quotes);}
-  syncDsRowFromSettle(stId);
+  await syncDsRowFromSettle(stId);
   // 미매칭에서 제거
-  umSv(umArr.filter(r=>r.id!==umId));
+  try{
+    await svDelete('um',[umId]);
+  }catch(e){
+    console.error(e);
+    toast('미매칭 삭제 실패: '+(e?.message||e),'error');
+    return;
+  }
   renderUnmatchedTable();
   renderSettleAll();
   toast('처리 완료');
@@ -5691,14 +5681,16 @@ async function relinkDepositHistoryAll(){
 // 개별 삭제 (id 기반) + 연동 취소
 async function delDepHistById(hid){
   if(!confirm('이 입금 내역을 삭제하시겠습니까?\n연결된 거래처 정산 및 일/월 정산 정보도 초기화됩니다.')) return;
-  await _execDelDepHist([hid]);
+  try{ await _execDelDepHist([hid]); }
+  catch(e){ console.error(e); toast('삭제 실패: '+(e?.message||e),'error'); }
 }
 
 // 선택 삭제
 async function delDepHistSelected(){
   if(!DEP_HIST_CHECKED.size){toast('삭제할 항목을 선택하세요','error');return;}
   if(!confirm(`선택한 ${DEP_HIST_CHECKED.size}건을 삭제하시겠습니까?\n연결된 거래처 정산 및 일/월 정산 정보도 초기화됩니다.`)) return;
-  await _execDelDepHist([...DEP_HIST_CHECKED]);
+  try{ await _execDelDepHist([...DEP_HIST_CHECKED]); }
+  catch(e){ console.error(e); toast('삭제 실패: '+(e?.message||e),'error'); }
 }
 
 // 실제 삭제 + 연동 취소 처리
@@ -5721,21 +5713,17 @@ async function _execDelDepHist(ids){
       settles[si].depositAmt=0;
       const qi=d2.quotes.findIndex(q=>q.id===settles[si].qtId);
       if(qi>=0){d2.quotes[qi].settled=false;}
-      // wv_ds 동기화 (입금일자, 입금명, 정산여부 초기화)
-      syncDsRowFromSettle(h.stId);
     }
   });
-  // settles/quotes 저장 (변경이 있었던 경우)
   if(toDelete.some(h=>h.stId)){
     await stSv(settles);
     await sv('qt', d2.quotes);
+    for(const h of toDelete){
+      if(h.stId) await syncDsRowFromSettle(h.stId);
+    }
   }
 
-  // wv_dep에서 제거
-  hist=hist.filter(h=>!ids.includes(h.id));
-  // Firestore에서 삭제 대상 입금 문서 명시적 삭제 (sv('dep')는 set(merge)만 하므로 삭제는 여기서 처리)
-  try{ if(typeof db!=='undefined') await _deleteDocsByIds('depositHistory', ids); }catch(e){ console.error('_execDelDepHist doc.delete',e); }
-  await depSv(hist);
+  await svDelete('dep', ids);
   ids.forEach(id=>DEP_HIST_CHECKED.delete(id));
 
   renderDepositHistory();
@@ -5757,10 +5745,15 @@ function clearUnmatched(){
 
 async function clearDeposits(){
   if(!confirm('저장된 입금 내역을 모두 삭제하시겠습니까?\n정산 연동 정보는 초기화되지 않습니다.'))return;
-  await depClear();
-  DEP_HIST_CHECKED=new Set();
-  renderDepositHistory();
-  toast('입금 내역 전체 삭제됨');
+  try{
+    await depClear();
+    DEP_HIST_CHECKED=new Set();
+    renderDepositHistory();
+    toast('입금 내역 전체 삭제됨');
+  }catch(e){
+    console.error(e);
+    toast('삭제 실패: '+(e?.message||e),'error');
+  }
 }
 
 function showDepTab(name){
@@ -6214,11 +6207,26 @@ async function bulkSetTaxIssued(){
   renderSettleAll();
 }
 
-function openSettleQuote(qtId){
+async function openSettleQuote(qtId){
   if(!qtId){toast('연결된 견적서를 찾을 수 없습니다','error');return;}
   const d=ld();
   const qt=(d.quotes||[]).find(q=>q.id===qtId);
-  if(!qt){toast('견적서를 찾을 수 없습니다','error');return;}
+  if(!qt){
+    if(!confirm('연결된 견적서가 삭제되었습니다. 이 정산행을 삭제할까요?')) return;
+    try{
+      const stIds=stLd().filter(s=>s.qtId===qtId).map(s=>s.id).filter(Boolean);
+      const dsIds=dsLd().filter(r=>r.qtId===qtId).map(r=>r.id).filter(Boolean);
+      if(stIds.length) await svDelete('st', stIds);
+      if(dsIds.length) await svDelete('ds', dsIds);
+      try{ renderSettleAll(); }catch(e){}
+      if(CUR_CLIENT){ try{ renderDetSettle(); }catch(e){} }
+      toast('정산행을 삭제했습니다');
+    }catch(e){
+      console.error(e);
+      toast('삭제 실패: '+(e?.message||e),'error');
+    }
+    return;
+  }
   const body=document.getElementById('qt-view-body');
   if(!body){console.warn('qt-view-body not found');return;}
   body.innerHTML=buildQtDoc(qt);
@@ -6231,8 +6239,7 @@ async function markSettleDoneAll(stId){
   const idx=settles.findIndex(s=>s.id===stId);if(idx<0)return;
   applyManualSettleDeposit(settles[idx]);
   await stSv(settles);
-  // ★ 일/월 정산 동기화
-  syncDsRowFromSettle(stId);
+  await syncDsRowFromSettle(stId);
   const qtId=settles[idx].qtId;
   const d=ld(),qi=d.quotes.findIndex(q=>q.id===qtId);
   if(qi>=0){d.quotes[qi].settled=true;await sv('qt',d.quotes);}
@@ -6243,30 +6250,27 @@ async function markSettleDoneAll(stId){
 // 거래처 정산 - 행 삭제
 async function delSettleRow(stId){
   if(!confirm('이 정산 내역을 삭제하시겠습니까?\n연결된 견적서 및 일/월 정산 정보도 함께 삭제됩니다.')) return;
-  // wv_st 삭제
-  let settles=[...stLd()];
-  const st=settles.find(s=>s.id===stId);
-  settles=settles.filter(s=>s.id!==stId);
-  // Firestore에서 정산 문서 명시적 삭제 (sv('st')는 set(merge)만 하므로 삭제는 여기서 처리)
-  try{ if(typeof db!=='undefined') await db.collection('settles').doc(stId).delete(); }catch(e){ console.error('delSettleRow doc.delete',e); }
-  await stSv(settles);
-  // 연결 견적서(quotes) 및 일/월 정산 행도 함께 삭제
-  if(st?.qtId){
-    try{
-      const d=ld();
-      await sv('qt',d.quotes.filter(q=>q.id!==st.qtId));
-      const dsArr=dsLd().filter(r=>r.qtId!==st.qtId);
-      await dsSv(dsArr);
-    }catch(e){console.warn('delSettleRow quote/ds sync err',e);}
+  const st=stLd().find(s=>s.id===stId);
+  const dsIds=st?.qtId ? dsLd().filter(r=>r.qtId===st.qtId).map(r=>r.id).filter(Boolean) : [];
+  try{
+    await svDelete('st',[stId]);
+    if(st?.qtId){
+      await svDelete('qt',[st.qtId]);
+      if(dsIds.length) await svDelete('ds', dsIds);
+    }
+    const deps=[...depLd()];
+    let depChanged=false;
+    deps.forEach(d=>{
+      if(d.stId===stId){ d.stId=null; d.matched=false; depChanged=true; }
+    });
+    if(depChanged) await depSv(deps);
+    renderSettleAll();
+    if(CUR_CLIENT) renderDetSettle();
+    toast('정산 내역 삭제됨','success');
+  }catch(e){
+    console.error(e);
+    toast('삭제 실패: '+(e?.message||e),'error');
   }
-  // wv_dep 참조 해제
-  let deps=[...depLd()];
-  deps.forEach(d=>{if(d.stId===stId){d.stId=null;d.matched=false;}});
-  await depSv(deps);
-  // 두 화면 모두 갱신
-  renderSettleAll();
-  if(CUR_CLIENT) renderDetSettle();
-  toast('정산 내역 삭제됨','success');
 }
 
 
@@ -6576,9 +6580,7 @@ async function doSync(silent=false){
       log('');
     }
 
-    // 매칭 실행 — 제자리(r.reviewUrl=) 수정 금지: sv('rc')는 저장 직전 RECORDS_CACHE와
-    // 비교하는데, 미리 바꾸면 "변경 없음"으로 판정되어 Firestore에 안 쓰이고,
-    // 이후 스냅샷/재로드 시 리뷰 URL이 사라진 것처럼 보임.
+    // 매칭된 행만 새 배열로 넘긴다. sv('rc')는 마지막 서버 동기화 상태와 비교해 바뀐 행만 쓴다.
     let updated=0, skipped=0;
     const nextRecords=d.records.map(r=>{
       const key=makeMatchKey(r.purchaseDate||'', r.product||'', r.receiver||'');
@@ -6944,13 +6946,16 @@ function renderClients(){
 // CLIENT DETAIL
 // ═══════════════════════════════════════════
 async function openDetail(cid){
+  clearSheetScope();
+  unsubscribeRecords();
+  RECORDS_CLIENT_ID=null;
   CUR_CLIENT=cid;
-  const d=ld(),c=d.clients.find(x=>x.id===cid);if(!c)return;
+  const d=ld(),c=d.clients.find(x=>x.id===cid);if(!c){CUR_CLIENT=null;return;}
   hide('cl-list');show('cl-detail');
   document.getElementById('det-name').textContent=c.name;
   document.getElementById('det-info').textContent=`${c.manager||''} ${c.phone?'· '+c.phone:''} · 코드: ${c.code}`;
-  // 선택한 거래처의 records만 로드 (records 전체 구독 제거 대체)
-  try{ if(typeof loadRecordsByClient==='function') await loadRecordsByClient(cid); }catch(e){ console.error(e); }
+  try{ if(typeof subscribeRecordsForClient==='function') await subscribeRecordsForClient(cid); }catch(e){ console.error(e); }
+  if(CUR_CLIENT!==cid) return;
   showDTab('dash');
   renderDetDash();renderDetProjView();renderDetQuote();renderDetSettle();renderInfoForm(c);
   // daily 탭은 lazy render on tab click
@@ -6963,7 +6968,10 @@ async function openDetail(cid){
 }
 function backToList(){
   if(SHEET_DIRTY&&!confirm('저장하지 않은 변경사항이 있습니다. 나가시겠습니까?'))return;
-  SHEET_DIRTY=false;hide('cl-detail');show('cl-list');CUR_CLIENT=null;
+  clearSheetScope();
+  unsubscribeRecords();
+  RECORDS_CLIENT_ID=null;
+  hide('cl-detail');show('cl-list');CUR_CLIENT=null;
 }
 function showDTab(name){
   document.querySelectorAll('[data-dtab]').forEach(t=>t.classList.toggle('active',t.dataset.dtab===name));
@@ -7356,82 +7364,55 @@ function normalizeDsDatesFromQuotes(){
 // ─────────────────────────────────────────────────────────
 // [핵심] 견적서 → 일/월 정산 행 생성/업데이트
 // ─────────────────────────────────────────────────────────
-function syncQtToDailySettle(qt){
-  if(!qt||!qt.date||!qt.clientId)return;
+function dsRowFromQuote(qt, prev){
   const d=ld();
-  const client=d.clients.find(cl=>cl.id===qt.clientId);
-  const dsArr=dsLd();
+  const client=(d.clients||[]).find(cl=>cl.id===qt.clientId);
   const qtDate=normalizeYMD(qt.date);
   const extracted=extractQtDsData(qt);
-
-  const existIdx=dsArr.findIndex(r=>r.qtId===qt.id);
-  if(existIdx>=0){
-    // 이미 있으면 거래처 정산 연동 필드만 덮어쓰기 (수기입력 보존)
-    const prev=dsArr[existIdx];
-    dsArr[existIdx]={
+  if(prev){
+    return {
       ...prev,
       date: qtDate||prev.date,
       clientId: qt.clientId,
       clientName: client?client.name:(prev.clientName||qt.toName||''),
-      ...extracted,
+      ...extracted
     };
-    dsSv(dsArr);
-  } else {
-    // 신규 생성
-    dsArr.push({
-      id:gid(), qtId:qt.id,
-      date:qtDate||qt.date, clientId:qt.clientId,
-      clientName:client?client.name:(qt.toName||''),
-      payDate:'', payName:'',
-      paid:false, ...extracted,
-      expReview:'', expMgr:'',
-      memo:'', bankTxId:''
-    });
-    dsSv(dsArr);
   }
+  return {
+    id:gid(), qtId:qt.id,
+    date:qtDate||qt.date, clientId:qt.clientId,
+    clientName:client?client.name:(qt.toName||''),
+    payDate:'', payName:'',
+    paid:false, ...extracted,
+    expReview:'', expMgr:'',
+    memo:'', bankTxId:''
+  };
+}
+async function syncQtToDailySettle(qt){
+  if(!qt||!qt.date||!qt.clientId) return;
+  const prev=dsLd().find(r=>r.qtId===qt.id);
+  await sv('ds', [dsRowFromQuote(qt, prev)]);
 }
 
 // ─────────────────────────────────────────────────────────
 // [핵심] 거래처 정산(wv_st) 변경 → 일/월 정산 행 동기화
 // stId: wv_st의 id (or qtId로도 찾기)
 // ─────────────────────────────────────────────────────────
-function syncDsRowFromSettle(stId){
-  try {
-    const settles=stLd();
-    const st=settles.find(s=>s.id===stId);
-    if(!st)return;
-
-    let dsArr=dsLd().slice();
-    let idx=dsArr.findIndex(r=>r.qtId===st.qtId);
-    // 연결된 dsRow가 없으면 견적서 기준으로 메모리에서 생성 (중간 dsSv 금지)
-    if(idx<0){
-      const q=(ld().quotes||[]).find(x=>x.id===st.qtId);
-      if(q){
-        const d=ld();
-        const client=d.clients.find(cl=>cl.id===q.clientId);
-        const extracted=extractQtDsData(q);
-        dsArr.push({
-          id:gid(), qtId:q.id,
-          date:normalizeYMD(q.date)||q.date, clientId:q.clientId,
-          clientName:client?client.name:(q.toName||''),
-          payDate:'', payName:'',
-          paid:false, ...extracted,
-          expReview:'', expMgr:'',
-          memo:'', bankTxId:''
-        });
-        idx=dsArr.length-1;
-      }
-    }
-    if(idx<0)return;
-
-    // 입금일자, 입금명 동기화
-    if(st.depositDate!==undefined) dsArr[idx].payDate = st.depositDate||'';
-    if(st.depositor!==undefined)   dsArr[idx].payName = st.depositor||'';
-    // 정산여부 동기화
-    dsArr[idx].paid = !!st.settled;
-
-    dsSv(dsArr);
-  } catch(e){ console.warn('syncDsRowFromSettle err:', e); }
+async function syncDsRowFromSettle(stId){
+  const st=stLd().find(s=>s.id===stId);
+  if(!st) return;
+  const prev=dsLd().find(r=>r.qtId===st.qtId);
+  let row;
+  if(prev) row={...prev};
+  else {
+    const q=(ld().quotes||[]).find(x=>x.id===st.qtId);
+    if(!q) return;
+    row=dsRowFromQuote(q, null);
+  }
+  if(st.depositDate!==undefined) row.payDate=st.depositDate||'';
+  if(st.depositor!==undefined) row.payName=st.depositor||'';
+  row.paid=!!st.settled;
+  await sv('ds', [row]);
 }
 
 // 모든 wv_st 행을 일괄 동기화 (페이지 진입시, 전체 동기화용)
@@ -7533,33 +7514,45 @@ async function syncSettlesFromDaily(){
   }catch(e){ console.warn('syncSettlesFromDaily err:',e); }
 }
 
-async function addToSettle(qt){
-  const settles=[...stLd()];
-  const itemParts=(qt.items||[]).map(it=>it.label||it.calc);
+function settleRowFromQuote(qt, prev){
+  const itemParts=(qt.items||[]).map(it=>it.label||it.calc).filter(Boolean);
+  const ti=qt.taxItems||{};
   if(qt.taxYn){
-    if(qt.taxFee)itemParts.push('세금① 진행비');
-    if(qt.taxDel)itemParts.push('세금② 택배비');
-    if(qt.taxProd)itemParts.push('세금③ 상품금액');
+    if(ti.fee||qt.taxFee) itemParts.push('세금① 진행비');
+    if(ti.delivery||qt.taxDel) itemParts.push('세금② 택배비');
+    if(ti.product||qt.taxProd) itemParts.push('세금③ 상품금액');
   }
-  const itemSummary=itemParts.join(' · ');
-  settles.push({
-    id:qt.id+'_st',qtId:qt.id,clientId:qt.clientId,
-    date:qt.date,no:qt.no,toName:qt.toName,
-    itemSummary,total:calcQtTotal(qt),taxYn:qt.taxYn||false,
-    settled:false,createdAt:new Date().toISOString(),
-  });
-  await stSv(settles);
+  const base=prev?{...prev}:{
+    id:qt.id+'_st', qtId:qt.id, clientId:qt.clientId,
+    settled:false, createdAt:new Date().toISOString()
+  };
+  return {
+    ...base,
+    clientId:qt.clientId,
+    date:qt.date,
+    no:qt.no,
+    toName:qt.toName,
+    itemSummary:itemParts.join(' · '),
+    total:calcQtTotal(qt),
+    taxYn:!!qt.taxYn,
+    taxFee:!!(ti.fee||qt.taxFee),
+    taxDel:!!(ti.delivery||qt.taxDel),
+    taxProd:!!(ti.product||qt.taxProd)
+  };
+}
+async function addToSettle(qt){
+  const prev=stLd().find(s=>s.qtId===qt.id);
+  await sv('st', [settleRowFromQuote(qt, prev)]);
 }
 
 async function syncSettleStatus(qtId,settled){
-  const settles=[...stLd()];
-  const idx=settles.findIndex(s=>s.qtId===qtId);
-  if(idx>=0){
-    if(settled) applyManualSettleDeposit(settles[idx]);
-    else settles[idx].settled=false;
-    await stSv(settles);
-    syncDsRowFromSettle(settles[idx].id);
-  }
+  const prev=stLd().find(s=>s.qtId===qtId);
+  if(!prev) return;
+  const next={...prev};
+  if(settled) applyManualSettleDeposit(next);
+  else next.settled=false;
+  await sv('st', [next]);
+  await syncDsRowFromSettle(next.id);
 }
 
 // 수동 정산완료 시 입금정보에 표시할 라벨 (입금 매칭 없이 완료 처리한 경우)
@@ -7580,12 +7573,10 @@ async function markSettleDone(stId,skipConfirm=false){
   const idx=settles.findIndex(s=>s.id===stId);if(idx<0)return;
   applyManualSettleDeposit(settles[idx]);
   await stSv(settles);
-  // 연결된 견적서도 settled 처리
   const qtId=settles[idx].qtId;
   const d=ld(),qi=d.quotes.findIndex(q=>q.id===qtId);
   if(qi>=0){d.quotes[qi].settled=true;await sv('qt',d.quotes);}
-  // ★ 일/월 정산 동기화 (입금명/입금일자/정산여부)
-  syncDsRowFromSettle(stId);
+  await syncDsRowFromSettle(stId);
   // 일괄 처리(skipConfirm) 시에는 항목별 재렌더/토스트를 생략 (호출부에서 마지막에 한 번 처리)
   if(!skipConfirm){
     renderDetSettle();renderDetQuote();
@@ -8765,38 +8756,12 @@ function openCloneQuotePicker(){
 }
 
 async function updateSettleFromQuote(qt){
-  try{
-    const settles=[...stLd()];
-    const idx=settles.findIndex(s=>s.qtId===qt.id);
-    const itemParts=(qt.items||[]).map(it=>it.label||it.calc).filter(Boolean);
-    const ti=qt.taxItems||{};
-    if(qt.taxYn){
-      if(ti.fee)itemParts.push('세금① 진행비');
-      if(ti.delivery)itemParts.push('세금② 택배비');
-      if(ti.product)itemParts.push('세금③ 상품금액');
-    }
-    const itemSummary=itemParts.join(' · ');
-    if(idx>=0){
-      settles[idx]={...settles[idx],
-        date:qt.date,
-        no:qt.no,
-        toName:qt.toName,
-        itemSummary,
-        total:calcQtTotal(qt),
-        taxYn:!!qt.taxYn,
-        taxFee:!!ti.fee,
-        taxDel:!!ti.delivery,
-        taxProd:!!ti.product
-      };
-      await stSv(settles);
-    } else {
-      await addToSettle(qt);
-    }
-    try{ scheduleRerender(); }catch(e){}
-  }catch(e){ console.warn('updateSettleFromQuote err',e); }
+  const prev=stLd().find(s=>s.qtId===qt.id);
+  await sv('st', [settleRowFromQuote(qt, prev)]);
+  try{ scheduleRerender(); }catch(e){}
 }
 
-function saveQuoteForm(){
+async function saveQuoteForm(){
   const date=document.getElementById('qn-date')?.value;
   if(!date){toast('견적일자를 입력하세요','error');return;}
   if(!QT_NEW_ITEMS.length){toast('견적 항목을 1개 이상 추가하세요','error');return;}
@@ -8835,20 +8800,22 @@ function saveQuoteForm(){
       supplierKey:supplierInfo.supplierKey,
       supplier:supplierInfo.supplier,
     };
-    d.quotes[idx]=qt;
-    sv('qt',d.quotes);
-    // 정산/일월정산 반영
-    updateSettleFromQuote(qt);
-    syncQtToDailySettle(qt);
-    // 업체 링크 화면도 같은 거래처를 보고 있다면 즉시 동기화
+    try{
+      await sv('qt', [qt]);
+      await updateSettleFromQuote(qt);
+      await syncQtToDailySettle(qt);
+    }catch(e){
+      console.error(e);
+      toast('저장 실패: '+(e?.message||e),'error');
+      return;
+    }
     _syncClientViewIfSameClient();
     closeNewQuoteForm();
-    // 현재 브라우저에서는 폼을 닫은 뒤에만 견적/정산 화면을 다시 그림
     renderDetQuote();renderDetSettle();
     try{ scheduleRerender(); }catch(e){}
     toast('견적서 수정 완료');
   } else {
-    saveNewQuote(); // 신규는 기존 로직 사용
+    await saveNewQuote();
   }
 }
 
@@ -9032,7 +8999,7 @@ function calcProdFee(){
   if(disp)disp.textContent=fmtN(supply)+'원';
   if(detail)detail.textContent=`상품값 ${fmtN(amt)}원 + 수수료 ${fmtN(commission)}원 = 공급가 ${fmtN(supply)}원 → 부가세 ${fmtN(vat)}원 → 합계 ${fmtN(total)}원`;
 }
-function saveNewQuote(){
+async function saveNewQuote(){
   const date=document.getElementById('qn-date')?.value;
   if(!date){toast('견적일자를 입력하세요','error');return;}
   if(!QT_NEW_ITEMS.length){toast('견적 항목을 1개 이상 추가하세요','error');return;}
@@ -9069,14 +9036,15 @@ function saveNewQuote(){
     settled:false,collapsed:true,
     createdAt:new Date().toISOString(),
   };
-  const d=ld();
-  d.quotes.push(qt);
-  sv('qt',d.quotes);
-  // 정산탭 자동 업로드 (수정 6)
-  addToSettle(qt);
-  // 일/월 정산 자동 연동
-  syncQtToDailySettle(qt);
-  // 업체 링크 화면도 같은 거래처를 보고 있다면 즉시 동기화
+  try{
+    await sv('qt', [qt]);
+    await updateSettleFromQuote(qt);
+    await syncQtToDailySettle(qt);
+  }catch(e){
+    console.error(e);
+    toast('저장 실패: '+(e?.message||e),'error');
+    return;
+  }
   _syncClientViewIfSameClient();
   closeNewQuoteForm();
   renderDetQuote();
@@ -9120,37 +9088,73 @@ function toggleQt(qtId){
   renderDetQuote();
 }
 
-function markQtSettled(qtId){
+async function markQtSettled(qtId){
   if(!confirm('정산 완료 처리 하시겠습니까?'))return;
   const d=ld(),idx=d.quotes.findIndex(q=>q.id===qtId);if(idx<0)return;
-  d.quotes[idx].settled=true;
-  sv('qt',d.quotes);
-  // 정산탭 settled 동기화
-  syncSettleStatus(qtId,true);
+  try{
+    await sv('qt', [{...d.quotes[idx], settled:true}]);
+    await syncSettleStatus(qtId,true);
+  }catch(e){
+    console.error(e);
+    toast('저장 실패: '+(e?.message||e),'error');
+    return;
+  }
   renderDetQuote();renderDetSettle();
   toast('정산 완료 처리됨');
 }
 
-function delQt(qtId){
+async function delQt(qtId){
   if(!confirm('견적서를 삭제하시겠습니까?'))return;
-  const d=ld();
-  // 견적서 삭제
-  d.quotes=d.quotes.filter(q=>q.id!==qtId);
-  sv('qt',d.quotes);
-  // 연결된 거래처 정산(wv_st) 삭제
+  const stIds=stLd().filter(s=>s.qtId===qtId).map(s=>s.id).filter(Boolean);
+  const dsIds=dsLd().filter(r=>r.qtId===qtId).map(r=>r.id).filter(Boolean);
   try{
-    let settles=[...stLd()];
-    settles=settles.filter(s=>s.qtId!==qtId);
-    stSv(settles);
-  }catch(e){console.warn('delQt settle sync err',e);}
-  // 연결된 일/월 정산(dailySettleRows) 삭제
+    await svDelete('qt',[qtId]);
+    if(stIds.length) await svDelete('st', stIds);
+    if(dsIds.length) await svDelete('ds', dsIds);
+    renderDetQuote();renderDetSettle();
+    try{ scheduleRerender(); }catch(e){}
+    toast('삭제됨');
+  }catch(e){
+    console.error(e);
+    toast('삭제 실패: '+(e?.message||e),'error');
+  }
+}
+
+async function cleanupOrphanSettles(){
+  const quoteIds=new Set((ld().quotes||[]).map(q=>q.id).filter(Boolean));
+  const clientNameById=id=>{
+    const c=(ld().clients||[]).find(x=>x.id===id);
+    return c&&c.name?c.name:'';
+  };
+  const stOrphans=stLd().filter(s=>s&&s.qtId&&!quoteIds.has(s.qtId));
+  const dsOrphans=dsLd().filter(r=>r&&r.qtId&&!quoteIds.has(r.qtId));
+  if(!stOrphans.length&&!dsOrphans.length){
+    toast('정리할 고아 정산 데이터가 없습니다');
+    return;
+  }
+  const names=new Set();
+  stOrphans.forEach(s=>names.add(clientNameById(s.clientId)||s.toName||'(이름 없음)'));
+  dsOrphans.forEach(r=>names.add(r.clientName||clientNameById(r.clientId)||'(이름 없음)'));
+  const msg=[
+    '견적서가 없는 정산 데이터입니다.',
+    '거래처 정산 '+stOrphans.length+'건, 일/월 정산 '+dsOrphans.length+'건',
+    '거래처: '+[...names].join(', '),
+    '삭제할까요?'
+  ].join('\n');
+  if(!confirm(msg)) return;
   try{
-    const dsArr=dsLd().filter(r=>r.qtId!==qtId);
-    dsSv(dsArr);
-  }catch(e){console.warn('delQt ds sync err',e);}
-  renderDetQuote();renderDetSettle();
-  try{ scheduleRerender(); }catch(e){}
-  toast('삭제됨');
+    const stIds=stOrphans.map(s=>s.id).filter(Boolean);
+    const dsIds=dsOrphans.map(r=>r.id).filter(Boolean);
+    if(stIds.length) await svDelete('st', stIds);
+    if(dsIds.length) await svDelete('ds', dsIds);
+    try{ renderSettleAll(); }catch(e){}
+    try{ if(CUR_CLIENT) renderDetSettle(); }catch(e){}
+    try{ if(typeof reloadCurrentDsView==='function') reloadCurrentDsView(); }catch(e){}
+    toast('고아 정산 데이터를 삭제했습니다');
+  }catch(e){
+    console.error(e);
+    toast('삭제 실패: '+(e?.message||e),'error');
+  }
 }
 
 function exportClientQuotesExcel(){
@@ -9473,9 +9477,13 @@ function crmToggle(id){
 }
 async function delCrmQuote(id){
   if(!confirm('CRM 견적서를 삭제하시겠습니까?'))return;
-  const arr=(ld().quotes||[]).filter(x=>x.id!==id);
-  await sv('qt',arr);
-  renderCrmQuotes();
+  try{
+    await svDelete('qt',[id]);
+    renderCrmQuotes();
+  }catch(e){
+    console.error(e);
+    toast('삭제 실패: '+(e?.message||e),'error');
+  }
 }
 function openCrmLinkClient(id){
   const body=document.getElementById('crm-body-'+id);
@@ -9508,10 +9516,10 @@ async function linkCrmQuoteToClient(id){
     const nextQt={...q,id:gid(),clientId:cid,settled:false,collapsed:true,crmMode:false,crmTransferredFrom:id,createdAt:new Date().toISOString()};
     const quotes=[...(d.quotes||[])];
     quotes.push(nextQt);
-    const crmRemoved=quotes.filter(x=>x.id!==id);
-    await sv('qt',crmRemoved);
+    await sv('qt', quotes);
+    await svDelete('qt', [id]);
     await addToSettle(nextQt);
-    syncQtToDailySettle(nextQt);
+    await syncQtToDailySettle(nextQt);
     try{ renderDetQuote(); renderDetSettle(); }catch(e){}
     renderCrmQuotes();
     toast('거래처 견적서로 이관 및 연동 완료');
@@ -10048,8 +10056,15 @@ async function deleteClientById(cid, cname){
   RECORDS_CACHE = (RECORDS_CACHE||[]).filter(r=>!removedPids.has(r.projectId));
   QUOTES_CACHE = (QUOTES_CACHE||[]).filter(q=>q.clientId!==cid);
   SETTLES_CACHE = (SETTLES_CACHE||[]).filter(s=>s.clientId!==cid);
+  const dsIds=(DS_CACHE||[]).filter(r=>r.clientId===cid).map(r=>r.id).filter(Boolean);
   DS_CACHE = (DS_CACHE||[]).filter(r=>r.clientId!==cid);
-  dsSv(dsLd().filter(r=>r.clientId!==cid));
+  if(dsIds.length){
+    try{ await svDelete('ds', dsIds); }
+    catch(e){
+      console.error(e);
+      toast('일별정산 삭제 실패: '+(e?.message||e),'error');
+    }
+  }
   if(CUR_CLIENT===cid) backToList();
   scheduleRerender();
   renderClients();renderOverview();
@@ -10064,6 +10079,7 @@ function onSheetProjChange(){
   const v=document.getElementById('sheet-proj-sel').value;
   const delBtn=document.getElementById('btn-del-proj');
   if(v==='__new__'){
+    clearSheetScope();
     show('new-proj-form');
     document.getElementById('sheet-container').innerHTML='<div style="text-align:center;padding:40px;color:var(--text3);font-size:13px">신규 프로젝트 정보를 입력하고 "생성"을 눌러주세요</div>';
     if(delBtn)delBtn.style.display='none';
@@ -10073,6 +10089,7 @@ function onSheetProjChange(){
       loadSheet(v);
       if(delBtn)delBtn.style.display=(v==='__all__'?'none':'inline-flex');
     } else {
+      clearSheetScope();
       document.getElementById('sheet-container').innerHTML='<div style="text-align:center;padding:60px;color:var(--text3);font-size:13px">프로젝트를 선택하면 스프레드시트가 열립니다</div>';
       if(delBtn)delBtn.style.display='none';
     }
@@ -10097,7 +10114,7 @@ function createNewProject(){
   renderDetDash();renderDetProjView();renderDetQuote();renderOverview();
   toast('프로젝트 생성!');loadSheet(proj.id);
 }
-function cancelNewProject(){hide('new-proj-form');document.getElementById('sheet-proj-sel').value='';document.getElementById('sheet-container').innerHTML='<div style="text-align:center;padding:60px;color:var(--text3);font-size:13px">프로젝트를 선택하면 스프레드시트가 열립니다</div>';}
+function cancelNewProject(){clearSheetScope();hide('new-proj-form');document.getElementById('sheet-proj-sel').value='';document.getElementById('sheet-container').innerHTML='<div style="text-align:center;padding:60px;color:var(--text3);font-size:13px">프로젝트를 선택하면 스프레드시트가 열립니다</div>';}
 function openSheetFor(projId){showDTab('input');document.getElementById('sheet-proj-sel').value=projId;hide('new-proj-form');loadSheet(projId);}
 
 // ═══════════════════════════════════════════
@@ -10178,6 +10195,22 @@ function normPurchaseDate(s){
   }
   return raw; // 파싱 안되면 원문
 }
+function clearSheetScope(){
+  SHEET_PROJ=null;
+  SHEET_ROWS=[];
+  SHEET_ORIG_IDS=[];
+  SHEET_DIRTY=false;
+}
+function sheetScopeRecordIds(){
+  if(!CUR_CLIENT||!SHEET_PROJ) return [];
+  const d=ld();
+  const records=d.records||[];
+  if(SHEET_PROJ==='__all__'){
+    const pids=new Set((d.projects||[]).filter(p=>p&&p.clientId===CUR_CLIENT&&p.id).map(p=>p.id));
+    return records.filter(r=>r&&r.id&&pids.has(r.projectId)).map(r=>r.id);
+  }
+  return records.filter(r=>r&&r.id&&r.projectId===SHEET_PROJ).map(r=>r.id);
+}
 function loadSheet(projId){
   SHEET_PROJ=projId;SHEET_DIRTY=false;
   loadExtraCols();COLS=getCOLS();
@@ -10201,6 +10234,7 @@ function loadSheet(projId){
     SHEET_ROWS=d.records.filter(r=>r.projectId===projId).map(r=>({...r}));
     SHEET_ROWS.sort((a,b)=>(Number(a.no)||0)-(Number(b.no)||0));
   }
+  SHEET_ORIG_IDS=sheetScopeRecordIds();
   if(!SHEET_ROWS.length)SHEET_ROWS=[blankRow(1)];
   renderSheet();
 }
@@ -10790,7 +10824,7 @@ function exportMissingReviewXlsx(){
 }
 
 // ── 프로젝트 전체 삭제 ──────────────────────────────
-function deleteCurrentProject(){
+async function deleteCurrentProject(){
   if(!SHEET_PROJ){toast('프로젝트를 선택하세요','error');return;}
   const d=ld();
   const p=d.projects.find(x=>x.id===SHEET_PROJ);
@@ -10801,15 +10835,16 @@ function deleteCurrentProject(){
     '- 연결된 데이터 '+recCount+'건\n\n' +
     '삭제된 데이터는 복구할 수 없습니다.')){return;}
   const _delProjId=SHEET_PROJ;
-  // 프로젝트 삭제
-  d.projects=d.projects.filter(x=>x.id!==SHEET_PROJ);
-  // 연결 레코드 삭제
-  d.records=d.records.filter(r=>r.projectId!==SHEET_PROJ);
-  // Firestore에서 프로젝트 문서 명시적 삭제 (sv('pr')는 set(merge)만 하므로 삭제는 여기서 처리)
-  try{ if(typeof db!=='undefined'&&_delProjId) db.collection('projects').doc(_delProjId).delete(); }catch(e){ console.error('deleteCurrentProject doc.delete',e); }
-  sv('pr',d.projects);
-  sv('rc',d.records);
-  SHEET_PROJ=null;SHEET_ROWS=[];SHEET_DIRTY=false;
+  const recIds=d.records.filter(r=>r.projectId===_delProjId).map(r=>r.id).filter(Boolean);
+  try{
+    await svDelete('pr',[_delProjId]);
+    if(recIds.length) await svDelete('rc', recIds);
+  }catch(e){
+    console.error(e);
+    toast('삭제 실패: '+(e?.message||e),'error');
+    return;
+  }
+  clearSheetScope();
   // 프로젝트 셀렉트 초기화
   const sel=document.getElementById('sheet-proj-sel');
   if(sel){
@@ -10956,13 +10991,13 @@ function delExtraCol(ci){
   toast('열 삭제됨: '+col.lb);
 }
 
-function saveSheet(){
+async function saveSheet(){
   if(!SHEET_PROJ){toast('프로젝트를 선택하세요','error');return;}
+  if(!guardRecordsSave()) return;
+  (SHEET_ROWS||[]).forEach(r=>{ if(r && !r.id) r.id=gid(); });
   const d=ld();
-  let others,nr;
+  let nr;
   if(SHEET_PROJ==='__all__'){
-    const clientProjIds=new Set(d.projects.filter(p=>p.clientId===CUR_CLIENT).map(p=>p.id));
-    others=d.records.filter(r=>!clientProjIds.has(r.projectId));
     nr=SHEET_ROWS
       .filter(r=>r.nickname||r.receiver||r.phone||r.product)
       .map((r,i)=>{
@@ -10973,7 +11008,6 @@ function saveSheet(){
         return {...r,no:i+1,amount:numAmt};
       });
   } else {
-    others=d.records.filter(r=>r.projectId!==SHEET_PROJ);
     nr=SHEET_ROWS
       .filter(r=>r.nickname||r.receiver||r.phone||r.product)
       .map((r,i)=>{
@@ -10984,22 +11018,39 @@ function saveSheet(){
         return {...r,projectId:SHEET_PROJ,no:i+1,amount:numAmt};
       });
   }
-  // 저장은 비동기로 처리하되, 저장 중에는 추가 저장 요청을 막기 위해 버튼 비활성화
+  const nrIds=new Set(nr.map(r=>r&&r.id).filter(Boolean));
+  const origIds=(SHEET_ORIG_IDS||[]).filter(Boolean);
+  const removedIds=origIds.filter(id=>!nrIds.has(id));
+  const liveIds=new Set(sheetScopeRecordIds());
+  const revived=nr.filter(r=>r&&r.id&&origIds.includes(r.id)&&!liveIds.has(r.id));
+  if(revived.length){
+    if(!confirm('다른 사용자가 삭제한 행 '+revived.length+'건이 포함되어 있습니다. 다시 저장할까요?')) return;
+  }
+  if(removedIds.length && origIds.length && removedIds.length*2>=origIds.length){
+    if(!confirm(removedIds.length+'건이 삭제됩니다. 계속할까요?')) return;
+  }
+  const removedProjIds=new Set();
+  (d.records||[]).forEach(r=>{
+    if(r&&removedIds.includes(r.id)&&r.projectId!=null) removedProjIds.add(r.projectId);
+  });
   const saveBtn=document.querySelector('#dp-input .btn.btn-green.btn-sm[onclick="saveSheet()"]');
   if(saveBtn){saveBtn.disabled=true;saveBtn.textContent='저장 중...';}
-  sv('rc',[...others,...nr]).then(()=>{
+  try{
+    await sv('rc', nr);
+    if(removedIds.length) await svDelete('rc', removedIds);
+    if(removedProjIds.size){ try{ invalidateRecordsCacheByProjectIds(removedProjIds); }catch(_){} }
+    SHEET_ORIG_IDS=nr.map(r=>r&&r.id).filter(Boolean);
     SHEET_DIRTY=false;
     const el=document.getElementById('sheet-dirty-ind');if(el){el.textContent='✓ 저장됨';el.style.color='var(--green)';}
-    // 저장 후에는 현재 거래처 관련 화면만 최소한으로 갱신
     try{renderDetDash();}catch(e){}
     try{renderDetProjView();}catch(e){}
     toast(`${nr.length}건 저장 완료`);
-  }).catch(e=>{
+  }catch(e){
     console.error(e);
-    toast('저장 중 오류가 발생했습니다: '+e.message,'error');
-  }).finally(()=>{
+    toast('저장 중 오류가 발생했습니다: '+(e&&e.message?e.message:e),'error');
+  }finally{
     if(saveBtn){saveBtn.disabled=false;saveBtn.textContent='💾 저장';}
-  });
+  }
 }
 
 // ── 1번: 붙여넣기 열 분리 (필터 시 보이는 행에만 채움) ──
@@ -11721,11 +11772,15 @@ function addCompanyExpense(){
   toast('경비 추가됨');
 }
 
-function delCompanyExpense(id){
+async function delCompanyExpense(id){
   if(!confirm('삭제하시겠습니까?'))return;
-  const arr=expLd().filter(e=>e.id!==id);
-  expSv(arr);
-  renderCompanyExpenses();
+  try{
+    await svDelete('exp',[id]);
+    renderCompanyExpenses();
+  }catch(e){
+    console.error(e);
+    toast('삭제 실패: '+(e?.message||e),'error');
+  }
 }
 
 function renderCompanyExpenses(){
@@ -12372,7 +12427,7 @@ function openAddDsRow(){
   // 날짜 필드 채우기
 }
 
-function saveDsRowModal(){
+async function saveDsRowModal(){
   const dateVal = document.getElementById('ds-row-date').value || DS_DATE;
   const sel = document.getElementById('ds-row-client-sel');
   const selOpt = sel&&sel.value ? sel.options[sel.selectedIndex] : null;
@@ -12389,9 +12444,13 @@ function saveDsRowModal(){
     expReview:'',expBox:'',expMgr:'',
     memo:'', bankTxId:''
   };
-  const arr=dsLd();
-  arr.push(newRow);
-  dsSv(arr);
+  try{
+    await sv('ds', [newRow]);
+  }catch(e){
+    console.error(e);
+    toast('저장 실패: '+(e?.message||e),'error');
+    return;
+  }
   closeMd('add-ds-row');
   loadDailySettle(dateVal);
   if(dateVal !== DS_DATE){ DS_DATE=dateVal; document.getElementById('ds-date-input').value=dateVal; }
@@ -12408,18 +12467,23 @@ async function delDsRow(id){
     : '이 정산 행을 삭제하시겠습니까?';
   if(!confirm(msg))return;
 
-  if(hasQt){
-    const qtId=row.qtId;
-    // 현재 행은 무조건 삭제하고, qtId가 연결된 행/정산/견적도 함께 제거
-    dsSv(arr.filter(r=>r.id!==id && r.qtId!==qtId));
-    await stSv(stLd().filter(s=>s.qtId!==qtId && s.id!==(qtId+'_st')));
-    const d=ld();
-    await sv('qt',(d.quotes||[]).filter(q=>q.id!==qtId));
-    try{ scheduleRerender(); }catch(_){}
-    toast('행 및 연결 데이터 삭제 완료');
-  }else{
-    dsSv(arr.filter(r=>r.id!==id));
-    toast('행 삭제 완료');
+  try{
+    if(hasQt){
+      const qtId=row.qtId;
+      const dsIds=arr.filter(r=>r.id===id || r.qtId===qtId).map(r=>r.id).filter(Boolean);
+      const stIds=stLd().filter(s=>s.qtId===qtId || s.id===(qtId+'_st')).map(s=>s.id).filter(Boolean);
+      await svDelete('ds', dsIds);
+      if(stIds.length) await svDelete('st', stIds);
+      await svDelete('qt', [qtId]);
+      try{ scheduleRerender(); }catch(_){}
+      toast('행 및 연결 데이터 삭제 완료');
+    }else{
+      await svDelete('ds', [id]);
+      toast('행 삭제 완료');
+    }
+  }catch(e){
+    console.error(e);
+    toast('삭제 실패: '+(e?.message||e),'error');
   }
   reloadCurrentDsView();
 }
@@ -12773,11 +12837,16 @@ function selectBankTx(id){
   renderBankUnmatched();
 }
 
-function delBankTx(id){
+async function delBankTx(id){
   if(!confirm('입금내역을 삭제하시겠습니까?'))return;
-  bankSv(bankLd().filter(t=>t.id!==id));
-  if(DS_SELECTED_BANK===id)DS_SELECTED_BANK=null;
-  renderBankUnmatched();
+  try{
+    await svDelete('bank',[id]);
+    if(DS_SELECTED_BANK===id)DS_SELECTED_BANK=null;
+    renderBankUnmatched();
+  }catch(e){
+    console.error(e);
+    toast('삭제 실패: '+(e?.message||e),'error');
+  }
 }
 
 function loadBankMatchRows(dateStr){
@@ -12933,7 +13002,7 @@ function doDsImport(){
   const file=document.getElementById('ds-import-file').files[0];
   if(!file){toast('파일을 선택하세요','error');return;}
   const reader=new FileReader();
-  reader.onload=function(e){
+  reader.onload=async function(e){
     try{
       const wb=XLSX.read(new Uint8Array(e.target.result),{type:'array'});
       const shName=wb.SheetNames.includes('일매출기록')?'일매출기록':wb.SheetNames[0];
@@ -12957,8 +13026,8 @@ function doDsImport(){
         return d.toISOString().slice(0,10);
       };
       let added=0,skipped=0;
-      const existArr=dsLd();
-      const existKeys=new Set(existArr.map(r=>r.date+'|'+r.clientName+'|'+(r.feeAmt||'')));
+      const existKeys=new Set(dsLd().map(r=>r.date+'|'+r.clientName+'|'+(r.feeAmt||'')));
+      const addedRows=[];
 
       // 실제 데이터 시작 행은 "일자+업체명"이 유효하게 채워진 첫 행부터로 자동 감지
       let startIdx=0;
@@ -12993,11 +13062,11 @@ function doDsImport(){
           expReview:Number(r[16])||'', expBox:Number(r[17])||'', expMgr:Number(r[18])||'',
           memo:String(r[26]||'').trim(), bankTxId:''
         };
-        existArr.push(newRow);
+        addedRows.push(newRow);
         existKeys.add(key);
         added++;
       });
-      dsSv(existArr);
+      if(addedRows.length) await sv('ds', addedRows);
       closeMd('ds-import');
       loadDailySettle(DS_DATE);
       toast(`${added}건 임포트 완료${skipped?' (중복 '+skipped+'건 제외)':''}`);
