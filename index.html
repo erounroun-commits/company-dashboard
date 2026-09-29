@@ -2732,6 +2732,8 @@ function doLogin(){
 function doLogout(){
   CUR_ADMIN=null;
   PENDING_ADMIN_PAGE=null;
+  try{ if(GSYNC_TIMER){ clearTimeout(GSYNC_TIMER); GSYNC_TIMER=null; } }catch(e){}
+  try{ _gsyncReleaseLock(); }catch(e){}
   updateAdminUI();
   // 서브메뉴 닫기
   const sub=document.getElementById('nav-admin-sub');
@@ -6510,10 +6512,103 @@ function makeMatchKey(date,product,receiver){
   return normalizeDate(date)+':'+normalizeText(product)+':'+normalizeText(receiver);
 }
 
+let _gsyncLockOwner='';
+let _gsyncRunning=false;
+function _gsyncLockOwnerId(){
+  if(!_gsyncLockOwner){
+    _gsyncLockOwner=(window.crypto&&crypto.randomUUID)
+      ? crypto.randomUUID()
+      : ('gsync-'+Date.now()+'-'+Math.random().toString(36).slice(2));
+  }
+  return _gsyncLockOwner;
+}
+function _gsyncCanAutoRun(){
+  // 보이는 탭이고, 권한 role이 관리자인 로그인 상태일 때만 자동 실행
+  return document.visibilityState==='visible' && !!(CUR_ADMIN && CUR_ADMIN.role==='admin');
+}
+async function _gsyncMutateLock(holdMs, release){
+  if(typeof db==='undefined') return false;
+  const owner=_gsyncLockOwnerId();
+  const ref=db.collection('settings').doc('gsyncLock');
+  return await db.runTransaction(async tx=>{
+    const snap=await tx.get(ref);
+    const data=snap.exists?(snap.data()||{}):{};
+    const now=Date.now();
+    const until=Number(data.until)||0;
+    if(release){
+      if(data.owner===owner) tx.set(ref, {owner, until:0});
+      return true;
+    }
+    if(data.owner && data.owner!==owner && until>now) return false;
+    tx.set(ref, {owner, until: now+holdMs});
+    return true;
+  });
+}
+function _gsyncAcquireLock(holdMs){ return _gsyncMutateLock(holdMs, false); }
+function _gsyncRenewLock(holdMs){ return _gsyncMutateLock(holdMs, false); }
+function _gsyncReleaseLock(){ return _gsyncMutateLock(0, true).catch(()=>{}); }
+
+async function _gsyncLoadTargetRecords(){
+  if(typeof db==='undefined') throw new Error('Firestore 연결 없음');
+  let projects=PROJECTS_CACHE||[];
+  if(!projects.length){
+    const snap=await db.collection('projects').get();
+    projects=snap.docs.map(d=>({id:d.id,...(d.data()||{})}));
+  }
+  const seen=new Set();
+  const projIds=[];
+  projects.forEach(p=>{
+    if(!p||!p.id||seen.has(p.id)) return;
+    if(String(p.status||'').trim()==='완료') return;
+    seen.add(p.id);
+    projIds.push(p.id);
+  });
+  const records=[];
+  for(let i=0;i<projIds.length;i+=30){
+    const chunk=projIds.slice(i, i+30);
+    const snap=await db.collection('records').where('projectId','in',chunk).get();
+    snap.docs.forEach(doc=>records.push({id:doc.id,...(doc.data()||{})}));
+  }
+  return records;
+}
+
+function _gsyncReflectOpenClient(changed){
+  if(!CUR_CLIENT||!changed.length) return;
+  if(RECORDS_CLIENT_ID!==CUR_CLIENT) return;
+  const pids=new Set(_clientProjectIds(CUR_CLIENT).map(id=>String(id)));
+  const urlById=new Map();
+  changed.forEach(u=>{
+    if(u&&u.id&&pids.has(String(u.projectId))) urlById.set(u.id, u.reviewUrl);
+  });
+  if(!urlById.size) return;
+  RECORDS_CACHE=(RECORDS_CACHE||[]).map(r=>{
+    if(!r||!urlById.has(r.id)) return r;
+    return {...r, reviewUrl:urlById.get(r.id)};
+  });
+  try{
+    const sync=_svSync.rc||(_svSync.rc=new Map());
+    RECORDS_CACHE.forEach(r=>{
+      if(!r||!urlById.has(r.id)) return;
+      const json=_svItemJson(r);
+      if(json!=null) sync.set(r.id, json);
+    });
+  }catch(e){}
+  if(Array.isArray(SHEET_ROWS)){
+    SHEET_ROWS.forEach(r=>{
+      if(r&&urlById.has(r.id)) r.reviewUrl=urlById.get(r.id);
+    });
+  }
+  try{renderDetDash();}catch(e){}
+  try{renderDetProjView();}catch(e){}
+  if(!SHEET_DIRTY){ try{renderSheet();}catch(e){} }
+  try{renderOverview();}catch(e){}
+}
+
 async function doSync(silent=false){
   const s=gsyncLoad();
   if(!s.url){ if(!silent) toast('시트 URL이 설정되지 않았습니다','error'); return; }
 
+  _gsyncRunning=true;
   const logEl=document.getElementById('gsync-log');
   const statusEl=document.getElementById('gsync-status');
   const now=new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
@@ -6543,33 +6638,44 @@ async function doSync(silent=false){
     const cRecv=ci(s.colReceiver||4);// D열=3
     const cUrl =ci(s.colUrl||5);     // E열=4
 
-    // 시트 → 매칭맵
+    // 시트 → 매칭맵 (URL 있는 행 수와 키 맵을 같이 센다)
     const sheetMap={};
+    let sheetUrlRows=0;
     dataRows.forEach(row=>{
       const url=(row[cUrl]||'').trim();
       if(!url) return;
+      sheetUrlRows++;
       const key=makeMatchKey(row[cDate]||'', row[cProd]||'', row[cRecv]||'');
-      if(key!=='::'&&key!=='::') sheetMap[key]=url;
+      if(key!=='::') sheetMap[key]=url;
     });
 
-    log(`📋 시트 ${dataRows.length}행 로드 / URL 있는 행: ${Object.keys(sheetMap).length}개`);
+    // 완료가 아닌 모든 프로젝트 records. RECORDS_CACHE는 매칭에 쓰지 않는다.
+    const targetRecords=await _gsyncLoadTargetRecords();
 
-    const d=ld();
-
-    // ── 디버그: 미매칭 샘플 최대 5개 + 시트에서 유사 키 검색
+    let matched=0, unmatched=0, updated=0;
+    const changed=[];
     const unmatchedSamples=[];
-    d.records.forEach(r=>{
-      if(unmatchedSamples.length>=5) return;
-      const k=makeMatchKey(r.purchaseDate||'', r.product||'', r.receiver||'');
-      if(!sheetMap[k]) unmatchedSamples.push({k, raw:{date:r.purchaseDate,prod:r.product,recv:r.receiver}});
+    targetRecords.forEach(r=>{
+      const key=makeMatchKey(r.purchaseDate||'', r.product||'', r.receiver||'');
+      const newUrl=sheetMap[key];
+      if(newUrl){
+        matched++;
+        if(r.id && newUrl!==r.reviewUrl){
+          updated++;
+          changed.push({id:r.id, reviewUrl:newUrl, projectId:r.projectId});
+        }
+      }else{
+        unmatched++;
+        if(unmatchedSamples.length<5){
+          unmatchedSamples.push({k:key, raw:{date:r.purchaseDate,prod:r.product,recv:r.receiver}});
+        }
+      }
     });
 
     if(unmatchedSamples.length){
-      log('\n[미매칭 웹앱 키 샘플]');
+      log('[미매칭 웹앱 키 샘플]');
       unmatchedSamples.forEach(({k,raw})=>{
         log('  웹앱: '+k);
-        // 시트에서 날짜+수취인이 유사한 키 찾기
-        const dateRecv=k.split(':')[0]+':'+k.split(':')[2]; // 날짜:수취인
         const similar=Object.keys(sheetMap).filter(sk=>{
           const p=sk.split(':');
           return (p[0]===k.split(':')[0]||p[2]===k.split(':')[2]);
@@ -6580,30 +6686,17 @@ async function doSync(silent=false){
       log('');
     }
 
-    // 매칭된 행만 새 배열로 넘긴다. sv('rc')는 마지막 서버 동기화 상태와 비교해 바뀐 행만 쓴다.
-    let updated=0, skipped=0;
-    const nextRecords=d.records.map(r=>{
-      const key=makeMatchKey(r.purchaseDate||'', r.product||'', r.receiver||'');
-      const newUrl=sheetMap[key];
-      if(newUrl&&newUrl!==r.reviewUrl){
-        updated++;
-        return {...r, reviewUrl:newUrl};
-      }
-      if(!newUrl) skipped++;
-      return {...r};
-    });
-
-    if(updated>0){
-      sv('rc',nextRecords);
-      if(CUR_CLIENT){
-        try{renderDetDash();}catch(e){}
-        try{renderDetProjView();}catch(e){}
-        try{renderSheet();}catch(e){}
-      }
-      try{renderOverview();}catch(e){}
+    const col=db.collection('records');
+    for(let i=0;i<changed.length;i+=400){
+      const chunk=changed.slice(i, i+400);
+      const batch=db.batch();
+      chunk.forEach(u=>batch.update(col.doc(u.id), {reviewUrl:u.reviewUrl}));
+      await batch.commit();
     }
+    _gsyncReflectOpenClient(changed);
 
-    const msg=`✅ 동기화 완료 — ${updated}건 업데이트 / ${skipped}건 미매칭`;
+    const summary=`시트 URL 행 ${sheetUrlRows} / 대상 records ${targetRecords.length} / 매칭 ${matched} / 미매칭 ${unmatched}`;
+    const msg=`✅ 동기화 완료 — ${updated}건 업데이트 / ${summary}`;
     log(msg);
     gsyncSave({...s,lastSync:new Date().toISOString(),lastResult:msg});
     if(statusEl) statusEl.innerHTML='✅ '+now+'\n'+updated+'건 업데이트';
@@ -6616,6 +6709,8 @@ async function doSync(silent=false){
     if(statusEl) statusEl.textContent='❌ 실패: '+e.message;
     if(!silent) toast(msg,'error');
     return false;
+  }finally{
+    _gsyncRunning=false;
   }
 }
 
@@ -6631,15 +6726,43 @@ function _gsyncNextMs(baseMin){
   return baseMin*mult*60*1000;
 }
 
+let _gsyncVisBound=false;
 function setupAutoSync(forceRestart=false){
   if(GSYNC_TIMER){ clearTimeout(GSYNC_TIMER); GSYNC_TIMER=null; }
+  if(!_gsyncVisBound){
+    _gsyncVisBound=true;
+    document.addEventListener('visibilitychange', ()=>{
+      if(document.visibilityState!=='visible' && !_gsyncRunning) _gsyncReleaseLock();
+    });
+  }
   const s=gsyncLoad();
   if(s.url){
     const baseMin = Math.max(5, parseInt(s.interval||5));
     const loop = async ()=>{
-      const ok = await doSync(true);
-      if(ok) GSYNC_BACKOFF_LEVEL = 0;
-      else GSYNC_BACKOFF_LEVEL = Math.min(3, (GSYNC_BACKOFF_LEVEL||0)+1);
+      // autoSync=true 강제는 _gsyncDefaults가 유지한다.
+      // 보이는 탭 + 관리자 로그인 + gsyncLock 을 잡은 PC만 실제로 돈다.
+      let ok = null;
+      try{
+        if(!_gsyncCanAutoRun()){
+          if(!_gsyncRunning) await _gsyncReleaseLock();
+        }else{
+          const holdMs = _gsyncNextMs(baseMin);
+          const locked = await _gsyncAcquireLock(holdMs);
+          if(locked){
+            ok = await doSync(true);
+            if(ok===true){
+              GSYNC_BACKOFF_LEVEL = 0;
+              try{ await _gsyncRenewLock(_gsyncNextMs(baseMin)); }catch(e){}
+            }else{
+              if(ok===false) GSYNC_BACKOFF_LEVEL = Math.min(3, (GSYNC_BACKOFF_LEVEL||0)+1);
+              try{ await _gsyncReleaseLock(); }catch(e){}
+            }
+          }
+        }
+      }catch(e){
+        console.error(e);
+        GSYNC_BACKOFF_LEVEL = Math.min(3, (GSYNC_BACKOFF_LEVEL||0)+1);
+      }
       const next = _gsyncNextMs(baseMin);
       GSYNC_TIMER = setTimeout(loop, next);
       // 상태문구 갱신
