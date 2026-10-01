@@ -4858,23 +4858,18 @@ async function applyUnmatchedManual(umId){
   const umArr=umLd();
   const um=umArr.find(r=>r.id===umId);
   if(!um)return;
-  const settles=[...stLd()];
-  const idx=settles.findIndex(s=>s.id===stId);
-  if(idx<0)return;
-  settles[idx].settled=true;
-  settles[idx].depositDate=um.date||'';
-  settles[idx].depositor=um.rawDate||'';
-  settles[idx].depositAmt=um.amount;
-  await stSv(settles);
-  const d=ld();const qi=d.quotes.findIndex(q=>q.id===settles[idx].qtId);
-  if(qi>=0){d.quotes[qi].settled=true;await sv('qt',d.quotes);}
-  await syncDsRowFromSettle(stId);
-  // 미매칭에서 제거
+  const resolved=resolveSettleForStatus(stId, null);
+  if(!resolved.st){ toast('정산할 견적을 찾을 수 없습니다','error'); return; }
+  resolved.st.settled=true;
+  resolved.st.depositDate=um.date||'';
+  resolved.st.depositor=um.rawDate||'';
+  resolved.st.depositAmt=um.amount;
   try{
+    await commitSettleStatus(resolved.st, resolved.qt);
     await svDelete('um',[umId]);
   }catch(e){
     console.error(e);
-    toast('미매칭 삭제 실패: '+(e?.message||e),'error');
+    toast('저장 실패: '+(e?.message||e),'error');
     return;
   }
   renderUnmatchedTable();
@@ -5643,7 +5638,14 @@ async function applyDepositMatches(){
     }
     if(!dep.matched)return;
     if(cb&&!cb.checked)return;
-    const idx=current.findIndex(s=>s.id===dep.stId);
+    let idx=current.findIndex(s=>s.id===dep.stId);
+    if(idx<0){
+      const resolved=resolveSettleForStatus(dep.stId, null);
+      if(resolved.st){
+        current.push(resolved.st);
+        idx=current.length-1;
+      }
+    }
     if(idx>=0){
       const wasSettled=!!current[idx].settled;
       current[idx]={
@@ -5668,20 +5670,32 @@ async function applyDepositMatches(){
     }
   });
 
-  if(hist.length!==depLd().length) await depSv(hist);
-
-  // 정산/견적/일별정산을 순서대로 await 저장 (중간에 스킵·레이스가 나면 다음날 미완료로 되돌아감)
   const touchedIds=DEP_MATCHES.filter((dep,i)=>{
     const cb=document.getElementById(`dep-apply-${i}`);
     return dep.matched && dep.stId && !(cb&&!cb.checked);
   }).map(dep=>dep.stId);
-  if(touchedIds.length){
-    await stSv(current);
-    if(quotesChanged) await sv('qt', quotes);
+  if(hist.length!==depLd().length||touchedIds.length){
+    const ops=[];
+    const seenSt=new Set();
+    touchedIds.forEach(stId=>{
+      if(seenSt.has(stId)) return;
+      seenSt.add(stId);
+      const src=current.find(s=>s.id===stId);
+      if(!src) return;
+      const resolved=resolveSettleForStatus(src.id, src.qtId);
+      const st=resolved.st?{...resolved.st, ...src, id:resolved.st.id, qtId:resolved.st.qtId||src.qtId}:null;
+      if(!st) return;
+      ops.push(...settleStatusOps(st, resolved.qt));
+    });
+    hist.forEach(h=>{
+      if(!depLd().find(x=>x.id===h.id)) ops.push({key:'dep', id:h.id, data:h, group:'dep:'+h.id});
+    });
     try{
-      await syncAllDsRowsFromSettle();
+      await commitSvOps(ops);
     }catch(e){
-      console.warn('syncAllDsRowsFromSettle after deposit match err',e);
+      console.error(e);
+      toast('저장 실패: '+(e?.message||e),'error');
+      return;
     }
   }
   toast(`${count}건 정산완료 처리됨`,'success');
@@ -5840,6 +5854,7 @@ async function relinkDepositHistoryAll(){
 
   // 히스토리 각 행을 정산 행으로 매칭 (stId 우선, 없으면 금액/업체/일자 기준 보정)
   let linked=0, skipped=0;
+  const touched=[];
   const nextHist=hist.map(h=>{
     const amount=Number(h.amount)||0;
     let st=null;
@@ -5866,31 +5881,39 @@ async function relinkDepositHistoryAll(){
       return h;
     }
 
-    usedStIds.add(st.id);
-    st.settled=true;
-    st.depositDate=normDate(h.date)||normDate(h.stDate)||st.depositDate||'';
-    st.depositor=(h.content||h.rawDate||st.depositor||'');
-    st.depositAmt=amount||st.depositAmt||0;
-
-    if(st.qtId){
-      const q=quoteMap.get(st.qtId);
-      if(q) q.settled=true;
-    }
+    const nextSt={...st};
+    usedStIds.add(nextSt.id);
+    nextSt.settled=true;
+    nextSt.depositDate=normDate(h.date)||normDate(h.stDate)||nextSt.depositDate||'';
+    nextSt.depositor=(h.content||h.rawDate||nextSt.depositor||'');
+    nextSt.depositAmt=amount||nextSt.depositAmt||0;
+    touched.push(nextSt);
     linked++;
 
     return {
       ...h,
       matched:true,
-      stId:st.id,
-      stDate:st.date||h.stDate||'',
-      clientName:clientIdToName[st.clientId]||h.clientName||''
+      stId:nextSt.id,
+      stDate:nextSt.date||h.stDate||'',
+      clientName:clientIdToName[nextSt.clientId]||h.clientName||''
     };
   });
 
-  await stSv(settles);
-  await sv('qt', quotes);
-  await depSv(nextHist);
-  try{ syncAllDsRowsFromSettle(); }catch(e){ console.warn('relinkDepositHistoryAll sync ds err',e); }
+  const ops=[];
+  const seenSt=new Set();
+  touched.forEach(st=>{
+    if(!st||seenSt.has(st.id)) return;
+    seenSt.add(st.id);
+    ops.push(...settleStatusOps(st, st.qtId?quoteMap.get(st.qtId)||null:null));
+  });
+  try{
+    await commitSvOps(ops);
+    await depSv(nextHist);
+  }catch(e){
+    console.error(e);
+    toast('저장 실패: '+(e?.message||e),'error');
+    return;
+  }
 
   renderDepositHistory();
   renderSettleAll();
@@ -5915,37 +5938,30 @@ async function delDepHistSelected(){
 
 // 실제 삭제 + 연동 취소 처리
 async function _execDelDepHist(ids){
-  let hist=[...depLd()];
+  const hist=[...depLd()];
   const toDelete=hist.filter(h=>ids.includes(h.id));
-
-  // 정산/견적 캐시를 한 번만 가져와서 일괄 수정 후 저장
-  const settles=[...stLd()];
-  const d2=ld();
-
+  const ops=[];
+  const seen=new Set();
   toDelete.forEach(h=>{
-    if(!h.stId) return;
-    // wv_st 정산 취소
-    const si=settles.findIndex(s=>s.id===h.stId);
-    if(si>=0){
-      settles[si].settled=false;
-      settles[si].depositDate='';
-      settles[si].depositor='';
-      settles[si].depositAmt=0;
-      const qi=d2.quotes.findIndex(q=>q.id===settles[si].qtId);
-      if(qi>=0){d2.quotes[qi].settled=false;}
-    }
+    if(!h.stId||seen.has(h.stId)) return;
+    seen.add(h.stId);
+    const resolved=resolveSettleForStatus(h.stId, null);
+    if(!resolved.st) return;
+    resolved.st.settled=false;
+    resolved.st.depositDate='';
+    resolved.st.depositor='';
+    resolved.st.depositAmt=0;
+    ops.push(...settleStatusOps(resolved.st, resolved.qt));
   });
-  if(toDelete.some(h=>h.stId)){
-    await stSv(settles);
-    await sv('qt', d2.quotes);
-    for(const h of toDelete){
-      if(h.stId) await syncDsRowFromSettle(h.stId);
-    }
+  ids.forEach(id=>ops.push({key:'dep', id, del:true, group:'dep:'+id}));
+  try{
+    await commitSvOps(ops);
+  }catch(e){
+    console.error(e);
+    toast('저장 실패: '+(e?.message||e),'error');
+    return;
   }
-
-  await svDelete('dep', ids);
   ids.forEach(id=>DEP_HIST_CHECKED.delete(id));
-
   renderDepositHistory();
   renderSettleAll();
   toast(`${toDelete.length}건 삭제 완료 (정산 초기화됨)`,'success');
@@ -6197,23 +6213,30 @@ async function confirmSettleImport(){
 }
 
 async function setSettleTaxIssued(stId,checked){
-  const settles=[...stLd()];
-  const idx=settles.findIndex(s=>s.id===stId);
-  if(idx===-1)return;
-  settles[idx].taxIssued=!!checked;
-  // 발행 메모는 별도 필드(taxMemo)에 저장 (없으면 빈 문자열)
-  if(!settles[idx].taxMemo) settles[idx].taxMemo='';
-  await stSv(settles);
-  renderSettleAll();
-  toast(checked?'세금계산서 발행 여부: Y':'세금계산서 발행 여부: N');
+  try{
+    const resolved=resolveSettleForStatus(stId, null);
+    if(!resolved.st){ toast('정산할 견적을 찾을 수 없습니다','error'); return; }
+    resolved.st.taxIssued=!!checked;
+    if(!resolved.st.taxMemo) resolved.st.taxMemo='';
+    await commitSettleStatus(resolved.st, resolved.qt);
+    renderSettleAll();
+    toast(checked?'세금계산서 발행 여부: Y':'세금계산서 발행 여부: N');
+  }catch(e){
+    console.error(e);
+    toast('저장 실패: '+(e?.message||e),'error');
+  }
 }
 
 async function setSettleTaxMemo(stId,memo){
-  const settles=[...stLd()];
-  const idx=settles.findIndex(s=>s.id===stId);
-  if(idx===-1)return;
-  settles[idx].taxMemo=(memo||'').trim();
-  await stSv(settles);
+  try{
+    const resolved=resolveSettleForStatus(stId, null);
+    if(!resolved.st){ toast('정산할 견적을 찾을 수 없습니다','error'); return; }
+    resolved.st.taxMemo=(memo||'').trim();
+    await commitSettleStatus(resolved.st, resolved.qt);
+  }catch(e){
+    console.error(e);
+    toast('저장 실패: '+(e?.message||e),'error');
+  }
 }
 
 function settleRichness(s){
@@ -6255,6 +6278,7 @@ function listSettleRowsForView(clientId){
     const row=settleRowFromQuote(qt, st);
     if(st){
       row._hasSettle=true;
+      row._linkMismatch=!!qt.settled!==!!st.settled;
     }else{
       row.settled=false;
       row.depositDate='';
@@ -6263,6 +6287,7 @@ function listSettleRowsForView(clientId){
       row.taxIssued=false;
       row.taxMemo='';
       row._hasSettle=false;
+      row._linkMismatch=true;
     }
     rows.push(row);
   });
@@ -6272,6 +6297,10 @@ function listSettleRowsForView(clientId){
     rows.push({...s, _hasSettle:true, _manual:true});
   });
   return rows;
+}
+function settleMismatchBadge(s){
+  if(!s||!s._linkMismatch) return '';
+  return '<div style="margin-top:3px"><span style="display:inline-block;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:999px;padding:1px 6px;font-size:10px;font-weight:800">⚠ 연동 불일치</span></div>';
 }
 
 function renderSettleAll(){
@@ -6342,7 +6371,7 @@ function renderSettleAll(){
     const bizIdx=(quote&&quote.taxBizIdx!=null)?quote.taxBizIdx:0;
     const bizNo=(client&&client.bizInfoList&&client.bizInfoList[bizIdx]&&client.bizInfoList[bizIdx].bizNo)||'—';
     return `<tr>
-    <td style="text-align:center;position:sticky;left:0;z-index:3;background:var(--card);min-width:36px"><input type="checkbox" class="settle-row-check" value="${s.id}" onchange="updateBulkTaxBtnState()" onclick="event.stopPropagation()" ${(s.taxYn&&s._hasSettle)?'':'disabled'}></td>
+    <td style="text-align:center;position:sticky;left:0;z-index:3;background:var(--card);min-width:36px"><input type="checkbox" class="settle-row-check" value="${s.id}" onchange="updateBulkTaxBtnState()" onclick="event.stopPropagation()" ${s.taxYn?'':'disabled'}></td>
     <td style="text-align:center;font-size:11px;color:var(--text3);position:sticky;left:36px;z-index:3;background:var(--card);min-width:40px">${i+1}</td>
     <td style="font-family:monospace;font-size:11px;position:sticky;left:76px;z-index:3;background:var(--card);min-width:90px">${s.date}</td>
     <td style="font-weight:700;position:sticky;left:166px;z-index:3;background:var(--card);min-width:120px">${clientMap[s.clientId]||'—'}</td>
@@ -6381,8 +6410,9 @@ function renderSettleAll(){
         ?'<span class="badge bg" style="font-size:10px">✅ 정산완료</span>'
         :`<div style="display:flex;gap:4px;justify-content:center;align-items:center">
           <span class="badge by" style="font-size:10px">대기중</span>
-          ${s._hasSettle?`<button class="btn btn-xs btn-green" onclick="markSettleDoneAll('${s.id}')">완료</button>`:''}
+          <button class="btn btn-xs btn-green" onclick="markSettleDoneAll('${s.id}')">완료</button>
         </div>`}
+      ${settleMismatchBadge(s)}
     </td>
     <td style="text-align:center">
       <button class="btn btn-xs btn-red" onclick="${s._hasSettle?`delSettleRow('${s.id}')`:`delQt('${s.qtId}')`}" title="정산 내역 삭제">🗑</button>
@@ -6457,7 +6487,9 @@ async function bulkSetTaxIssued(){
   const targetIds=[]; let skipped=0;
   checked.forEach(cb=>{
     const s=settles.find(x=>x.id===cb.value);
-    if(s&&s.taxYn) targetIds.push(cb.value); else skipped++;
+    const qt=!s?quoteBySettleKey(cb.value, null):null;
+    if((s&&s.taxYn)||(qt&&qt.taxYn)) targetIds.push(cb.value);
+    else skipped++;
   });
   if(targetIds.length===0){ toast('선택 항목 중 세금계산서 대상이 없습니다','error'); return; }
   if(!confirm(`선택한 ${targetIds.length}건의 세금계산서 발행여부를 Y로 변경할까요?`))return;
@@ -6498,18 +6530,19 @@ async function openSettleQuote(qtId){
 }
 
 async function markSettleDoneAll(stId){
-  const settles=[...stLd()];
-  const idx=settles.findIndex(s=>s.id===stId);
-  if(idx<0){ toast('정산 문서가 없습니다. 견적-정산 연동 점검을 실행하세요','error'); return; }
+  const resolved=resolveSettleForStatus(stId, null);
+  if(!resolved.st){ toast('정산할 견적을 찾을 수 없습니다','error'); return; }
   if(!confirm('정산 완료 처리하시겠습니까?'))return;
-  applyManualSettleDeposit(settles[idx]);
-  await stSv(settles);
-  await syncDsRowFromSettle(stId);
-  const qtId=settles[idx].qtId;
-  const d=ld(),qi=d.quotes.findIndex(q=>q.id===qtId);
-  if(qi>=0){d.quotes[qi].settled=true;await sv('qt',d.quotes);}
-  renderSettleAll();
-  toast('정산 완료 처리됨');
+  try{
+    applyManualSettleDeposit(resolved.st);
+    await commitSettleStatus(resolved.st, resolved.qt);
+    renderSettleAll();
+    try{ renderDetQuote(); }catch(e){}
+    toast('정산 완료 처리됨');
+  }catch(e){
+    console.error(e);
+    toast('저장 실패: '+(e?.message||e),'error');
+  }
 }
 
 // 거래처 정산 - 행 삭제
@@ -7630,7 +7663,7 @@ function renderDetSettle(){
   } else {
     settles.forEach(s=>{
       html+=`<tr style="background:${s.settled?'#f0fdf4':'var(--card)'};border-bottom:1px solid var(--border)">
-        <td style="padding:9px 14px;text-align:center"><input type="checkbox" class="det-settle-row-check" value="${s.id}" ${(s.settled||!s._hasSettle)?'disabled':''} onchange="updateDetSettleBulkBtnState()" onclick="event.stopPropagation()"></td>
+        <td style="padding:9px 14px;text-align:center"><input type="checkbox" class="det-settle-row-check" value="${s.id}" ${s.settled?'disabled':''} onchange="updateDetSettleBulkBtnState()" onclick="event.stopPropagation()"></td>
         <td style="padding:9px 14px;font-family:monospace;font-size:11px">${s.date}</td>
         <td style="padding:9px 14px;font-size:11px;color:var(--text2)">${s.no||'-'}</td>
         <td style="padding:9px 14px;font-weight:600">${s.toName||'-'}</td>
@@ -7643,7 +7676,8 @@ function renderDetSettle(){
         <td style="padding:9px 14px;text-align:center">
           ${s.settled
             ?'<span class="badge bg">✅ 정산완료</span>'
-            :`<div style="display:flex;gap:4px;justify-content:center"><span class="badge by">대기중</span>${s._hasSettle?`<button class="btn btn-xs btn-green" onclick="markSettleDone('${s.id}')">완료처리</button>`:''}</div>`}
+            :`<div style="display:flex;gap:4px;justify-content:center"><span class="badge by">대기중</span><button class="btn btn-xs btn-green" onclick="markSettleDone('${s.id}')">완료처리</button></div>`}
+          ${settleMismatchBadge(s)}
         </td>
         <td style="padding:9px 14px;text-align:center">
           <button class="btn btn-xs btn-red" onclick="${s._hasSettle?`delSettleRow('${s.id}')`:`delQt('${s.qtId}')`}" title="삭제">🗑</button>
@@ -7672,8 +7706,16 @@ async function bulkMarkSettleDone(){
   const checked=[...document.querySelectorAll('.det-settle-row-check:checked')];
   if(!checked.length) return;
   if(!confirm(`선택한 ${checked.length}건을 정산완료 처리할까요?`)) return;
-  for(const cb of checked){
-    await markSettleDone(cb.value, true); // 기존 함수 재사용 (일괄: 항목별 confirm/재렌더 생략)
+  try{
+    for(const cb of checked){
+      await markSettleDone(cb.value, true);
+    }
+  }catch(e){
+    console.error(e);
+    toast('저장 실패: '+(e?.message||e),'error');
+    renderDetSettle();
+    try{ renderDetQuote(); }catch(_){}
+    return;
   }
   toast(`${checked.length}건 정산완료 처리됨`,'success');
   renderDetSettle();
@@ -7861,53 +7903,51 @@ async function syncAllDsRowsFromSettle(){
 async function syncSettlesFromDaily(){
   try{
     const dsArr=dsLd();
-    const settles=[...stLd()];
-    const d=ld();
-    const quotes=[...(d.quotes||[])];
-    let stChanged=false, qtChanged=false, dsHealed=false;
+    const ops=[];
+    const heal=[];
+    const seen=new Set();
     dsArr.forEach(r=>{
-      if(!r.qtId)return;
-      const idx=settles.findIndex(s=>s.qtId===r.qtId);
-      if(idx<0)return;
-      const st=settles[idx];
+      if(!r||!r.qtId||seen.has(r.qtId)) return;
+      const qt=(ld().quotes||[]).find(q=>q.id===r.qtId)||null;
+      let st=findSettleForQuote(r.qtId);
+      const created=!st;
+      if(!st){
+        if(!qt||qt.crmMode===true||!qt.clientId) return;
+        st=settleRowFromQuote(qt, null);
+      }else st={...st};
       const paid=!!r.paid;
-      // 안전장치: 거래처 정산이 입금매칭으로 이미 완료됐는데 일별 paid만 false인 경우
-      // (동기화 유실) → 거래처 정산을 미완료로 되돌리지 않고 일별을 맞춤
-      // 의도적 해제는 dsPaidChange에서 settle을 먼저 미완료로 바꾼 뒤 호출됨
-      if(!paid && st.settled && (st.depositor||st.depositDate)){
-        r.paid=true;
-        if(!r.payDate && st.depositDate) r.payDate=st.depositDate;
-        if(!r.payName && st.depositor) r.payName=st.depositor;
-        dsHealed=true;
+      if(!paid && st.settled && (st.depositor||st.depositDate||created)){
+        if(created){
+          seen.add(r.qtId);
+          ops.push(...settleStatusOps(st, qt));
+        }
+        const healed={...r, paid:true};
+        if(!healed.payDate && st.depositDate) healed.payDate=st.depositDate;
+        if(!healed.payName && st.depositor) healed.payName=st.depositor;
+        heal.push(healed);
         return;
       }
-      const newDate= paid ? (r.payDate||'').slice(0,10) : '';
-      const newName= paid ? (r.payName||'') : '';
       const next={...st,
         settled:paid,
-        depositDate:newDate,
-        depositor:newName,
-        depositAmt:paid ? (Number(st.depositAmt)||0) : 0
+        depositDate: paid ? (r.payDate||'').slice(0,10) : '',
+        depositor: paid ? (r.payName||'') : '',
+        depositAmt: paid ? (Number(st.depositAmt)||0) : 0
       };
-      if(st.settled!==next.settled||(st.depositDate||'')!==(next.depositDate||'')||(st.depositor||'')!==(next.depositor||'')||Number(st.depositAmt||0)!==Number(next.depositAmt||0)){
-        settles[idx]=next;
-        stChanged=true;
-      }
-      const qi=quotes.findIndex(q=>q.id===r.qtId);
-      if(qi>=0){
-        const q=quotes[qi];
-        if(!!q.settled!==paid){
-          quotes[qi]={...q,settled:paid};
-          qtChanged=true;
-        }
-      }
+      const quoteDiff=!!(qt&&!!qt.settled!==!!next.settled);
+      const stDiff=created||!!st.settled!==!!next.settled||(st.depositDate||'')!==(next.depositDate||'')||(st.depositor||'')!==(next.depositor||'')||Number(st.depositAmt||0)!==Number(next.depositAmt||0);
+      if(!stDiff&&!quoteDiff) return;
+      seen.add(r.qtId);
+      ops.push(...settleStatusOps(next, qt));
     });
-    if(dsHealed){
-      try{ await dsSv(dsArr); }catch(_){}
-    }
-    if(stChanged) await stSv(settles);
-    if(qtChanged) await sv('qt',quotes);
-  }catch(e){ console.warn('syncSettlesFromDaily err:',e); }
+    heal.forEach(r=>{
+      if(seen.has(r.qtId)) return;
+      ops.push({key:'ds', id:r.id, data:r, group:'heal:'+r.id});
+    });
+    if(ops.length) await commitSvOps(ops);
+  }catch(e){
+    console.warn('syncSettlesFromDaily err:',e);
+    throw e;
+  }
 }
 
 function settleRowFromQuote(qt, prev){
@@ -8019,14 +8059,69 @@ async function addToSettle(qt){
   await saveQuoteWithLinks(qt);
 }
 
+function quoteBySettleKey(stId, qtId){
+  const quotes=ld().quotes||[];
+  if(qtId){
+    const q=quotes.find(x=>x&&x.id===qtId);
+    if(q) return q;
+  }
+  if(stId&&String(stId).endsWith('_st')){
+    const qid=String(stId).slice(0,-3);
+    return quotes.find(x=>x&&x.id===qid)||null;
+  }
+  return null;
+}
+function settleDocForSave(st){
+  const out={};
+  Object.keys(st||{}).forEach(k=>{
+    if(String(k).charAt(0)==='_') return;
+    out[k]=st[k];
+  });
+  return out;
+}
+function resolveSettleForStatus(stId, qtId){
+  const quotes=ld().quotes||[];
+  let st=stId?stLd().find(s=>s&&s.id===stId)||null:null;
+  let qt=qtId?quotes.find(q=>q&&q.id===qtId)||null:null;
+  if(st&&st.qtId&&!qt) qt=quotes.find(q=>q&&q.id===st.qtId)||null;
+  if(!qt) qt=quoteBySettleKey(stId, qtId);
+  if(!st&&qt) st=findSettleForQuote(qt.id);
+  if(!st&&qt&&qt.crmMode!==true&&qt.clientId) st=settleRowFromQuote(qt, null);
+  return {st:st?{...st}:null, qt:qt?{...qt}:null};
+}
+function settleStatusOps(st, qt){
+  const saved=settleDocForSave(st);
+  const group='st:'+String(saved.qtId||saved.id);
+  const ops=[{key:'st', id:saved.id, data:saved, group}];
+  if(qt&&qt.id){
+    const qDoc={...qt, settled:!!saved.settled};
+    delete qDoc._settleInit;
+    ops.push({key:'qt', id:qDoc.id, data:qDoc, group});
+  }
+  if(saved.qtId){
+    const prev=findDsForQuote(saved.qtId);
+    let row=null;
+    if(prev) row={...prev, qtId:saved.qtId};
+    else if(qt&&qt.crmMode!==true) row=dsRowFromQuote(qt, null);
+    if(row){
+      if(saved.depositDate!==undefined) row.payDate=saved.depositDate||'';
+      if(saved.depositor!==undefined) row.payName=saved.depositor||'';
+      row.paid=!!saved.settled;
+      ops.push({key:'ds', id:row.id, data:row, group});
+    }
+  }
+  return ops;
+}
+async function commitSettleStatus(st, qt){
+  await commitSvOps(settleStatusOps(st, qt));
+}
+
 async function syncSettleStatus(qtId,settled){
-  const prev=stLd().find(s=>s.qtId===qtId);
-  if(!prev) return;
-  const next={...prev};
-  if(settled) applyManualSettleDeposit(next);
-  else next.settled=false;
-  await sv('st', [next]);
-  await syncDsRowFromSettle(next.id);
+  const resolved=resolveSettleForStatus(null, qtId);
+  if(!resolved.st) throw new Error('정산할 견적을 찾을 수 없습니다');
+  if(settled) applyManualSettleDeposit(resolved.st);
+  else resolved.st.settled=false;
+  await commitSettleStatus(resolved.st, resolved.qt);
 }
 
 // 수동 정산완료 시 입금정보에 표시할 라벨 (입금 매칭 없이 완료 처리한 경우)
@@ -8042,20 +8137,21 @@ function applyManualSettleDeposit(st){
 }
 
 async function markSettleDone(stId,skipConfirm=false){
-  const settles=[...stLd()];
-  const idx=settles.findIndex(s=>s.id===stId);
-  if(idx<0){
-    if(!skipConfirm) toast('정산 문서가 없습니다. 견적-정산 연동 점검을 실행하세요','error');
-    return;
+  const resolved=resolveSettleForStatus(stId, null);
+  if(!resolved.st){
+    const err=new Error('정산할 견적을 찾을 수 없습니다');
+    if(!skipConfirm) toast(err.message,'error');
+    throw err;
   }
   if(!skipConfirm && !confirm('정산 완료 처리하시겠습니까?'))return;
-  applyManualSettleDeposit(settles[idx]);
-  await stSv(settles);
-  const qtId=settles[idx].qtId;
-  const d=ld(),qi=d.quotes.findIndex(q=>q.id===qtId);
-  if(qi>=0){d.quotes[qi].settled=true;await sv('qt',d.quotes);}
-  await syncDsRowFromSettle(stId);
-  // 일괄 처리(skipConfirm) 시에는 항목별 재렌더/토스트를 생략 (호출부에서 마지막에 한 번 처리)
+  try{
+    applyManualSettleDeposit(resolved.st);
+    await commitSettleStatus(resolved.st, resolved.qt);
+  }catch(e){
+    console.error(e);
+    if(!skipConfirm) toast('저장 실패: '+(e?.message||e),'error');
+    throw e;
+  }
   if(!skipConfirm){
     renderDetSettle();renderDetQuote();
     try{ scheduleRerender(); }catch(e){}
@@ -9591,9 +9687,9 @@ function toggleQt(qtId){
 
 async function markQtSettled(qtId){
   if(!confirm('정산 완료 처리 하시겠습니까?'))return;
-  const d=ld(),idx=d.quotes.findIndex(q=>q.id===qtId);if(idx<0)return;
+  const qt=(ld().quotes||[]).find(q=>q.id===qtId);
+  if(!qt){ toast('견적서를 찾을 수 없습니다','error'); return; }
   try{
-    await sv('qt', [{...d.quotes[idx], settled:true}]);
     await syncSettleStatus(qtId,true);
   }catch(e){
     console.error(e);
@@ -9717,13 +9813,17 @@ function scanQuoteLinks(){
   const missingDs=[];
   const clientMismatch=[];
   const dupDs=[];
+  const settledMismatch=[];
   linkable.forEach(qt=>{
     const sts=settlesByQt.get(qt.id)||[];
     const dss=dsByQt.get(qt.id)||[];
     if(!sts.length) missingSettle.push(qt);
-    else sts.forEach(s=>{
-      if(s.clientId!==qt.clientId) clientMismatch.push({kind:'st', doc:s, qt});
-    });
+    else{
+      sts.forEach(s=>{
+        if(s.clientId!==qt.clientId) clientMismatch.push({kind:'st', doc:s, qt});
+        if(!!s.settled!==!!qt.settled) settledMismatch.push({qt, st:s});
+      });
+    }
     if(!dss.length) missingDs.push(qt);
     else{
       if(dss.length>=2) dupDs.push({qt, rows:dss});
@@ -9734,7 +9834,7 @@ function scanQuoteLinks(){
   });
   const orphanSt=settles.filter(s=>s&&s.qtId&&!quoteById.has(s.qtId));
   const orphanDs=dsRows.filter(r=>r&&r.qtId&&!quoteById.has(r.qtId));
-  return {missingSettle, missingDs, clientMismatch, dupDs, orphanSt, orphanDs, settlesByQt};
+  return {missingSettle, missingDs, clientMismatch, dupDs, settledMismatch, orphanSt, orphanDs, settlesByQt};
 }
 function renderQuoteLinkList(items, lineFn){
   if(!items.length) return '<div style="color:var(--text3);padding:2px 0 6px">없음</div>';
@@ -9748,9 +9848,10 @@ function showQuoteLinkCheckModal(report){
   const c=report.clientMismatch.length;
   const d=report.dupDs.length;
   const e=report.orphanSt.length+report.orphanDs.length;
-  const fixable=(a+b+c+d)>0;
+  const f=(report.settledMismatch||[]).length;
+  const fixable=(a+b+c+d+f)>0;
   const body=[
-    '<div style="font-size:11px;color:var(--text2);margin-bottom:10px">복구는 누락 생성, clientId 수정, 중복 일/월 정산 정리만 합니다. 고아는 체크한 항목만 삭제합니다.</div>',
+    '<div style="font-size:11px;color:var(--text2);margin-bottom:10px">복구는 누락 생성, clientId 수정, 정산상태 맞추기, 중복 일/월 정산 정리만 합니다. 고아는 체크한 항목만 삭제합니다. 정산 상태가 다르면 거래처 정산 값을 따르고, 정산 문서가 새로 생길 때는 견적서의 완료 값을 가져갑니다.</div>',
     '<div style="font-weight:800;margin-bottom:4px">(a) 견적만 있고 거래처 정산 없음 <span style="color:var(--accent)">'+a+'건</span></div>',
     renderQuoteLinkList(report.missingSettle, quoteLinkLabel),
     '<div style="font-weight:800;margin-bottom:4px">(b) 견적만 있고 일/월 정산 없음 <span style="color:var(--accent)">'+b+'건</span></div>',
@@ -9763,6 +9864,9 @@ function showQuoteLinkCheckModal(report){
     '<div style="font-weight:800;margin-bottom:4px">(d) 같은 견적의 일/월 정산 2건 이상 <span style="color:var(--accent)">'+d+'건</span></div>',
     '<div style="font-size:11px;color:var(--text3);margin-bottom:2px">복구 시 정산완료·입금정보·수기입력이 있는 행을 남기고 나머지를 삭제합니다.</div>',
     renderQuoteLinkList(report.dupDs, g=>quoteLinkLabel(g.qt)+' · '+g.rows.length+'행'),
+    '<div style="font-weight:800;margin-bottom:4px">(f) 견적 정산상태와 거래처 정산상태 불일치 <span style="color:var(--accent)">'+f+'건</span></div>',
+    '<div style="font-size:11px;color:var(--text3);margin-bottom:2px">복구 시 거래처 정산(settles.settled) 값으로 견적서를 맞춥니다.</div>',
+    renderQuoteLinkList(report.settledMismatch||[], m=>quoteLinkLabel(m.qt)+' · 견적 '+(m.qt.settled?'완료':'대기')+' / 정산 '+(m.st.settled?'완료':'대기')),
     '<div style="font-weight:800;margin-bottom:4px">(e) 견적 없는 고아 <span style="color:var(--accent)">'+e+'건</span></div>',
     '<div style="font-size:11px;color:var(--text3);margin-bottom:2px">자동 삭제하지 않습니다. 삭제할 항목만 체크하세요.</div>'
   ];
@@ -9839,6 +9943,7 @@ async function reconcileQuoteLinks(opt){
     grouped.get(g).push(op);
   };
   report.missingSettle.forEach(qt=>{
+    // 신규 settles는 quotes.settled를 그대로 가져간다. 완료된 견적이 미정산으로 되돌아가지 않는다.
     const st=settleRowFromQuote(qt, null);
     pushOp({key:'st', id:st.id, data:st, group:'fix:'+qt.id});
   });
@@ -9856,6 +9961,16 @@ async function reconcileQuoteLinks(opt){
     g.rows.forEach(r=>{
       if(r.id!==keep.id) pushOp({key:'ds', id:r.id, del:true, group:'fix:'+g.qt.id});
     });
+  });
+  const seenStatus=new Set();
+  (report.settledMismatch||[]).forEach(m=>{
+    if(!m||!m.qt||seenStatus.has(m.qt.id)) return;
+    seenStatus.add(m.qt.id);
+    const mates=report.settlesByQt.get(m.qt.id)||[];
+    const st=pickSettleForQuote(mates, m.qt.id);
+    if(!st) return;
+    const qDoc={...m.qt, settled:!!st.settled};
+    pushOp({key:'qt', id:qDoc.id, data:qDoc, group:'fix:'+m.qt.id});
   });
   const selected=new Set((opt&&opt.orphanDeleteIds)||[]);
   report.orphanSt.forEach(s=>{
@@ -13084,30 +13199,43 @@ async function handleDsPaste(e, startEl){
   }
 }
 
-function dsPaidChange(el){
+async function dsPaidChange(el){
   const id=el.dataset.id;
   const arr=dsLd();
   const idx=arr.findIndex(r=>r.id===id);
   if(idx<0)return;
-  arr[idx].paid=el.checked;
-  // 사용자가 일별에서 정산 해제한 경우: 거래처 정산을 먼저 미완료로 바꿔
-  // syncSettlesFromDaily 안전장치(입금매칭 보호)에 막히지 않게 함
-  if(!el.checked && arr[idx].qtId){
-    const settles=[...stLd()];
-    const si=settles.findIndex(s=>s.qtId===arr[idx].qtId);
-    if(si>=0 && settles[si].settled){
-      settles[si]={...settles[si], settled:false, depositDate:'', depositor:'', depositAmt:0};
-      stSv(settles).catch(console.error);
-      const d=ld();
-      const qi=(d.quotes||[]).findIndex(q=>q.id===arr[idx].qtId);
-      if(qi>=0 && d.quotes[qi].settled){
-        d.quotes[qi]={...d.quotes[qi], settled:false};
-        sv('qt', d.quotes).catch(console.error);
-      }
+  const wantPaid=!!el.checked;
+  const row=arr[idx];
+  if(!row.qtId){
+    row.paid=wantPaid;
+    try{ await sv('ds',[row]); }
+    catch(e){
+      console.error(e);
+      el.checked=!wantPaid;
+      toast('저장 실패: '+(e?.message||e),'error');
     }
+    return;
   }
-  dsSv(arr);
-  syncSettlesFromDaily().then(()=>{ try{ scheduleRerender(); }catch(_){} }).catch(console.error);
+  try{
+    const resolved=resolveSettleForStatus(null, row.qtId);
+    if(!resolved.st) throw new Error('정산할 견적을 찾을 수 없습니다');
+    if(wantPaid){
+      resolved.st.settled=true;
+      resolved.st.depositDate=(row.payDate||'').slice(0,10);
+      resolved.st.depositor=row.payName||'';
+    }else{
+      resolved.st.settled=false;
+      resolved.st.depositDate='';
+      resolved.st.depositor='';
+      resolved.st.depositAmt=0;
+    }
+    await commitSettleStatus(resolved.st, resolved.qt);
+    try{ scheduleRerender(); }catch(e){}
+  }catch(e){
+    console.error(e);
+    el.checked=!wantPaid;
+    toast('저장 실패: '+(e?.message||e),'error');
+  }
 }
 
 function updateDsSumRow(){
