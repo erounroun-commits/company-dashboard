@@ -430,6 +430,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
     </div>
     <div class="sidebar-footer" style="margin-top:0;border-top:1px solid var(--border)">
       <div style="font-size:11px">관리자: <span id="admin-name" style="color:var(--text);font-weight:600"></span></div>
+      <button type="button" id="btn-firestore-backup" class="btn-logout" style="margin-top:0;display:none" onclick="downloadFirestoreBackup()">⬇ Firestore 백업</button>
       <button class="btn-logout" id="btn-logout" style="display:none" onclick="doLogout()">로그아웃</button>
     </div>
   </div>
@@ -1397,6 +1398,255 @@ function drawDonut(canvasId, segments, opts){
 // ═══════════════════════════════════════════
 // DATA / STORAGE
 // ═══════════════════════════════════════════
+
+// 개발용 Firestore 읽기/쓰기 카운터. installFirestoreCounter(db)가 실제 호출을 가로챈다.
+const FS_METER={serverReads:0,cacheReads:0,writes:0,deletes:0,listeners:0,bucket:null};
+const _fsParents=[];
+function fsAdd(part){
+  const all=[FS_METER, FS_METER.bucket].concat(_fsParents).filter(Boolean);
+  ['serverReads','cacheReads','writes','deletes'].forEach(k=>{
+    const n=part&&part[k]||0;
+    if(!n) return;
+    all.forEach(t=>{ t[k]=(t[k]||0)+n; });
+  });
+}
+function fsBegin(name){
+  if(FS_METER.bucket) _fsParents.push(FS_METER.bucket);
+  FS_METER.bucket={name:name, serverReads:0, cacheReads:0, writes:0, deletes:0, t:Date.now()};
+}
+function fsEnd(name){
+  const b=FS_METER.bucket;
+  if(!b) return null;
+  if(name && b.name!==name) console.warn('[FS] 구간 이름 불일치', name, b.name);
+  const extra=(String(b.name).indexOf('페이지 로드')>=0)?(' / 리스너 '+FS_METER.listeners+'개'):'';
+  console.log('[FS 집계] '+b.name+': 읽기 '+b.serverReads+'건, 캐시읽기 '+b.cacheReads+'건, 쓰기 '+b.writes+'건, 삭제 '+b.deletes+'건 ('+(Date.now()-b.t)+'ms)'+extra);
+  FS_METER.bucket=_fsParents.pop()||null;
+  return b;
+}
+function fsReport(){
+  console.log('[FS 누적] 서버읽기 '+FS_METER.serverReads+' / 캐시읽기 '+FS_METER.cacheReads+' / 쓰기 '+FS_METER.writes+' / 삭제 '+FS_METER.deletes+' / 리스너 '+FS_METER.listeners);
+  return {serverReads:FS_METER.serverReads, cacheReads:FS_METER.cacheReads, writes:FS_METER.writes, deletes:FS_METER.deletes, listeners:FS_METER.listeners};
+}
+window.fsReport=fsReport;
+function _fsSnapCount(snap){
+  if(!snap) return 0;
+  if(typeof snap.size==='number' && Array.isArray(snap.docs)) return snap.size;
+  if(typeof snap.exists==='boolean') return snap.exists?1:0;
+  return 0;
+}
+function installFirestoreCounter(db){
+  if(!db || db.__fsCounted) return;
+  db.__fsCounted=true;
+  const QueryProto=firebase.firestore.Query && firebase.firestore.Query.prototype;
+  const DocProto=firebase.firestore.DocumentReference && firebase.firestore.DocumentReference.prototype;
+  const ColProto=firebase.firestore.CollectionReference && firebase.firestore.CollectionReference.prototype;
+  if(QueryProto && !QueryProto.__fsGet){
+    QueryProto.__fsGet=true;
+    const origGet=QueryProto.get;
+    QueryProto.get=function(){
+      return origGet.apply(this, arguments).then(snap=>{
+        const n=_fsSnapCount(snap);
+        const cache=!!(snap && snap.metadata && snap.metadata.fromCache);
+        if(cache) fsAdd({cacheReads:n}); else fsAdd({serverReads:n});
+        return snap;
+      });
+    };
+  }
+  function patchSnap(proto){
+    if(!proto || proto.__fsSnap || typeof proto.onSnapshot!=='function') return;
+    proto.__fsSnap=true;
+    const orig=proto.onSnapshot;
+    proto.onSnapshot=function(next, err){
+      FS_METER.listeners++;
+      let first=true;
+      const wrapped=function(snap){
+        const cache=!!(snap && snap.metadata && snap.metadata.fromCache);
+        let n=0;
+        if(first) n=_fsSnapCount(snap);
+        else if(snap && typeof snap.docChanges==='function') n=snap.docChanges().length;
+        else n=_fsSnapCount(snap);
+        first=false;
+        if(cache) fsAdd({cacheReads:n}); else fsAdd({serverReads:n});
+        if(typeof next==='function') return next(snap);
+      };
+      if(arguments.length>1) return orig.call(this, wrapped, err);
+      return orig.call(this, wrapped);
+    };
+  }
+  patchSnap(QueryProto);
+  if(DocProto && DocProto.onSnapshot!== (QueryProto && QueryProto.onSnapshot)) patchSnap(DocProto);
+  if(DocProto && !DocProto.__fsWrite){
+    DocProto.__fsWrite=true;
+    ['set','update'].forEach(m=>{
+      const orig=DocProto[m];
+      if(typeof orig!=='function') return;
+      DocProto[m]=function(){
+        const ret=orig.apply(this, arguments);
+        const done=()=>fsAdd({writes:1});
+        if(ret && typeof ret.then==='function') return ret.then(v=>{ done(); return v; });
+        done();
+        return ret;
+      };
+    });
+    if(typeof DocProto.delete==='function'){
+      const origDel=DocProto.delete;
+      DocProto.delete=function(){
+        const ret=origDel.apply(this, arguments);
+        const done=()=>fsAdd({deletes:1});
+        if(ret && typeof ret.then==='function') return ret.then(v=>{ done(); return v; });
+        done();
+        return ret;
+      };
+    }
+  }
+  if(ColProto && !ColProto.__fsAdd && typeof ColProto.add==='function'){
+    ColProto.__fsAdd=true;
+    const origAdd=ColProto.add;
+    ColProto.add=function(){
+      return origAdd.apply(this, arguments).then(ref=>{ fsAdd({writes:1}); return ref; });
+    };
+  }
+  const origBatch=db.batch.bind(db);
+  db.batch=function(){
+    const b=origBatch();
+    let writes=0, deletes=0;
+    const oset=b.set.bind(b), oup=b.update.bind(b), odel=b.delete.bind(b), ocom=b.commit.bind(b);
+    b.set=function(){ writes++; return oset.apply(null, arguments); };
+    b.update=function(){ writes++; return oup.apply(null, arguments); };
+    b.delete=function(){ deletes++; return odel.apply(null, arguments); };
+    b.commit=function(){
+      const w=writes, d=deletes;
+      writes=0; deletes=0;
+      return ocom().then(res=>{ fsAdd({writes:w, deletes:d}); return res; });
+    };
+    return b;
+  };
+  if(typeof db.runTransaction==='function'){
+    const origTx=db.runTransaction.bind(db);
+    db.runTransaction=function(fn){
+      return origTx(function(tx){
+        const og=tx.get.bind(tx), os=tx.set.bind(tx), ou=tx.update.bind(tx), od=tx.delete.bind(tx);
+        tx.get=function(){
+          return og.apply(null, arguments).then(snap=>{
+            const n=_fsSnapCount(snap);
+            const cache=!!(snap && snap.metadata && snap.metadata.fromCache);
+            if(cache) fsAdd({cacheReads:n}); else fsAdd({serverReads:n});
+            return snap;
+          });
+        };
+        tx.set=function(){ fsAdd({writes:1}); return os.apply(null, arguments); };
+        tx.update=function(){ fsAdd({writes:1}); return ou.apply(null, arguments); };
+        tx.delete=function(){ fsAdd({deletes:1}); return od.apply(null, arguments); };
+        return fn(tx);
+      });
+    };
+  }
+  console.log('[FS] 읽기/쓰기 카운터 켜짐. 콘솔에서 fsReport()로 누적을 볼 수 있습니다.');
+}
+
+let _fsSilentFlush=false;
+async function fsCommitWithRetry(run, label){
+  let manual=0;
+  while(true){
+    let last=null;
+    for(let i=1;i<=3;i++){
+      try{ return await run(); }
+      catch(e){
+        last=e;
+        console.error('[FS 저장 실패]', label||'', i, e);
+        try{ toast((label||'저장')+' 실패 ('+i+'/3): '+(e&&e.message?e.message:e), 'error'); }catch(_){}
+        if(i<3) await new Promise(r=>setTimeout(r, 400*i));
+      }
+    }
+    if(_fsSilentFlush) throw last;
+    manual++;
+    if(manual>2 || !window.confirm((label||'저장')+'에 실패했습니다. 다시 시도할까요?')) throw last;
+  }
+}
+function _waitSvLoaded(keys, ms){
+  return new Promise(resolve=>{
+    const t0=Date.now();
+    const tick=()=>{
+      if((keys||[]).every(k=>_svLoaded[k]) || Date.now()-t0>ms) resolve();
+      else setTimeout(tick, 40);
+    };
+    tick();
+  });
+}
+function _waitFlag(pred, ms){
+  return new Promise(resolve=>{
+    const t0=Date.now();
+    const tick=()=>{
+      let ok=false;
+      try{ ok=!!pred(); }catch(_){}
+      if(ok || Date.now()-t0>ms) resolve();
+      else setTimeout(tick, 40);
+    };
+    tick();
+  });
+}
+
+const FS_BACKUP_COLS=['users','clients','projects','quotes','records','settles','depositHistory','depositUnmatched','depNames','dailySettleRows','bankTransactions','companyExpenses','blogProjects','changeLogs'];
+const FS_BACKUP_DOCS=[['settings','gsync'],['settings','monthlyCnt'],['settings','uiCols'],['settings','gsyncLock']];
+function _fsPlain(val){
+  if(val==null) return val;
+  if(typeof val.toDate==='function'){
+    try{ return val.toDate().toISOString(); }catch(_){ return String(val); }
+  }
+  if(Array.isArray(val)) return val.map(_fsPlain);
+  if(typeof val==='object'){
+    const out={};
+    Object.keys(val).forEach(k=>{ out[k]=_fsPlain(val[k]); });
+    return out;
+  }
+  return val;
+}
+async function downloadFirestoreBackup(){
+  if(!CUR_ADMIN || CUR_ADMIN.role!=='admin'){ toast('관리자만 백업할 수 있습니다','error'); return; }
+  if(typeof db==='undefined'){ alert('Firestore가 아직 준비되지 않았습니다.'); return; }
+  if(!window.confirm('Firestore 전체 컬렉션을 JSON으로 내보냅니다.\n문서 수만큼 읽기 비용이 한 번 발생합니다. 계속할까요?')) return;
+  fsBegin('백업 1회');
+  try{
+    if(window._fsPersistenceReady){ try{ await window._fsPersistenceReady; }catch(_){} }
+    if(typeof ensureFirebaseReadAuth==='function'){ try{ await ensureFirebaseReadAuth(); }catch(e){ console.warn(e); } }
+    toast('백업 받는 중… 창을 닫지 마세요');
+    const out={exportedAt:new Date().toISOString(), projectId:'company-dashboard-602f7', collections:{}, docs:{}, errors:{}};
+    for(const name of FS_BACKUP_COLS){
+      try{
+        const snap=await db.collection(name).get();
+        out.collections[name]=snap.docs.map(d=>({id:d.id, ..._fsPlain(d.data()||{})}));
+      }catch(e){
+        out.errors[name]=e&&e.message?e.message:String(e);
+      }
+    }
+    for(const pair of FS_BACKUP_DOCS){
+      const key=pair[0]+'/'+pair[1];
+      try{
+        const doc=await db.collection(pair[0]).doc(pair[1]).get();
+        out.docs[key]=doc.exists?_fsPlain(doc.data()||{}):null;
+      }catch(e){
+        out.errors[key]=e&&e.message?e.message:String(e);
+      }
+    }
+    const blob=new Blob([JSON.stringify(out)], {type:'application/json'});
+    const a=document.createElement('a');
+    const stamp=new Date().toISOString().replace(/[:.]/g,'-');
+    a.href=URL.createObjectURL(blob);
+    a.download='firestore-backup-'+stamp+'.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    const counts=FS_BACKUP_COLS.map(n=>n+':'+(out.collections[n]?out.collections[n].length:'ERR')).join(', ');
+    toast('백업 파일을 저장했습니다');
+    console.log('[FS 백업]', counts, out.errors);
+  }catch(e){
+    console.error(e);
+    alert('백업 실패: '+(e&&e.message?e.message:e));
+  }finally{
+    fsEnd('백업 1회');
+  }
+}
+window.downloadFirestoreBackup=downloadFirestoreBackup;
 // ── 사용자 관리 (wv_users → Firestore users 컬렉션) ──────────────────────────────
 // DEFAULT_USERS는 gid()보다 뒤에서 평가되도록 함수로 감쌈
 function getDefaultUsers(){
@@ -1408,46 +1658,33 @@ function getDefaultUsers(){
 // Firestore에서 읽어온 사용자 캐시
 let USERS_CACHE = [];
 
-// Firestore users 컬렉션에서 사용자 목록 로드
-async function loadUsersFromFirestore(){
-  if(typeof db === 'undefined'){return;}
-  const snap = await db.collection('users').get();
-  if(snap.empty){
-    // 컬렉션이 비어 있으면 기본 사용자로 초기화
-    const def = getDefaultUsers();
-    const batch = db.batch();
-    def.forEach(u=>{
-      const ref = db.collection('users').doc(u.id);
-      batch.set(ref,u, { merge: true });
-    });
-    await batch.commit();
-    USERS_CACHE = def;
-  }else{
-    USERS_CACHE = snap.docs.map(doc=>({
-      id: doc.id,
-      ...doc.data()
-    }));
-  }
-}
-
-// Firestore users 실시간 구독 (멀티 PC 즉시 반영)
+// users는 컬렉션 리스너 1개만 둔다. 초기 get()과 리스너를 같이 쓰면 문서가 두 번 읽힌다.
 let _unsubUsers = null;
 let _usersSnapReady = false;
+let _usersSeeded = false;
+let _usersReadyResolve = null;
+const _usersReady = new Promise(r=>{ _usersReadyResolve=r; });
+function _markUsersReady(){
+  if(_usersReadyResolve){ const fn=_usersReadyResolve; _usersReadyResolve=null; fn(); }
+}
 function subscribeUsersFromFirestore(){
   if(typeof db === 'undefined') return;
   if(_unsubUsers) return;
   _unsubUsers = db.collection('users').onSnapshot(async snap=>{
-    if(snap.empty){
-      // 비어있으면 기본 사용자 생성 후 캐시 세팅
+    const fromCache=!!(snap && snap.metadata && snap.metadata.fromCache);
+    if(fromCache && snap.empty && !USERS_CACHE.length) return;
+    if(snap.empty && !fromCache && !_usersSeeded){
+      _usersSeeded=true;
       const def = getDefaultUsers();
-      const batch = db.batch();
-      def.forEach(u=>{
-        const ref = db.collection('users').doc(u.id);
-        batch.set(ref,u, { merge: true });
-      });
-      await batch.commit();
+      try{
+        await fsCommitWithRetry(async ()=>{
+          const batch = db.batch();
+          def.forEach(u=>{ batch.set(db.collection('users').doc(u.id), u, { merge: true }); });
+          await batch.commit();
+        }, '기본 사용자 저장');
+      }catch(e){ console.error(e); }
       USERS_CACHE = def;
-    } else {
+    } else if(!snap.empty) {
       if(!Array.isArray(USERS_CACHE)) USERS_CACHE=[];
       _applyDocChangesToRows(USERS_CACHE, snap.docChanges(), null, null);
       if(!_usersSnapReady){
@@ -1455,10 +1692,14 @@ function subscribeUsersFromFirestore(){
         _pruneRowsToSnap(USERS_CACHE, snap, null);
       }
     }
+    _markUsersReady();
     try{
       const active = document.querySelector('.page.active')?.id || '';
       if(active==='page-user-mgmt') renderUserMgmt();
     }catch(e){}
+  }, err=>{
+    console.error('users snapshot', err);
+    _markUsersReady();
   });
 }
 
@@ -1467,23 +1708,48 @@ function getUsers(){
   return USERS_CACHE;
 }
 
-// Firestore users 컬렉션 전체를 현재 배열 상태로 동기화
+// 바뀐 사용자 문서만 덮어쓰고, 목록에서 빠진 id만 삭제한다.
 async function saveUsers(arr){
   if(typeof db === 'undefined'){return;}
-  USERS_CACHE = arr.slice();
-  const colRef = db.collection('users');
-  const snap = await colRef.get();
-  const batch = db.batch();
-  // 기존 문서 삭제
-  snap.forEach(doc=>batch.delete(doc.ref));
-  // 새 상태로 전체 다시 기록
-  USERS_CACHE.forEach(u=>{
-    const id = u.id || db.collection('users').doc().id;
-    const data = {...u,id};
-    const ref = colRef.doc(id);
-    batch.set(ref,data, { merge: true });
-  });
-  await batch.commit();
+  fsBegin('저장 1회 (users)');
+  try{
+    const prev = Array.isArray(USERS_CACHE)?USERS_CACHE.slice():[];
+    const colRef = db.collection('users');
+    const next=(Array.isArray(arr)?arr:[]).map(u=>{
+      const id=u&&u.id?u.id:colRef.doc().id;
+      return {...u, id};
+    });
+    USERS_CACHE = next.slice();
+    const prevById=new Map();
+    prev.forEach(u=>{ if(u&&u.id) prevById.set(u.id, u); });
+    const nextIds=new Set(next.map(u=>u.id));
+    const ops=[];
+    prev.forEach(u=>{
+      if(u&&u.id&&!nextIds.has(u.id)) ops.push({del:true, id:u.id});
+    });
+    next.forEach(u=>{
+      const cleaned=cleanForFirestore({...u, id:u.id});
+      const json=JSON.stringify(cleaned);
+      const old=prevById.get(u.id);
+      const oldJson=old?JSON.stringify(cleanForFirestore({...old, id:old.id})):null;
+      if(json!==oldJson) ops.push({del:false, id:u.id, data:cleaned});
+    });
+    if(!ops.length) return;
+    await fsCommitWithRetry(async ()=>{
+      const batch=db.batch();
+      ops.forEach(op=>{
+        const ref=colRef.doc(op.id);
+        if(op.del) batch.delete(ref);
+        else batch.set(ref, op.data, {merge:true});
+      });
+      await batch.commit();
+    }, '사용자 저장');
+  }catch(e){
+    console.error('saveUsers', e);
+    try{ toast('사용자 저장 실패: '+(e&&e.message?e.message:e),'error'); }catch(_){}
+  }finally{
+    fsEnd('저장 1회 (users)');
+  }
 }
 // 하위호환 ADMINS (로그인 검증용)
 const ADMINS=null; // 더 이상 사용 안 함
@@ -1680,6 +1946,8 @@ let _unsubCompanyExp = null;
 let _unsubMonthlyCnt = null;
 let _unsubBlogProjects = null;
 let _unsubUiCols = null;
+let _unsubGsync = null;
+const _settingsReady = {gsync:false, monthlyCnt:false, uiCols:false};
 
 let _renderTimer = null;
 let _renderCols = new Set();
@@ -1844,7 +2112,15 @@ function subscribeAuxCollectionsFromFirestore(){
   if(!_unsubMonthlyCnt){
     _unsubMonthlyCnt = db.collection('settings').doc('monthlyCnt').onSnapshot(doc=>{
       MONTHLY_CNT_CACHE = (doc && doc.exists && (doc.data()?.data)) ? (doc.data().data||{}) : {};
+      _settingsReady.monthlyCnt=true;
       scheduleRerender('monthlyCnt');
+    });
+  }
+  if(!_unsubGsync){
+    _unsubGsync = db.collection('settings').doc('gsync').onSnapshot(doc=>{
+      GSYNC_CACHE = (doc && doc.exists) ? (doc.data()||{}) : {};
+      _settingsReady.gsync=true;
+      _maybeMigrateGsyncUrl();
     });
   }
   if(!_unsubBlogProjects){
@@ -1853,6 +2129,7 @@ function subscribeAuxCollectionsFromFirestore(){
   if(!_unsubUiCols){
     _unsubUiCols = db.collection('settings').doc('uiCols').onSnapshot(doc=>{
       applyUiColsFirestoreData(doc && doc.exists ? (doc.data()||{}) : {});
+      _settingsReady.uiCols=true;
       scheduleRerender('uiCols');
     });
   }
@@ -1863,8 +2140,14 @@ let _mainDataLoaded = false;
 let _mainDataPromise = null; // 로드 진행 중인 Promise(중복/조기반환 race 방지)
 async function loadMainDataFromFirestore(force = false){
   if(typeof db === 'undefined'){return;}
-  if(_mainDataLoaded && !force) return; // 이미 로드 완료됐으면 스킵
-  if(_mainDataPromise && !force) return _mainDataPromise; // 로드 진행 중이면 같은 Promise를 await (조기 반환 방지)
+  if(_mainDataLoaded) return;
+  // 리스너가 있으면 초기 스냅샷이 곧 캐시를 채운다. 같은 컬렉션을 get()으로 다시 읽지 않는다.
+  if(_unsubMain){
+    await _waitSvLoaded(['cl','pr','qt'], 20000);
+    _mainDataLoaded = !!(_svLoaded.cl && _svLoaded.pr && _svLoaded.qt);
+    return;
+  }
+  if(_mainDataPromise && !force) return _mainDataPromise;
   const p = (async ()=>{
     if(typeof ensureFirebaseReadAuth==='function'){
       try{ await ensureFirebaseReadAuth(); }catch(e){ console.warn('main data auth',e); }
@@ -2034,8 +2317,9 @@ function _recordsAdminVisible(){
   const app=document.getElementById('app');
   return !!(app && !app.classList.contains('hidden'));
 }
-async function loadRecordsByClient(clientId){
+async function loadRecordsByClient(clientId, force){
   if(typeof db==='undefined') return;
+  if(!force && RECORDS_CLIENT_ID===clientId && _svLoaded.rc) return;
   const token=++_recordsLoadToken;
   if(!clientId) return;
   try{
@@ -2061,6 +2345,7 @@ function invalidateRecordsCacheByProjectIds(){}
 
 async function loadSettlesFromFirestore(){
   if(typeof db === 'undefined'){return;}
+  if(_svLoaded.st || _unsubSettles) return;
   try{
     const stSnap = await db.collection('settles').get();
     SETTLES_CACHE = stSnap.docs.map(d=>({id:d.id,...(d.data()||{})}));
@@ -2075,6 +2360,7 @@ async function stSv(arr){ return await sv('st', arr); }
 
 async function loadDepositHistoryFromFirestore(){
   if(typeof db === 'undefined'){return;}
+  if(_svLoaded.dep || _unsubDepHist) return;
   try{
     const depSnap = await db.collection('depositHistory').get();
     DEP_HIST_CACHE = depSnap.docs.map(d=>({id:d.id,...(d.data()||{})}));
@@ -2093,6 +2379,7 @@ async function depClear(){
 
 async function loadDepositUnmatchedFromFirestore(){
   if(typeof db === 'undefined'){return;}
+  if(_svLoaded.um || _unsubUnmatched) return;
   try{
     const umSnap = await db.collection('depositUnmatched').get();
     DEP_UNMATCHED_CACHE = umSnap.docs.map(d=>({id:d.id,...(d.data()||{})}));
@@ -2111,6 +2398,7 @@ async function umClear(){
 
 async function loadDepNamesFromFirestore(){
   if(typeof db === 'undefined'){return;}
+  if(_svLoaded.dn || _unsubDepNames) return;
   try{
     const dnSnap = await db.collection('depNames').get();
     DEP_NAMES_CACHE = dnSnap.docs.map(d=>({id:d.id,...(d.data()||{})}));
@@ -2127,11 +2415,26 @@ function saveDepNames(arr){
   sv('dn', DEP_NAMES_CACHE).catch(console.error);
 }
 
+let _gsyncMigrated=false;
+function _maybeMigrateGsyncUrl(){
+  if(_gsyncMigrated || !_settingsReady.gsync) return;
+  _gsyncMigrated=true;
+  try{
+    const _g=gsyncLoad();
+    if(!_g.url||String(_g.url).includes('docs.google.com/spreadsheets/d/e/')||String(_g.url).includes('pub?')){
+      _g.url='https://script.google.com/macros/s/AKfycbzb5gnKlraH0-8zkoSdGIQmFmz1lxyHUmQ_eNGCx21-JDnzWrRU1HX2AFEr_BXUtgyRYg/exec';
+      gsyncSave(_g);
+    }
+  }catch(e){}
+}
 async function loadGsyncFromFirestore(){
   if(typeof db === 'undefined'){return;}
+  if(_settingsReady.gsync || _unsubGsync) return;
   try{
     const snap=await db.collection('settings').doc('gsync').get();
     GSYNC_CACHE = snap.exists ? (snap.data()||{}) : {};
+    _settingsReady.gsync=true;
+    _maybeMigrateGsyncUrl();
   }catch(e){
     _svLoadFailed('gsync', e);
   }
@@ -2158,13 +2461,13 @@ function gsyncLoad(){
 }
 
 function gsyncSave(obj){
-  // 기능 동일: 호출 즉시 반영 (캐시 갱신), 저장은 백그라운드 처리
   GSYNC_CACHE = _gsyncDefaults(obj);
-  try{
-    if(typeof db!=='undefined'){
-      db.collection('settings').doc('gsync').set(GSYNC_CACHE, {merge:true}).catch(console.error);
-    }
-  }catch(e){}
+  if(typeof db==='undefined') return;
+  const payload=GSYNC_CACHE;
+  fsBegin('저장 1회 (settings/gsync)');
+  fsCommitWithRetry(()=>db.collection('settings').doc('gsync').set(payload, {merge:true}), '시트연동 설정 저장')
+    .catch(e=>console.error('gsyncSave', e))
+    .finally(()=>fsEnd('저장 1회 (settings/gsync)'));
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -2172,6 +2475,7 @@ function gsyncSave(obj){
 // ─────────────────────────────────────────────────────────────
 async function loadDailySettleFromFirestore(){
   if(typeof db === 'undefined'){return;}
+  if(_svLoaded.ds || _unsubDs) return;
   try{
     const snap = await db.collection('dailySettleRows').get();
     DS_CACHE = snap.docs.map(d=>({id:d.id,...(d.data()||{})}));
@@ -2188,6 +2492,7 @@ function dsSv(arr){
 
 async function loadBankTxFromFirestore(){
   if(typeof db === 'undefined'){return;}
+  if(_svLoaded.bank || _unsubBankTx) return;
   try{
     const snap = await db.collection('bankTransactions').get();
     BANK_TX_CACHE = snap.docs.map(d=>({id:d.id,...(d.data()||{})}));
@@ -2204,6 +2509,7 @@ function bankSv(arr){
 
 async function loadCompanyExpFromFirestore(){
   if(typeof db === 'undefined'){return;}
+  if(_svLoaded.exp || _unsubCompanyExp) return;
   try{
     const snap = await db.collection('companyExpenses').get();
     COMPANY_EXP_CACHE = snap.docs.map(d=>({id:d.id,...(d.data()||{})}));
@@ -2220,9 +2526,11 @@ function expSv(arr){
 
 async function loadMonthlyCntFromFirestore(){
   if(typeof db === 'undefined'){return;}
+  if(_settingsReady.monthlyCnt || _unsubMonthlyCnt) return;
   try{
     const snap = await db.collection('settings').doc('monthlyCnt').get();
     MONTHLY_CNT_CACHE = (snap.exists && snap.data()?.data) ? (snap.data().data||{}) : {};
+    _settingsReady.monthlyCnt=true;
   }catch(e){
     _svLoadFailed('monthlyCnt', e);
   }
@@ -2230,15 +2538,18 @@ async function loadMonthlyCntFromFirestore(){
 function monthlyCntLd(){ return MONTHLY_CNT_CACHE || {}; }
 function monthlyCntSv(obj){
   MONTHLY_CNT_CACHE = obj && typeof obj==='object' ? {...obj} : {};
-  try{
-    if(typeof db!=='undefined'){
-      db.collection('settings').doc('monthlyCnt').set({data: MONTHLY_CNT_CACHE},{merge:true}).catch(console.error);
-    }
-  }catch(e){}
+  if(typeof db==='undefined') return;
+  const payload={data: MONTHLY_CNT_CACHE};
+  fsBegin('저장 1회 (settings/monthlyCnt)');
+  fsCommitWithRetry(()=>db.collection('settings').doc('monthlyCnt').set(payload,{merge:true}), '월별 건수 저장')
+    .catch(e=>console.error('monthlyCntSv', e))
+    .finally(()=>fsEnd('저장 1회 (settings/monthlyCnt)'));
 }
 
 async function loadBlogProjectsFromFirestore(){
   if(typeof db === 'undefined'){return;}
+  if(_svLoaded.bp || _unsubBlogProjects) return;
+  if(typeof CV_CURRENT_CODE!=='undefined' && CV_CURRENT_CODE) return;
   try{
     const snap = await db.collection('blogProjects').get();
     BLOG_PROJECTS_CACHE = snap.docs.map(d=>({id:d.id,...(d.data()||{})}));
@@ -2248,27 +2559,61 @@ async function loadBlogProjectsFromFirestore(){
   }
 }
 function blogLd(){ return BLOG_PROJECTS_CACHE || []; }
+let _blogSaveTimer=null;
+let _blogFlushTail=null;
+function blogSaveIsPending(){
+  return !!(_blogSaveTimer || BLOG_SAVE_PENDING || BLOG_SAVE_IN_FLIGHT);
+}
 function blogSv(arr){
   BLOG_PROJECTS_CACHE = Array.isArray(arr)?arr.slice():[];
-  // 저장 직전 로컬 백업(새로고침 유실 방지)
   try{ localStorage.setItem(BLOG_LOCAL_KEY, JSON.stringify(BLOG_PROJECTS_CACHE)); }catch(_){}
   BLOG_SAVE_PENDING = BLOG_PROJECTS_CACHE.slice();
-  if(BLOG_SAVE_IN_FLIGHT) return;
-  BLOG_SAVE_IN_FLIGHT = true;
-  void (async function flushBlogSaveQueue(){
-    while(BLOG_SAVE_PENDING){
-      const next = BLOG_SAVE_PENDING.slice();
-      BLOG_SAVE_PENDING = null;
-      try{
-        await sv('bp', next);
-      }catch(e){
-        console.error('blogSv save failed',e);
-        toast('블로그 데이터 저장 실패: '+(e?.message||e),'error');
-      }
-    }
-    BLOG_SAVE_IN_FLIGHT = false;
-  })();
+  if(_blogSaveTimer) clearTimeout(_blogSaveTimer);
+  _blogSaveTimer=setTimeout(()=>{ _blogSaveTimer=null; flushBlogSaveNow(); }, 1500);
 }
+function flushBlogSaveNow(){
+  if(_blogSaveTimer){ clearTimeout(_blogSaveTimer); _blogSaveTimer=null; }
+  if(BLOG_SAVE_IN_FLIGHT) return _blogFlushTail || Promise.resolve();
+  if(!BLOG_SAVE_PENDING) return Promise.resolve();
+  BLOG_SAVE_IN_FLIGHT = true;
+  _blogFlushTail=(async function flushBlogSaveQueue(){
+    try{
+      while(BLOG_SAVE_PENDING){
+        const next = BLOG_SAVE_PENDING.slice();
+        BLOG_SAVE_PENDING = null;
+        try{
+          await sv('bp', next);
+        }catch(e){
+          console.error('blogSv save failed',e);
+          BLOG_SAVE_PENDING = next;
+          try{ toast('블로그 데이터 저장 실패: '+(e?.message||e),'error'); }catch(_){}
+          break;
+        }
+      }
+    }finally{
+      BLOG_SAVE_IN_FLIGHT = false;
+      _blogFlushTail = null;
+    }
+  })();
+  return _blogFlushTail;
+}
+function fsFlushPendingSaves(){
+  _fsSilentFlush=true;
+  const job=flushBlogSaveNow();
+  return Promise.resolve(job).finally(()=>{ _fsSilentFlush=false; });
+}
+window.addEventListener('beforeunload', (e)=>{
+  if(!blogSaveIsPending()) return;
+  fsFlushPendingSaves();
+  e.preventDefault();
+  e.returnValue='저장하지 않은 입력이 있습니다.';
+});
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='hidden' && blogSaveIsPending()) fsFlushPendingSaves();
+});
+window.addEventListener('pagehide', ()=>{
+  if(blogSaveIsPending()) fsFlushPendingSaves();
+});
 
 function applyUiColsFirestoreData(d){
   const src=d&&typeof d==='object'?d:{};
@@ -2293,9 +2638,11 @@ function applyUiColsFirestoreData(d){
 }
 async function loadUiColsFromFirestore(){
   if(typeof db === 'undefined'){return;}
+  if(_settingsReady.uiCols || _unsubUiCols) return;
   try{
     const snap = await db.collection('settings').doc('uiCols').get();
     applyUiColsFirestoreData(snap.exists ? (snap.data()||{}) : {});
+    _settingsReady.uiCols=true;
   }catch(e){
     _svLoadFailed('uiCols', e);
   }
@@ -2311,11 +2658,12 @@ function uiColsSv(extraCols, colOrder, clientId){
   const safeOrder=Array.isArray(colOrder)?colOrder:[];
   UI_COLS_CACHE = UI_COLS_CACHE && typeof UI_COLS_CACHE==='object'?UI_COLS_CACHE:{};
   UI_COLS_CACHE[key]={extraCols:safeExtra, colOrder:safeOrder};
-  try{
-    if(typeof db!=='undefined'){
-      db.collection('settings').doc('uiCols').set({[key]:UI_COLS_CACHE[key]},{merge:true}).catch(console.error);
-    }
-  }catch(e){}
+  if(typeof db==='undefined') return;
+  const payload={[key]:UI_COLS_CACHE[key]};
+  fsBegin('저장 1회 (settings/uiCols)');
+  fsCommitWithRetry(()=>db.collection('settings').doc('uiCols').set(payload,{merge:true}), '열 설정 저장')
+    .catch(e=>console.error('uiColsSv', e))
+    .finally(()=>fsEnd('저장 1회 (settings/uiCols)'));
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -2558,6 +2906,7 @@ function _svOnSnap(key, snap){
   }
   if(key==='pr'){
     try{ refreshRecordsSubscriptionIfProjectsChanged(); }catch(e){}
+    try{ _gsyncNoteProjectChanges(changes); }catch(e){}
   }
   if(changes.length||firstSnap) scheduleRerender(SV_COL[key]||key);
 }
@@ -2576,6 +2925,7 @@ async function sv(key, value){
   if(!SV_COL[key]) return;
   if(key==='rc' && !guardRecordsSave()) return;
   _svRequireLoaded(key);
+  fsBegin('저장 1회 (sv '+key+')');
   const rows=Array.isArray(value)?value.slice():[];
   const col=db.collection(SV_COL[key]);
   rows.forEach(item=>{
@@ -2595,9 +2945,11 @@ async function sv(key, value){
   try{
     for(let i=0;i<changed.length;i+=400){
       const chunk=changed.slice(i,i+400);
-      const batch=db.batch();
-      chunk.forEach(c=>batch.set(col.doc(c.id), c.cleaned, {merge:true}));
-      await batch.commit();
+      await fsCommitWithRetry(async ()=>{
+        const batch=db.batch();
+        chunk.forEach(c=>batch.set(col.doc(c.id), c.cleaned, {merge:true}));
+        await batch.commit();
+      }, '저장 '+SV_COL[key]);
       const cur=_svSync[key]||(_svSync[key]=new Map());
       chunk.forEach(c=>cur.set(c.id, c.json));
     }
@@ -2610,6 +2962,8 @@ async function sv(key, value){
   }catch(e){
     console.error('sv() 에러 발생 key='+key, e);
     throw e;
+  }finally{
+    fsEnd('저장 1회 (sv '+key+')');
   }
 }
 
@@ -2636,12 +2990,15 @@ async function svDelete(key, ids){
     });
   }
   const col=db.collection(SV_COL[key]);
+  fsBegin('저장 1회 (svDelete '+key+')');
   try{
     for(let i=0;i<unique.length;i+=400){
       const chunk=unique.slice(i,i+400);
-      const batch=db.batch();
-      chunk.forEach(id=>batch.delete(col.doc(id)));
-      await batch.commit();
+      await fsCommitWithRetry(async ()=>{
+        const batch=db.batch();
+        chunk.forEach(id=>batch.delete(col.doc(id)));
+        await batch.commit();
+      }, '삭제 '+SV_COL[key]);
     }
     const latest=_svGetCache(key)||cache;
     _svSetCache(key, latest.filter(item=>!item||!idSet.has(item.id)));
@@ -2652,6 +3009,8 @@ async function svDelete(key, ids){
   }catch(e){
     console.error('svDelete() 에러 발생 key='+key, e);
     throw e;
+  }finally{
+    fsEnd('저장 1회 (svDelete '+key+')');
   }
 }
 
@@ -2721,15 +3080,18 @@ async function commitSvOps(ops){
   }
   if(cur.length) chunks.push(cur);
 
+  fsBegin('저장 1회 (commitSvOps)');
   try{
     for(const chunk of chunks){
-      const batch=db.batch();
-      chunk.forEach(op=>{
-        const ref=db.collection(SV_COL[op.key]).doc(op.id);
-        if(op.type==='del') batch.delete(ref);
-        else batch.set(ref, op.cleaned, {merge:true});
-      });
-      await batch.commit();
+      await fsCommitWithRetry(async ()=>{
+        const batch=db.batch();
+        chunk.forEach(op=>{
+          const ref=db.collection(SV_COL[op.key]).doc(op.id);
+          if(op.type==='del') batch.delete(ref);
+          else batch.set(ref, op.cleaned, {merge:true});
+        });
+        await batch.commit();
+      }, '저장');
       chunk.forEach(op=>{
         const sync=_svSync[op.key]||(_svSync[op.key]=new Map());
         if(op.type==='del') sync.delete(op.id);
@@ -2749,6 +3111,8 @@ async function commitSvOps(ops){
   }catch(e){
     console.error('commitSvOps() 에러', e);
     throw e;
+  }finally{
+    fsEnd('저장 1회 (commitSvOps)');
   }
 }
 // 공급자 사업자 목록 (기본: 웨이프로젝트)
@@ -2861,6 +3225,8 @@ function updateAdminUI(){
   if(nameEl) nameEl.textContent = loggedIn ? ('👤 '+CUR_ADMIN.username+(isAdmin?' (관리자)':' (기본)')) : '';
   if(logoutBtn) logoutBtn.style.display = loggedIn ? '' : 'none';
   if(badge) badge.style.display = loggedIn ? 'none' : '';
+  const backupBtn=document.getElementById('btn-firestore-backup');
+  if(backupBtn) backupBtn.style.display = isAdmin ? '' : 'none';
   // 관리자 메뉴 표시 여부
   const adminToggle=document.getElementById('nav-admin-toggle');
   if(adminToggle) adminToggle.style.display = isAdmin ? '' : 'none';
@@ -2922,7 +3288,8 @@ function doModalLogin(){
 }
 
 // 기존 전체화면 로그인 (하위호환 - 사용 안 함)
-function doLogin(){
+async function doLogin(){
+  try{ await Promise.race([_usersReady, new Promise(r=>setTimeout(r, 8000))]); }catch(_){}
   const id=document.getElementById('login-id').value.trim(),pw=document.getElementById('login-pw').value;
   const u=getUsers().find(a=>a.loginId===id&&a.pw===pw);
   if(u){
@@ -2998,6 +3365,40 @@ async function ensureFirebaseReadAuth(){
   }
   await _fbReadAuthPromise;
 }
+let _cvLoadedCode=null;
+async function loadClientScopedData(code, force){
+  if(typeof db==='undefined') return;
+  if(!force && _cvLoadedCode===code && _svLoaded.cl) return;
+  const clSnap=await db.collection('clients').where('code','==',code).limit(1).get();
+  if(clSnap.empty){
+    CLIENTS_CACHE=[];
+    PROJECTS_CACHE=[];
+    QUOTES_CACHE=[];
+    BLOG_PROJECTS_CACHE=[];
+    RECORDS_CACHE=[];
+    RECORDS_CLIENT_ID=null;
+    _svMarkUnloaded('cl');
+    _cvLoadedCode=null;
+    return;
+  }
+  const client={id:clSnap.docs[0].id, ...(clSnap.docs[0].data()||{})};
+  CLIENTS_CACHE=[client];
+  _svAcceptServerRows('cl', CLIENTS_CACHE);
+  const cid=client.id;
+  const [prSnap, qtSnap, bpSnap]=await Promise.all([
+    db.collection('projects').where('clientId','==',cid).get(),
+    db.collection('quotes').where('clientId','==',cid).get(),
+    db.collection('blogProjects').where('clientId','==',cid).get(),
+  ]);
+  PROJECTS_CACHE=prSnap.docs.map(d=>({id:d.id, ...(d.data()||{})}));
+  QUOTES_CACHE=qtSnap.docs.map(d=>({id:d.id, ...(d.data()||{})}));
+  BLOG_PROJECTS_CACHE=bpSnap.docs.map(d=>({id:d.id, ...(d.data()||{})}));
+  _svAcceptServerRows('pr', PROJECTS_CACHE);
+  _svAcceptServerRows('qt', QUOTES_CACHE);
+  _svAcceptServerRows('bp', BLOG_PROJECTS_CACHE);
+  if(typeof loadRecordsByClient==='function') await loadRecordsByClient(cid, !!force);
+  _cvLoadedCode=code;
+}
 function showClientView(code){
   CV_CURRENT_CODE=code;
   hide('login-screen');hide('app');show('client-screen');
@@ -3014,21 +3415,14 @@ function showClientView(code){
   document.getElementById('cvpanel-daily').innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">탭을 클릭하면 명단이 표시됩니다</div>';
   delete document.getElementById('cvpanel-daily').dataset.clientId;
   void (async ()=>{
+    fsBegin('페이지 로드 1회 (고객 화면)');
     try{
+      if(window._fsPersistenceReady){ try{ await window._fsPersistenceReady; }catch(_){} }
       if(typeof ensureFirebaseReadAuth==='function') await ensureFirebaseReadAuth();
     }catch(e){ console.warn('client view auth',e); }
-    if(typeof loadMainDataFromFirestore==='function'){
-      try{ await loadMainDataFromFirestore(); }catch(e){ console.error(e); }
-    }
-    // 해당 거래처의 records만 로드 (records 전체 구독 제거 대체)
-    try{
-      const _c=ld().clients.find(x=>x.code===code);
-      if(_c && typeof loadRecordsByClient==='function') await loadRecordsByClient(_c.id);
-    }catch(e){ console.error(e); }
-    if(typeof loadBlogProjectsFromFirestore==='function'){
-      try{ await loadBlogProjectsFromFirestore(); }catch(e){ console.error(e); }
-    }
+    try{ await loadClientScopedData(code, false); }catch(e){ console.error(e); }
     refreshClientView();
+    fsEnd('페이지 로드 1회 (고객 화면)');
   })();
 }
 function refreshClientView(){
@@ -3072,51 +3466,29 @@ function refreshClientView(){
     document.getElementById('cvpanel-nblog').innerHTML='<div style="padding:20px;color:red">N-블로그 현황 오류: '+e.message+'</div>';
     console.error('cvNblog error',e);
   }
-  if(typeof loadBlogProjectsFromFirestore==='function'){
-    loadBlogProjectsFromFirestore()
-      .then(()=>{ try{ renderNBlogStatus(document.getElementById('cvpanel-nblog'), c.id); }catch(_){} })
-      .catch(e=>console.warn('client view nblog delayed reload',e));
-  }
   document.getElementById('cvpanel-daily').innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">탭을 클릭하면 명단이 표시됩니다</div>';
   document.getElementById('cvpanel-daily').dataset.clientId=c.id;
   document.getElementById('cvpanel-daily').dataset.clientCode=CV_CURRENT_CODE;
 }
 async function refreshClientViewFromServer(){
   if(!CV_CURRENT_CODE)return;
-  try{ await ensureFirebaseReadAuth(); }catch(e){ console.warn('client view refresh auth',e); }
-  if(typeof loadMainDataFromFirestore==='function'){
-    try{ await loadMainDataFromFirestore(true); }catch(e){ console.error(e); }
-  }
-  // 해당 거래처의 records만 로드 (강제 새로고침이므로 캐시 무시하고 재조회)
+  fsBegin('고객 화면 새로고침 1회');
   try{
-    const _c=ld().clients.find(x=>x.code===CV_CURRENT_CODE);
-    if(_c && typeof loadRecordsByClient==='function') await loadRecordsByClient(_c.id, true);
-  }catch(e){ console.error(e); }
-  if(typeof loadBlogProjectsFromFirestore==='function'){
-    try{ await loadBlogProjectsFromFirestore(); }catch(e){ console.error(e); }
+    if(window._fsPersistenceReady){ try{ await window._fsPersistenceReady; }catch(_){} }
+    try{ await ensureFirebaseReadAuth(); }catch(e){ console.warn('client view refresh auth',e); }
+    try{ await loadClientScopedData(CV_CURRENT_CODE, true); }catch(e){ console.error(e); }
+    refreshClientView();
+    const el=document.getElementById('cv-date');
+    if(el)el.textContent=new Date().toLocaleString('ko-KR');
+  }finally{
+    fsEnd('고객 화면 새로고침 1회');
   }
-  refreshClientView();
-  const el=document.getElementById('cv-date');
-  if(el)el.textContent=new Date().toLocaleString('ko-KR');
 }
 
 async function refreshAllData(){
+  fsBegin('새로고침 1회 (메모리)');
   try{
-    // 전체 새로고침: records 거래처별 캐시 비우기 (최신 데이터 재조회 위해)
-    if(typeof loadMainDataFromFirestore==='function') await loadMainDataFromFirestore(true);
-    if(CUR_CLIENT && typeof subscribeRecordsForClient==='function'){ try{ await subscribeRecordsForClient(CUR_CLIENT); }catch(_){} }
-    if(typeof loadSettlesFromFirestore==='function') await loadSettlesFromFirestore();
-    if(typeof loadDepositHistoryFromFirestore==='function') await loadDepositHistoryFromFirestore();
-    if(typeof loadDepositUnmatchedFromFirestore==='function') await loadDepositUnmatchedFromFirestore();
-    if(typeof loadDepNamesFromFirestore==='function') await loadDepNamesFromFirestore();
-    if(typeof loadGsyncFromFirestore==='function') await loadGsyncFromFirestore();
-    if(typeof loadDailySettleFromFirestore==='function') await loadDailySettleFromFirestore();
-    if(typeof loadBankTxFromFirestore==='function') await loadBankTxFromFirestore();
-    if(typeof loadCompanyExpFromFirestore==='function') await loadCompanyExpFromFirestore();
-    if(typeof loadMonthlyCntFromFirestore==='function') await loadMonthlyCntFromFirestore();
-    if(typeof loadBlogProjectsFromFirestore==='function') await loadBlogProjectsFromFirestore();
-    if(typeof loadUiColsFromFirestore==='function') await loadUiColsFromFirestore();
-    // 메인/현재 화면 재렌더
+    await _waitSvLoaded(['cl','pr','qt','st','dep','um','dn','ds','bank','exp','bp'], 4000);
     try{renderOverview();}catch(e){}
     try{renderClients();}catch(e){}
     try{renderDetDash();renderDetProjView();renderDetQuote();renderDetSettle();}catch(e){}
@@ -3124,12 +3496,13 @@ async function refreshAllData(){
     try{initDailySettle();}catch(e){}
     try{renderSettleAll();}catch(e){}
     try{renderDepositHistory();}catch(e){}
-    // 업체뷰도 열려 있을 수 있으므로 최신 상태 반영
-    try{refreshClientViewFromServer();}catch(e){}
-    toast('최신 데이터로 새로고침 되었습니다');
+    try{refreshClientView();}catch(e){}
+    toast('메모리에 있는 데이터로 화면을 다시 그렸습니다');
   }catch(e){
     console.error(e);
     toast('새로고침 중 오류가 발생했습니다: '+e.message,'error');
+  }finally{
+    fsEnd('새로고침 1회 (메모리)');
   }
 }
 
@@ -3141,7 +3514,7 @@ function _syncClientViewIfSameClient(){
     const d=ld();
     const cl=d.clients.find(x=>x.id===CUR_CLIENT);
     if(cl && cl.code===CV_CURRENT_CODE){
-      refreshClientViewFromServer();
+      refreshClientView();
     }
   }catch(e){}
 }
@@ -4187,7 +4560,7 @@ function renderCvNblogPanel(){
   const clientId=getCvClientId();
   renderNBlogStatus(pEl, clientId);
   // 링크 유입 직후 동기화 지연 시 재조회 후 재렌더
-  if(clientId && !getClientBlogProjects(clientId).length && typeof loadBlogProjectsFromFirestore==='function'){
+  if(clientId && !getClientBlogProjects(clientId).length && !_svLoaded.bp && !CV_CURRENT_CODE && typeof loadBlogProjectsFromFirestore==='function'){
     loadBlogProjectsFromFirestore()
       .then(()=>renderNBlogStatus(pEl, clientId))
       .catch(e=>console.warn('cv nblog reload',e));
@@ -4468,12 +4841,11 @@ function blogRowChange(projectId, section, rowId, field, value){
 }
 async function blogSaveProject(){
   try{
-    if(BLOG_SAVE_PENDING || BLOG_SAVE_IN_FLIGHT){
-      const started=Date.now();
-      while(BLOG_SAVE_PENDING || BLOG_SAVE_IN_FLIGHT){
-        await new Promise(r=>setTimeout(r,80));
-        if(Date.now()-started>12000) break;
-      }
+    await flushBlogSaveNow();
+    const started=Date.now();
+    while(BLOG_SAVE_PENDING || BLOG_SAVE_IN_FLIGHT){
+      await new Promise(r=>setTimeout(r,80));
+      if(Date.now()-started>12000) break;
     }
     toast('블로그 데이터 저장 완료');
   }catch(e){
@@ -4635,16 +5007,7 @@ function initApp(){
   document.getElementById('ov-date').textContent='업데이트: '+new Date().toLocaleString('ko-KR');
   updateAdminUI();
   renderOverview();renderClients();renderExportPage();
-  // 낡은 CSV URL → Apps Script URL 자동 교체
-  (function(){
-    try{
-      const _g=gsyncLoad();
-      if(!_g.url||String(_g.url).includes('docs.google.com/spreadsheets/d/e/')||String(_g.url).includes('pub?')||!_g.url){
-        _g.url='https://script.google.com/macros/s/AKfycbzb5gnKlraH0-8zkoSdGIQmFmz1lxyHUmQ_eNGCx21-JDnzWrRU1HX2AFEr_BXUtgyRYg/exec';
-        gsyncSave(_g);
-      }
-    }catch(e){}
-  })();
+  _maybeMigrateGsyncUrl();
   setupAutoSync();
 }
 
@@ -6846,28 +7209,147 @@ function _gsyncAcquireLock(holdMs){ return _gsyncMutateLock(holdMs, false); }
 function _gsyncRenewLock(holdMs){ return _gsyncMutateLock(holdMs, false); }
 function _gsyncReleaseLock(){ return _gsyncMutateLock(0, true).catch(()=>{}); }
 
-async function _gsyncLoadTargetRecords(){
-  if(typeof db==='undefined') throw new Error('Firestore 연결 없음');
-  let projects=PROJECTS_CACHE||[];
-  if(!projects.length){
-    const snap=await db.collection('projects').get();
-    projects=snap.docs.map(d=>({id:d.id,...(d.data()||{})}));
+let _gsyncRecCache=null;
+let _gsyncFetchedProj=null;
+let _gsyncNeedProj=null;
+let _gsyncReviveProj=null;
+let _gsyncCreatedCursor=null;
+function _gsyncDropProjRecords(id){
+  if(!_gsyncRecCache) return;
+  const drop=[];
+  _gsyncRecCache.forEach((r,rid)=>{ if(r&&r.projectId===id) drop.push(rid); });
+  drop.forEach(rid=>_gsyncRecCache.delete(rid));
+}
+function _gsyncNoteProjectChanges(changes){
+  if(!_gsyncNeedProj) _gsyncNeedProj=new Set();
+  if(!_gsyncFetchedProj) _gsyncFetchedProj=new Set();
+  if(!_gsyncReviveProj) _gsyncReviveProj=new Set();
+  (changes||[]).forEach(ch=>{
+    const doc=ch&&ch.doc;
+    const id=doc&&doc.id;
+    if(!id) return;
+    if(ch.type==='removed'){
+      _gsyncFetchedProj.delete(id);
+      _gsyncNeedProj.delete(id);
+      _gsyncReviveProj.delete(id);
+      _gsyncDropProjRecords(id);
+      return;
+    }
+    if(ch.type!=='added' && ch.type!=='modified') return;
+    let data={};
+    try{ data=doc.data()||{}; }catch(e){ data={}; }
+    if(String(data.status||'').trim()==='완료'){
+      if(_gsyncFetchedProj.has(id)) _gsyncReviveProj.add(id);
+      _gsyncFetchedProj.delete(id);
+      _gsyncNeedProj.delete(id);
+      _gsyncDropProjRecords(id);
+      return;
+    }
+    if(!_gsyncFetchedProj.has(id)) _gsyncNeedProj.add(id);
+  });
+}
+function _gsyncBillEmpty(snap){
+  const n=snap&&typeof snap.size==='number'?snap.size:0;
+  const cache=!!(snap&&snap.metadata&&snap.metadata.fromCache);
+  if(!cache && n===0) fsAdd({serverReads:1});
+  return {n:n, emptyBill:(!cache && n===0)?1:0, fromCache:cache};
+}
+async function _gsyncFetchProjRecords(ids){
+  let docs=0, queries=0, emptyBill=0;
+  for(let i=0;i<ids.length;i+=30){
+    const chunk=ids.slice(i, i+30);
+    if(!chunk.length) continue;
+    queries++;
+    const snap=await db.collection('records').where('projectId','in',chunk).get();
+    const bill=_gsyncBillEmpty(snap);
+    docs+=bill.n;
+    emptyBill+=bill.emptyBill;
+    chunk.forEach(id=>{
+      _gsyncFetchedProj.add(id);
+      _gsyncNeedProj.delete(id);
+      _gsyncReviveProj.delete(id);
+    });
+    snap.docs.forEach(doc=>{
+      _gsyncRecCache.set(doc.id, {id:doc.id,...(doc.data()||{})});
+    });
   }
+  return {docs:docs, queries:queries, emptyBill:emptyBill};
+}
+function _gsyncActiveProjectIds(projects){
+  const ids=[];
   const seen=new Set();
-  const projIds=[];
-  projects.forEach(p=>{
+  (projects||[]).forEach(p=>{
     if(!p||!p.id||seen.has(p.id)) return;
     if(String(p.status||'').trim()==='완료') return;
     seen.add(p.id);
-    projIds.push(p.id);
+    ids.push(p.id);
   });
-  const records=[];
-  for(let i=0;i<projIds.length;i+=30){
-    const chunk=projIds.slice(i, i+30);
-    const snap=await db.collection('records').where('projectId','in',chunk).get();
-    snap.docs.forEach(doc=>records.push({id:doc.id,...(doc.data()||{})}));
+  return ids;
+}
+async function _gsyncLoadTargetRecords(){
+  if(typeof db==='undefined') throw new Error('Firestore 연결 없음');
+  let projects=PROJECTS_CACHE||[];
+  let projListNote='';
+  if(!projects.length && !_svLoaded.pr){
+    const snap=await db.collection('projects').get();
+    const bill=_gsyncBillEmpty(snap);
+    projListNote='projects 목록 '+(bill.n||bill.emptyBill)+'건, ';
+    projects=snap.docs.map(d=>({id:d.id,...(d.data()||{})}));
   }
-  return records;
+  const projIds=_gsyncActiveProjectIds(projects);
+  if(!_gsyncRecCache) _gsyncRecCache=new Map();
+  if(!_gsyncFetchedProj) _gsyncFetchedProj=new Set();
+  if(!_gsyncNeedProj) _gsyncNeedProj=new Set();
+  if(!_gsyncReviveProj) _gsyncReviveProj=new Set();
+  let projDocs=0, projQueries=0, projEmpty=0, newDocs=0, newQueries=0, newEmpty=0;
+  let baseline=false;
+  if(!_gsyncCreatedCursor){
+    baseline=true;
+    const missing=projIds.filter(id=>!_gsyncFetchedProj.has(id));
+    const got=await _gsyncFetchProjRecords(missing);
+    projDocs=got.docs; projQueries=got.queries; projEmpty=got.emptyBill;
+    _gsyncCreatedCursor=new Date(Date.now()-90000).toISOString();
+  }else{
+    newQueries=1;
+    const snap=await db.collection('records').where('createdAt','>',_gsyncCreatedCursor).get();
+    const bill=_gsyncBillEmpty(snap);
+    newDocs=bill.n; newEmpty=bill.emptyBill;
+    const gotNew=new Set();
+    snap.docs.forEach(doc=>{
+      const row={id:doc.id,...(doc.data()||{})};
+      _gsyncRecCache.set(doc.id, row);
+      if(row.projectId) gotNew.add(row.projectId);
+    });
+    const active=new Set(projIds);
+    gotNew.forEach(id=>{
+      if(!active.has(id) || _gsyncReviveProj.has(id)) return;
+      if(_gsyncNeedProj.has(id)){
+        _gsyncFetchedProj.add(id);
+        _gsyncNeedProj.delete(id);
+      }
+    });
+    _gsyncCreatedCursor=new Date(Date.now()-90000).toISOString();
+    const need=[];
+    projIds.forEach(id=>{
+      if(_gsyncFetchedProj.has(id)) return;
+      if(_gsyncReviveProj.has(id) || _gsyncNeedProj.has(id)) need.push(id);
+    });
+    const got=await _gsyncFetchProjRecords(need);
+    projDocs=got.docs; projQueries=got.queries; projEmpty=got.emptyBill;
+  }
+  (RECORDS_CACHE||[]).forEach(r=>{
+    if(r&&r.id) _gsyncRecCache.set(r.id, r);
+  });
+  const allow=new Set(projIds);
+  const records=[];
+  _gsyncRecCache.forEach(r=>{
+    if(r&&allow.has(r.projectId)) records.push(r);
+  });
+  const projNote='프로젝트 records '+projDocs+'건('+projQueries+'쿼리'+(projEmpty?(', 빈 결과 '+projEmpty+'읽기'):'')+')';
+  const detail=baseline
+    ? (projListNote+'기준선 '+projNote+'. 다음 주기부터는 변경분만 읽습니다.')
+    : (projListNote+projNote+', 새로 생긴 records '+newDocs+'건('+newQueries+'쿼리'+(newEmpty?', 빈 결과 1읽기':'')+')');
+  return {records:records, detail:detail};
 }
 
 function _gsyncReflectOpenClient(changed){
@@ -6947,8 +7429,18 @@ async function doSync(silent=false){
       if(key!=='::') sheetMap[key]=url;
     });
 
-    // 완료가 아닌 모든 프로젝트 records. RECORDS_CACHE는 매칭에 쓰지 않는다.
-    const targetRecords=await _gsyncLoadTargetRecords();
+    // 완료가 아닌 프로젝트 records. 첫 회만 기준선이고, 이후에는 새 프로젝트와 createdAt 변경분만 읽는다.
+    fsBegin('리뷰동기화 읽기 1회');
+    let targetRecords;
+    let gsyncReadDetail='';
+    try{
+      const loaded=await _gsyncLoadTargetRecords();
+      targetRecords=loaded.records;
+      gsyncReadDetail=loaded.detail||'';
+    }finally{
+      fsEnd('리뷰동기화 읽기 1회');
+      if(gsyncReadDetail) console.log('[FS 집계] 리뷰동기화 읽기 1회 내역: '+gsyncReadDetail);
+    }
 
     let matched=0, unmatched=0, updated=0;
     const changed=[];
@@ -6985,11 +7477,22 @@ async function doSync(silent=false){
     }
 
     const col=db.collection('records');
-    for(let i=0;i<changed.length;i+=400){
-      const chunk=changed.slice(i, i+400);
-      const batch=db.batch();
-      chunk.forEach(u=>batch.update(col.doc(u.id), {reviewUrl:u.reviewUrl}));
-      await batch.commit();
+    fsBegin('저장 1회 (리뷰URL 동기화)');
+    try{
+      for(let i=0;i<changed.length;i+=400){
+        const chunk=changed.slice(i, i+400);
+        await fsCommitWithRetry(async ()=>{
+          const batch=db.batch();
+          chunk.forEach(u=>batch.update(col.doc(u.id), {reviewUrl:u.reviewUrl}));
+          await batch.commit();
+        }, '리뷰 URL 동기화');
+        chunk.forEach(u=>{
+          const prev=_gsyncRecCache&&_gsyncRecCache.get(u.id);
+          if(prev) _gsyncRecCache.set(u.id, {...prev, reviewUrl:u.reviewUrl});
+        });
+      }
+    }finally{
+      fsEnd('저장 1회 (리뷰URL 동기화)');
     }
     _gsyncReflectOpenClient(changed);
 
@@ -7211,6 +7714,8 @@ function sCard(label,color,val,sub){
   </div>`;
 }
 function showPage(n){
+  fsBegin('탭 전환 1회 ('+n+')');
+  try{
   // 관리자 전용 페이지는 로그인 필요
   const adminSubs=['settle-all','deposit','daily-settle'];
   if(adminSubs.includes(n)&&!CUR_ADMIN){
@@ -7235,6 +7740,10 @@ function showPage(n){
   if(n==='settle-all')renderSettleAll();
   if(n==='deposit'){showDepTab('names');updateUnmatchedBadge();}
   if(n==='daily-settle')initDailySettle();
+  }finally{
+    const label='탭 전환 1회 ('+n+')';
+    setTimeout(()=>fsEnd(label), 0);
+  }
 }
 function toggleAdminMenu(){
   const sub=document.getElementById('nav-admin-sub');
@@ -7339,27 +7848,65 @@ function renderOverview(){
   loadOverviewCounts();
 }
 
-// 전체현황 상단 카드(리뷰완료/미완료) — compat SDK는 count() 미지원 → get().size 사용
+// 전체현황 상단 카드. records 전체를 내려받지 않고 count() 집계만 쓴다.
+// 집계 1회 과금은 대략 문서 1000건당 읽기 1건. 60초 안에는 다시 묻지 않는다.
 let _ovCountTimer=null;
+let _ovCounts=null;
+let _ovCountsFlight=null;
+function _paintOvCounts(tot, rev){
+  const pend=Math.max(0, (tot||0)-(rev||0));
+  const elRev=document.getElementById('ov-rev');
+  const elRevSub=document.getElementById('ov-rev-sub');
+  const elPend=document.getElementById('ov-pend');
+  if(elRev) elRev.textContent=rev;
+  if(elRevSub) elRevSub.textContent=`${tot}건 중 ${tot>0?~~((rev/tot)*100):0}%`;
+  if(elPend) elPend.textContent=pend;
+}
+async function _fsAggregateCount(where){
+  const user=firebase.auth&&firebase.auth().currentUser;
+  if(!user) throw new Error('인증 전');
+  const token=await user.getIdToken();
+  const projectId=firebase.app().options.projectId;
+  const structuredQuery={from:[{collectionId:'records'}]};
+  if(where) structuredQuery.where=where;
+  const res=await fetch('https://firestore.googleapis.com/v1/projects/'+projectId+'/databases/(default)/documents:runAggregationQuery',{
+    method:'POST',
+    headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+    body:JSON.stringify({structuredAggregationQuery:{structuredQuery, aggregations:[{alias:'count', count:{}}]}})
+  });
+  if(!res.ok) throw new Error(await res.text());
+  const json=await res.json();
+  const row=Array.isArray(json)?json[0]:json;
+  const v=row&&row.result&&row.result.aggregateFields&&row.result.aggregateFields.count;
+  return Number((v&&(v.integerValue||v.doubleValue))||0);
+}
 function loadOverviewCounts(){
   if(typeof db==='undefined') return;
+  if(_ovCounts && Date.now()-_ovCounts.at<60000){
+    _paintOvCounts(_ovCounts.tot, _ovCounts.rev);
+    return;
+  }
   if(_ovCountTimer) clearTimeout(_ovCountTimer);
-  _ovCountTimer=setTimeout(async ()=>{
-    try{
-      const col=db.collection('records');
-      const totSnap=await col.get();
-      const tot=totSnap.size;
-      // 리뷰완료 = reviewUrl이 비어있지 않은 문서 (''보다 큰 문자열 = 비어있지 않음)
-      const revSnap=await col.where('reviewUrl','>','').get();
-      const rev=revSnap.size;
-      const pend=Math.max(0,tot-rev);
-      const elRev=document.getElementById('ov-rev');
-      const elRevSub=document.getElementById('ov-rev-sub');
-      const elPend=document.getElementById('ov-pend');
-      if(elRev) elRev.textContent=rev;
-      if(elRevSub) elRevSub.textContent=`${tot}건 중 ${tot>0?~~((rev/tot)*100):0}%`;
-      if(elPend) elPend.textContent=pend;
-    }catch(e){ console.error('overview counts', e); }
+  _ovCountTimer=setTimeout(()=>{
+    if(_ovCountsFlight) return;
+    if(_ovCounts && Date.now()-_ovCounts.at<60000){
+      _paintOvCounts(_ovCounts.tot, _ovCounts.rev);
+      return;
+    }
+    _ovCountsFlight=(async ()=>{
+      fsBegin('전체현황 집계 1회');
+      try{
+        const tot=await _fsAggregateCount(null);
+        const rev=await _fsAggregateCount({fieldFilter:{field:{fieldPath:'reviewUrl'},op:'GREATER_THAN',value:{stringValue:''}}});
+        fsAdd({serverReads:Math.max(1, Math.ceil(tot/1000))+Math.max(1, Math.ceil(rev/1000))});
+        _ovCounts={tot, rev, at:Date.now()};
+        _paintOvCounts(tot, rev);
+      }catch(e){ console.error('overview counts', e); }
+      finally{
+        fsEnd('전체현황 집계 1회');
+        _ovCountsFlight=null;
+      }
+    })();
   },300);
 }
 
@@ -14025,46 +14572,47 @@ function exportDsExcel(){
   firebase.initializeApp(firebaseConfig);
   const analytics = firebase.analytics();
   const db = firebase.firestore();
-  // Edge·추적 방지·일부 네트워크에서 WebChannel(Listen)이 404/transport error 나는 경우,
-  // 첫 Firestore 사용 전에 롱폴링으로 우회 (PERMISSION_DENIED와는 다른 이슈)
+  // compat SDK에는 persistentLocalCache 이름이 없다.
+  // enablePersistence({synchronizeTabs:true})가 같은 IndexedDB 오프라인 캐시
+  // (persistentLocalCache + 여러 탭 매니저)다. 읽기 전에 켜야 한다.
   try {
-    db.settings({ experimentalForceLongPolling: true });
+    db.settings({
+      experimentalForceLongPolling: true,
+      cacheSizeBytes: firebase.firestore.CACHE_SIZE_UNLIMITED
+    });
   } catch (e) {
     console.warn('firestore settings', e);
   }
+  try { installFirestoreCounter(db); } catch (e) { console.warn('fs counter', e); }
+  window._fsPersistenceReady = db.enablePersistence({ synchronizeTabs: true }).then(function () {
+    console.log('[FS] persistentLocalCache 켜짐 (IndexedDB, 탭 간 공유)');
+  }).catch(function (err) {
+    console.warn('[FS] persistentLocalCache 실패', err && err.code, err && err.message);
+  });
 
   document.addEventListener('DOMContentLoaded', () => {
     void (async () => {
+      try { await window._fsPersistenceReady; } catch (_) {}
       try {
         if (typeof ensureFirebaseReadAuth === 'function') {
           await ensureFirebaseReadAuth();
         }
       } catch (e) { console.warn('bootstrap auth', e); }
-      // 외부 거래처 링크(#view-)로 접속한 경우, 관리자 전용 컬렉션(settles/deposit/blogProjects 등)
-      // 구독·로드를 건너뛴다. 이 컬렉션들은 외부 사용자에게 막혀 있어 permission-denied 콘솔 오류를 유발한다.
-      // 외부 뷰에 필요한 데이터(clients/projects/quotes + 거래처별 records + blogProjects)는 showClientView가 자체 로드한다.
+      // 고객 링크는 해당 거래처 문서만 읽는다. 직원용 전체 구독은 하지 않는다.
       if (location.hash && location.hash.startsWith('#view-')) {
         return;
       }
-      // Firestore에서 사용자 및 메인 데이터 미리 로드
-      loadUsersFromFirestore().catch(console.error);
-      subscribeUsersFromFirestore();
-      // 실시간 반영 (다른 PC에서 추가/삭제 즉시 업데이트)
-      subscribeMainDataFromFirestore();
-      subscribeAuxCollectionsFromFirestore();
-      // 초기 1회 로드/마이그레이션도 유지
-      loadMainDataFromFirestore().catch(console.error);
-      loadSettlesFromFirestore().catch(console.error);
-      loadDepositHistoryFromFirestore().catch(console.error);
-      loadDepositUnmatchedFromFirestore().catch(console.error);
-      loadDepNamesFromFirestore().catch(console.error);
-      loadGsyncFromFirestore().catch(console.error);
-      loadDailySettleFromFirestore().catch(console.error);
-      loadBankTxFromFirestore().catch(console.error);
-      loadCompanyExpFromFirestore().catch(console.error);
-      loadMonthlyCntFromFirestore().catch(console.error);
-      loadBlogProjectsFromFirestore().catch(console.error);
-      loadUiColsFromFirestore().catch(console.error);
+      fsBegin('페이지 로드 1회');
+      try {
+        subscribeUsersFromFirestore();
+        subscribeMainDataFromFirestore();
+        subscribeAuxCollectionsFromFirestore();
+        await _waitSvLoaded(['cl','pr','qt','st','dep','um','dn','ds','bank','exp','bp'], 20000);
+        await Promise.race([_usersReady, new Promise(function (r) { setTimeout(r, 20000); })]);
+        await _waitFlag(function () { return _settingsReady.gsync && _settingsReady.monthlyCnt && _settingsReady.uiCols; }, 20000);
+      } finally {
+        fsEnd('페이지 로드 1회');
+      }
     })();
   });
 </script>
