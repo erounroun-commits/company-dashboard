@@ -2450,8 +2450,8 @@ function _gsyncDefaults(s){
   if(out.headerRows===undefined) out.headerRows=1;
   // 요구사항: URL만 있으면 무조건 자동 동기화가 돌도록 강제 ON
   out.autoSync = true;
-  // 기본값: 5분 (실패 시 자동 백오프)
-  if(!out.interval) out.interval=5;
+  // 자동 동기화 주기는 10분으로 고정 (저장값·백오프와 무관)
+  out.interval = 10;
   return out;
 }
 
@@ -6941,6 +6941,15 @@ async function delSettleRow(stId){
 // 구글 시트 리뷰 URL 동기화 (wv_gsync)
 // ══════════════════════════════════════════════════════════════
 let GSYNC_TIMER = null;
+const GSYNC_LOCK_MS = 3*60*1000;
+const GSYNC_INTERVAL_MS = 10*60*1000;
+let _gsyncLastMeta=null;
+let _gsyncMissRows=[];
+let _gsyncDupRows=[];
+let _gsyncMissTotal=0;
+let _gsyncDupTotal=0;
+let _gsyncHydrated=false;
+let _gsyncStatusTimer=null;
 // gsyncLoad/gsyncSave는 상단에서 Firestore 캐시 기반으로 정의됨
 
 // ── 설정 화면 렌더 ────────────────────────────────────────────
@@ -7017,8 +7026,24 @@ function doGet(e) {
           <input id="gs-col-receiver" class="inp" type="number" min="1" value="${s.colReceiver||4}" style="width:100%">
         </div>
         <div>
-          <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">리뷰 URL 열 번호 <span style="color:var(--text3);font-weight:400">(E열=5)</span></label>
+          <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">리뷰 URL 열 번호 <span style="color:var(--text3);font-weight:400">(K열에 값이 있으면 K를 우선)</span></label>
           <input id="gs-col-url" class="inp" type="number" min="1" value="${s.colUrl||5}" style="width:100%">
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">닉네임 열 번호 <span style="color:var(--text3);font-weight:400">(없으면 비움)</span></label>
+          <input id="gs-col-nick" class="inp" type="number" min="0" value="${s.colNickname||0}" style="width:100%">
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">연락처 열 번호 <span style="color:var(--text3);font-weight:400">(없으면 비움)</span></label>
+          <input id="gs-col-phone" class="inp" type="number" min="0" value="${s.colPhone||0}" style="width:100%">
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">프로젝트 열 번호 <span style="color:var(--text3);font-weight:400">(있으면 범위를 먼저 좁힘)</span></label>
+          <input id="gs-col-project" class="inp" type="number" min="0" value="${s.colProject||0}" style="width:100%">
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">거래처 열 번호 <span style="color:var(--text3);font-weight:400">(있으면 범위를 먼저 좁힘)</span></label>
+          <input id="gs-col-client" class="inp" type="number" min="0" value="${s.colClient||0}" style="width:100%">
         </div>
       </div>
       <div style="margin-top:12px">
@@ -7037,15 +7062,12 @@ function doGet(e) {
           자동 동기화 켜기
         </label>
         <div style="display:flex;align-items:center;gap:6px">
-          <span style="font-size:12px;color:var(--text2)">주기:</span>
-          <select id="gs-interval" class="inp" style="width:auto">
-            <option value="5" ${(s.interval||10)==5?'selected':''}>5분</option>
-            <option value="10" ${(s.interval||10)==10?'selected':''}>10분</option>
-            <option value="30" ${(s.interval||10)==30?'selected':''}>30분</option>
-            <option value="60" ${(s.interval||10)==60?'selected':''}>1시간</option>
-          </select>
+          <span style="font-size:12px;color:var(--text2)">주기: 10분</span>
+          <input id="gs-interval" type="hidden" value="10">
         </div>
       </div>
+      <div id="gsync-last" style="margin-top:10px;font-size:13px;font-weight:700;line-height:1.5">마지막 동기화: -</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:6px">보이는 관리자 탭에서만 자동 실행됩니다. 실패해도 다음 주기는 10분입니다.</div>
     </div>
 
     <!-- 저장 버튼 -->
@@ -7056,7 +7078,10 @@ function doGet(e) {
 
     <!-- 결과 로그 -->
     <div id="gsync-log" style="font-size:12px;color:var(--text2);background:var(--bg2);border-radius:8px;padding:12px;min-height:40px;font-family:monospace;white-space:pre-wrap;display:none"></div>
+    <div id="gsync-dups"></div>
+    <div id="gsync-miss"></div>
   </div>`;
+  try{ _gsyncPaintStatus(); _gsyncPaintLists(); _gsyncHydrateStatus(); }catch(e){}
 }
 
 function saveGsyncSettings(){
@@ -7065,10 +7090,14 @@ function saveGsyncSettings(){
   const colProduct=parseInt(document.getElementById('gs-col-product')?.value)||2;
   const colReceiver=parseInt(document.getElementById('gs-col-receiver')?.value)||4;
   const colUrl=parseInt(document.getElementById('gs-col-url')?.value)||5;
+  const colNickname=parseInt(document.getElementById('gs-col-nick')?.value)||0;
+  const colPhone=parseInt(document.getElementById('gs-col-phone')?.value)||0;
+  const colProject=parseInt(document.getElementById('gs-col-project')?.value)||0;
+  const colClient=parseInt(document.getElementById('gs-col-client')?.value)||0;
   const headerRows=parseInt(document.getElementById('gs-header-rows')?.value)??1;
   const autoSync=document.getElementById('gs-auto')?.checked||false;
-  const interval=parseInt(document.getElementById('gs-interval')?.value)||10;
-  gsyncSave({url,colDate,colProduct,colReceiver,colUrl,headerRows,autoSync,interval});
+  const interval=10;
+  gsyncSave({url,colDate,colProduct,colReceiver,colUrl,colNickname,colPhone,colProject,colClient,headerRows,autoSync,interval});
   setupAutoSync();
   toast('시트 연동 설정 저장됨','success');
 }
@@ -7078,9 +7107,9 @@ function saveGsyncSettings(){
 async function fetchGsyncData(url){
   const sep=url.includes('?')?'&':'?';
   const fetchUrl=url+sep+'action=getRows';
-  // AbortController로 30초 타임아웃
+  // AbortController로 90초 타임아웃
   const ctrl=new AbortController();
-  const timer=setTimeout(()=>ctrl.abort(),30000);
+  const timer=setTimeout(()=>ctrl.abort(),90000);
   try{
     const r=await fetch(fetchUrl,{
       cache:'no-store',
@@ -7099,7 +7128,7 @@ async function fetchGsyncData(url){
     return json.rows||[];
   }catch(e){
     clearTimeout(timer);
-    if(e.name==='AbortError') throw new Error('타임아웃 (30초) — Apps Script URL을 확인해주세요');
+    if(e.name==='AbortError') throw new Error('타임아웃 (90초) — Apps Script URL을 확인해주세요');
     throw e;
   }
 }
@@ -7197,11 +7226,12 @@ async function _gsyncMutateLock(holdMs, release){
     const now=Date.now();
     const until=Number(data.until)||0;
     if(release){
-      if(data.owner===owner) tx.set(ref, {owner, until:0});
+      if(data.owner===owner || !(until>now)) tx.set(ref, {owner:'', until:0}, {merge:true});
       return true;
     }
+    // until이 지났으면 owner가 달라도 락을 가져온다.
     if(data.owner && data.owner!==owner && until>now) return false;
-    tx.set(ref, {owner, until: now+holdMs});
+    tx.set(ref, {owner, until: now+holdMs}, {merge:true});
     return true;
   });
 }
@@ -7210,6 +7240,8 @@ function _gsyncRenewLock(holdMs){ return _gsyncMutateLock(holdMs, false); }
 function _gsyncReleaseLock(){ return _gsyncMutateLock(0, true).catch(()=>{}); }
 
 let _gsyncRecCache=null;
+let _gsyncByRecv=null;
+let _gsyncFetchedRecv=null;
 let _gsyncFetchedProj=null;
 let _gsyncNeedProj=null;
 let _gsyncReviveProj=null;
@@ -7218,7 +7250,16 @@ function _gsyncDropProjRecords(id){
   if(!_gsyncRecCache) return;
   const drop=[];
   _gsyncRecCache.forEach((r,rid)=>{ if(r&&r.projectId===id) drop.push(rid); });
-  drop.forEach(rid=>_gsyncRecCache.delete(rid));
+  drop.forEach(rid=>{
+    const prev=_gsyncRecCache.get(rid);
+    _gsyncRecCache.delete(rid);
+    if(!prev||!_gsyncByRecv) return;
+    const key=_gsyncNormName(prev.receiver);
+    const arr=key?_gsyncByRecv.get(key):null;
+    if(!arr) return;
+    const i=arr.findIndex(x=>x&&x.id===rid);
+    if(i>=0) arr.splice(i,1);
+  });
 }
 function _gsyncNoteProjectChanges(changes){
   if(!_gsyncNeedProj) _gsyncNeedProj=new Set();
@@ -7239,10 +7280,8 @@ function _gsyncNoteProjectChanges(changes){
     let data={};
     try{ data=doc.data()||{}; }catch(e){ data={}; }
     if(String(data.status||'').trim()==='완료'){
-      if(_gsyncFetchedProj.has(id)) _gsyncReviveProj.add(id);
-      _gsyncFetchedProj.delete(id);
-      _gsyncNeedProj.delete(id);
-      _gsyncDropProjRecords(id);
+      // 완료 프로젝트도 리뷰 URL 동기화 대상이다. 캐시에서 빼지 않는다.
+      if(!_gsyncFetchedProj.has(id)) _gsyncNeedProj.add(id);
       return;
     }
     if(!_gsyncFetchedProj.has(id)) _gsyncNeedProj.add(id);
@@ -7352,18 +7391,337 @@ async function _gsyncLoadTargetRecords(){
   return {records:records, detail:detail};
 }
 
+function _gsyncNormName(s){
+  return String(s||'').trim().toLowerCase();
+}
+function _gsyncNormPhone(s){
+  return String(s||'').replace(/\D/g,'');
+}
+function _gsyncSameProduct(a,b){
+  if(_gsyncNormName(a)===_gsyncNormName(b)) return true;
+  const x=normalizeText(a), y=normalizeText(b);
+  return !!x && x===y;
+}
+function _gsyncEnsureIndexes(){
+  if(!_gsyncRecCache) _gsyncRecCache=new Map();
+  if(!_gsyncByRecv) _gsyncByRecv=new Map();
+  if(!_gsyncFetchedProj) _gsyncFetchedProj=new Set();
+  if(!_gsyncFetchedRecv) _gsyncFetchedRecv=new Set();
+}
+function _gsyncRemember(rec){
+  _gsyncEnsureIndexes();
+  if(!rec||!rec.id) return;
+  const prev=_gsyncRecCache.get(rec.id);
+  const merged=prev?{...prev,...rec,id:rec.id}:{...rec,id:rec.id};
+  _gsyncRecCache.set(rec.id, merged);
+  const key=_gsyncNormName(merged.receiver);
+  if(!key) return;
+  let arr=_gsyncByRecv.get(key);
+  if(!arr){ arr=[]; _gsyncByRecv.set(key, arr); }
+  const i=arr.findIndex(x=>x&&x.id===merged.id);
+  if(i>=0) arr[i]=merged; else arr.push(merged);
+}
+function _gsyncBuildScopeIndex(){
+  const projects=PROJECTS_CACHE||[];
+  const clients=CLIENTS_CACHE||[];
+  const byProjName=new Map();
+  const byClientName=new Map();
+  projects.forEach(p=>{
+    const n=_gsyncNormName(p&&p.name);
+    if(!n||!p.id) return;
+    const arr=byProjName.get(n)||[];
+    arr.push(p.id);
+    byProjName.set(n, arr);
+  });
+  clients.forEach(c=>{
+    const n=_gsyncNormName(c&&c.name);
+    if(!n) return;
+    const ids=projects.filter(p=>p&&p.clientId===c.id&&p.id).map(p=>p.id);
+    if(ids.length) byClientName.set(n, ids);
+  });
+  return {byProjName, byClientName};
+}
+function _gsyncAddNames(ids, raw, scope){
+  const key=_gsyncNormName(raw);
+  if(!key) return;
+  (scope.byProjName.get(key)||[]).forEach(id=>ids.add(id));
+  (scope.byClientName.get(key)||[]).forEach(id=>ids.add(id));
+  (PROJECTS_CACHE||[]).forEach(p=>{
+    if(p&&p.id&&String(p.id)===String(raw||'').trim()) ids.add(p.id);
+  });
+}
+function _gsyncLooksLikeHeader(row){
+  const text=(row||[]).map(c=>String(c||'')).join(' ');
+  return text.includes('수취인')||text.includes('닉네임')||text.includes('리뷰URL')||text.includes('리뷰 URL')||text.includes('연락처');
+}
+function _gsyncHeaderMap(row){
+  const map={};
+  (row||[]).forEach((cell, idx)=>{
+    const t=String(cell||'').replace(/\s/g,'');
+    if(!t) return;
+    if(t.includes('닉네임')) map.nickname=idx;
+    else if(t.includes('수취인')) map.receiver=idx;
+    else if(t.includes('연락처')||t.includes('휴대폰')) map.phone=idx;
+    else if(t.includes('리뷰')&&(t.toLowerCase().includes('url')||t.includes('링크'))) map.url=idx;
+    else if(t.includes('상품명')||t==='상품') map.product=idx;
+    else if(t.includes('구매')||t.includes('날짜')) map.date=idx;
+    else if(t.includes('프로젝트')) map.project=idx;
+    else if(t.includes('거래처')) map.client=idx;
+  });
+  return map;
+}
+function _gsyncParseSheetRows(dataRows, s, isAppsScript){
+  const ci=n=>Math.max(0,(Number(n)||1)-1);
+  let cDate=ci(s.colDate||1);
+  let cProd=ci(s.colProduct||2);
+  let cRecv=ci(s.colReceiver||4);
+  let cUrl=ci(s.colUrl||5);
+  let cNick=Number(s.colNickname)>0?ci(s.colNickname):-1;
+  let cPhone=Number(s.colPhone)>0?ci(s.colPhone):-1;
+  let cProj=Number(s.colProject)>0?ci(s.colProject):-1;
+  let cClient=Number(s.colClient)>0?ci(s.colClient):-1;
+  let start=0;
+  let rowBase=isAppsScript?2:((Number(s.headerRows)||0)+1);
+  if(dataRows.length && _gsyncLooksLikeHeader(dataRows[0])){
+    const map=_gsyncHeaderMap(dataRows[0]);
+    if(map.date!=null) cDate=map.date;
+    if(map.product!=null) cProd=map.product;
+    if(map.receiver!=null) cRecv=map.receiver;
+    if(map.url!=null) cUrl=map.url;
+    if(map.nickname!=null) cNick=map.nickname;
+    if(map.phone!=null) cPhone=map.phone;
+    if(map.project!=null) cProj=map.project;
+    if(map.client!=null) cClient=map.client;
+    start=1;
+    rowBase+=1;
+  }
+  const scope=_gsyncBuildScopeIndex();
+  const identity=new Set([cDate,cProd,cRecv,cUrl,cNick,cPhone,10]);
+  const rows=[];
+  for(let i=start;i<dataRows.length;i++){
+    const cells=dataRows[i]||[];
+    const cell=idx=>idx>=0?String(cells[idx]||'').trim():'';
+    const urlK=String(cells[10]||'').trim();
+    const url=urlK||cell(cUrl);
+    const ids=new Set();
+    cells.forEach((raw, idx)=>{
+      if(identity.has(idx)) return;
+      _gsyncAddNames(ids, raw, scope);
+    });
+    if(cProj>=0) _gsyncAddNames(ids, cell(cProj), scope);
+    if(cClient>=0) _gsyncAddNames(ids, cell(cClient), scope);
+    rows.push({
+      rowNo: rowBase+(i-start),
+      url,
+      nickname: cell(cNick),
+      receiver: cell(cRecv),
+      phone: cell(cPhone),
+      date: cell(cDate),
+      product: cell(cProd),
+      projectIds: [...ids]
+    });
+  }
+  return rows;
+}
+function _gsyncSame(row, rec){
+  if(!rec) return false;
+  if(row.projectIds&&row.projectIds.length&&row.projectIds.indexOf(rec.projectId)<0) return false;
+  if(!row.receiver&&!row.nickname&&!row.phone) return false;
+  if(row.receiver&&_gsyncNormName(row.receiver)!==_gsyncNormName(rec.receiver)) return false;
+  if(row.nickname&&_gsyncNormName(row.nickname)!==_gsyncNormName(rec.nickname)) return false;
+  if(row.phone&&_gsyncNormPhone(row.phone)!==_gsyncNormPhone(rec.phone)) return false;
+  if(!row.nickname&&!row.phone){
+    if(row.date&&normalizeDate(row.date)!==normalizeDate(rec.purchaseDate)) return false;
+    if(row.product&&!_gsyncSameProduct(row.product, rec.product)) return false;
+  }
+  return true;
+}
+function _gsyncCandidates(row){
+  _gsyncEnsureIndexes();
+  const key=_gsyncNormName(row.receiver);
+  let list=[];
+  if(key) list=_gsyncByRecv.get(key)||[];
+  else _gsyncRecCache.forEach(rec=>{ list.push(rec); });
+  return list.filter(rec=>_gsyncSame(row, rec));
+}
+function _gsyncRowFetched(row){
+  if(row.projectIds&&row.projectIds.length) return row.projectIds.every(id=>_gsyncFetchedProj&&_gsyncFetchedProj.has(id));
+  const key=_gsyncNormName(row.receiver);
+  return !!(key&&_gsyncFetchedRecv&&_gsyncFetchedRecv.has(key));
+}
+async function _gsyncFetchProjects(ids){
+  _gsyncEnsureIndexes();
+  const need=[];
+  const seen=new Set();
+  (ids||[]).forEach(id=>{
+    if(!id||_gsyncFetchedProj.has(id)||seen.has(id)) return;
+    seen.add(id);
+    need.push(id);
+  });
+  for(let i=0;i<need.length;i+=30){
+    if(i>0 && i%300===0){
+      const still=await _gsyncAcquireLock(GSYNC_LOCK_MS);
+      if(!still) throw new Error('동기화 락이 다른 실행으로 넘어갔습니다');
+    }
+    const chunk=need.slice(i,i+30);
+    const snap=await db.collection('records').where('projectId','in',chunk).get();
+    _gsyncBillEmpty(snap);
+    chunk.forEach(id=>_gsyncFetchedProj.add(id));
+    snap.docs.forEach(doc=>_gsyncRemember({id:doc.id,...(doc.data()||{})}));
+  }
+}
+async function _gsyncFetchReceivers(raws){
+  _gsyncEnsureIndexes();
+  const need=[];
+  const seen=new Set();
+  (raws||[]).forEach(raw=>{
+    const trimmed=String(raw||'').trim();
+    const key=_gsyncNormName(trimmed);
+    if(!key||_gsyncFetchedRecv.has(key)||seen.has(key)) return;
+    seen.add(key);
+    need.push(trimmed);
+  });
+  for(let i=0;i<need.length;i+=30){
+    if(i>0 && i%300===0){
+      const still=await _gsyncAcquireLock(GSYNC_LOCK_MS);
+      if(!still) throw new Error('동기화 락이 다른 실행으로 넘어갔습니다');
+    }
+    const chunk=need.slice(i,i+30);
+    const snap=await db.collection('records').where('receiver','in',chunk).get();
+    _gsyncBillEmpty(snap);
+    chunk.forEach(v=>_gsyncFetchedRecv.add(_gsyncNormName(v)));
+    snap.docs.forEach(doc=>_gsyncRemember({id:doc.id,...(doc.data()||{})}));
+  }
+}
+async function _gsyncFetchNewRecords(){
+  if(!_gsyncCreatedCursor||typeof db==='undefined') return;
+  const snap=await db.collection('records').where('createdAt','>',_gsyncCreatedCursor).get();
+  _gsyncBillEmpty(snap);
+  snap.docs.forEach(doc=>_gsyncRemember({id:doc.id,...(doc.data()||{})}));
+  _gsyncCreatedCursor=new Date(Date.now()-90000).toISOString();
+}
+function _gsyncFormatResult(r){
+  if(!r||typeof r!=='object') return r?String(r):'';
+  let text=`시트 행 ${r.sheetRows||0} / 대상 ${r.targets||0} / 매칭 ${r.matched||0} / 미매칭 ${r.unmatched||0} / 업데이트 ${r.updated||0}`;
+  if(r.duplicates) text+=` / 중복 ${r.duplicates}`;
+  return text;
+}
+function _gsyncPaintStatus(){
+  const meta=_gsyncLastMeta;
+  let hasUrl=false;
+  try{ hasUrl=!!(gsyncLoad().url); }catch(e){}
+  let text=hasUrl?'자동동기화 10분마다 실행':'시트 연동 미설정';
+  if(meta&&meta.lastRunAt){
+    const mins=Math.max(0, Math.round((Date.now()-new Date(meta.lastRunAt).getTime())/60000));
+    const result=meta.lastError?('실패: '+meta.lastError):_gsyncFormatResult(meta.lastResult);
+    text=`마지막 동기화: ${mins}분 전 / ${result}`;
+  }
+  const a=document.getElementById('gsync-status');
+  const b=document.getElementById('gsync-last');
+  if(a) a.textContent=text;
+  if(b) b.textContent=text;
+}
+function _gsyncUrlCell(url){
+  const u=String(url||'');
+  const safe=escHtml(u);
+  if(/^https?:\/\//i.test(u)) return `<a href="${safe}" target="_blank" rel="noopener">${safe}</a>`;
+  return safe;
+}
+function _gsyncListTable(title, rows, total, withCount){
+  const list=rows||[];
+  const n=Number(total)||list.length;
+  if(!list.length){
+    return `<div class="card"><div class="card-title">${title} (0)</div><div style="font-size:12px;color:var(--text3)">없음</div></div>`;
+  }
+  const more=n>list.length?`<div style="font-size:11px;color:var(--text3);margin-top:6px">상위 ${list.length}건만 표시 (전체 ${n}건)</div>`:'';
+  const body=list.map(r=>`<tr>
+      <td>${escHtml(r.rowNo)}</td>
+      <td>${escHtml(r.nickname||'')}</td>
+      <td>${escHtml(r.receiver||'')}</td>
+      <td>${escHtml(r.phone||'')}</td>
+      <td style="max-width:320px;word-break:break-all">${_gsyncUrlCell(r.url)}</td>
+      ${withCount?`<td style="text-align:right">${Number(r.count)||0}</td>`:''}
+    </tr>`).join('');
+  return `<div class="card">
+    <div class="card-title">${title} (${n})</div>
+    <div style="overflow:auto;max-height:320px">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr>
+          <th style="text-align:left">시트 행 번호</th>
+          <th style="text-align:left">닉네임</th>
+          <th style="text-align:left">수취인</th>
+          <th style="text-align:left">연락처</th>
+          <th style="text-align:left">URL</th>
+          ${withCount?'<th style="text-align:right">매칭 수</th>':''}
+        </tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>${more}
+  </div>`;
+}
+function _gsyncPaintLists(){
+  const d=document.getElementById('gsync-dups');
+  const m=document.getElementById('gsync-miss');
+  if(!_gsyncLastMeta||!_gsyncLastMeta.lastRunAt){
+    if(d) d.innerHTML='';
+    if(m) m.innerHTML='';
+    return;
+  }
+  if(d) d.innerHTML=_gsyncListTable('중복 매칭', _gsyncDupRows, _gsyncDupTotal, true);
+  if(m) m.innerHTML=_gsyncListTable('미매칭', _gsyncMissRows, _gsyncMissTotal, false);
+}
+async function _gsyncHydrateStatus(){
+  if(_gsyncHydrated||typeof db==='undefined') return;
+  _gsyncHydrated=true;
+  try{
+    const snap=await db.collection('settings').doc('gsyncLock').get();
+    if(snap.exists){
+      const data=snap.data()||{};
+      if(data.lastRunAt){
+        _gsyncLastMeta={lastRunAt:data.lastRunAt, lastResult:data.lastResult||{}, lastError:data.lastError||''};
+        const res=data.lastResult||{};
+        _gsyncMissRows=Array.isArray(res.unmatchedRows)?res.unmatchedRows:[];
+        _gsyncDupRows=Array.isArray(res.duplicateRows)?res.duplicateRows:[];
+        _gsyncMissTotal=Number(res.unmatched)||_gsyncMissRows.length;
+        _gsyncDupTotal=Number(res.duplicates)||_gsyncDupRows.length;
+      }
+    }
+  }catch(e){}
+  _gsyncPaintStatus();
+  _gsyncPaintLists();
+}
+async function _gsyncSaveRunMeta(meta){
+  _gsyncLastMeta={...(_gsyncLastMeta||{}), ...meta};
+  if(typeof db==='undefined') return;
+  await db.collection('settings').doc('gsyncLock').set(meta, {merge:true});
+}
+function _gsyncPreviewRow(row, extra){
+  return {
+    rowNo: row.rowNo,
+    nickname: row.nickname||'',
+    receiver: row.receiver||'',
+    phone: row.phone||'',
+    url: row.url||'',
+    ...(extra||{})
+  };
+}
+
 function _gsyncReflectOpenClient(changed){
   if(!CUR_CLIENT||!changed.length) return;
   if(RECORDS_CLIENT_ID!==CUR_CLIENT) return;
   const pids=new Set(_clientProjectIds(CUR_CLIENT).map(id=>String(id)));
   const urlById=new Map();
+  const atById=new Map();
   changed.forEach(u=>{
-    if(u&&u.id&&pids.has(String(u.projectId))) urlById.set(u.id, u.reviewUrl);
+    if(u&&u.id&&pids.has(String(u.projectId))){
+      urlById.set(u.id, u.reviewUrl);
+      atById.set(u.id, u.reviewUrlSyncedAt||'');
+    }
   });
   if(!urlById.size) return;
   RECORDS_CACHE=(RECORDS_CACHE||[]).map(r=>{
     if(!r||!urlById.has(r.id)) return r;
-    return {...r, reviewUrl:urlById.get(r.id)};
+    return {...r, reviewUrl:urlById.get(r.id), reviewUrlSyncedAt:atById.get(r.id)||r.reviewUrlSyncedAt||''};
   });
   try{
     const sync=_svSync.rc||(_svSync.rc=new Map());
@@ -7374,8 +7732,19 @@ function _gsyncReflectOpenClient(changed){
     });
   }catch(e){}
   if(Array.isArray(SHEET_ROWS)){
-    SHEET_ROWS.forEach(r=>{
-      if(r&&urlById.has(r.id)) r.reviewUrl=urlById.get(r.id);
+    SHEET_ROWS.forEach((r, ri)=>{
+      if(!r||!urlById.has(r.id)) return;
+      const nextUrl=urlById.get(r.id);
+      if(SHEET_DIRTY){
+        const input=document.querySelector(`#sheet-tbl input[data-ri="${ri}"][data-k="reviewUrl"]`);
+        if(input&&document.activeElement===input) return;
+        r.reviewUrl=nextUrl;
+        r.reviewUrlSyncedAt=atById.get(r.id)||r.reviewUrlSyncedAt||'';
+        if(input) input.value=nextUrl;
+        return;
+      }
+      r.reviewUrl=nextUrl;
+      r.reviewUrlSyncedAt=atById.get(r.id)||r.reviewUrlSyncedAt||'';
     });
   }
   try{renderDetDash();}catch(e){}
@@ -7386,95 +7755,98 @@ function _gsyncReflectOpenClient(changed){
 
 async function doSync(silent=false){
   const s=gsyncLoad();
-  if(!s.url){ if(!silent) toast('시트 URL이 설정되지 않았습니다','error'); return; }
-
+  if(!s.url){ if(!silent) toast('시트 URL이 설정되지 않았습니다','error'); return false; }
+  if(_gsyncRunning){
+    if(!silent) toast('이미 동기화 중입니다','');
+    return false;
+  }
   _gsyncRunning=true;
   const logEl=document.getElementById('gsync-log');
-  const statusEl=document.getElementById('gsync-status');
-  const now=new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
-
-  if(logEl){ logEl.style.display=''; logEl.textContent=''; } // 로그 초기화
-
+  const nowLabel=new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
+  if(logEl){ logEl.style.display=''; logEl.textContent=''; }
   function log(msg){
     if(logEl) logEl.textContent+=(logEl.textContent?'\n':'')+msg;
-    if(statusEl) statusEl.textContent='마지막 동기화: '+now;
   }
-
+  let locked=false;
+  const summary={sheetRows:0, targets:0, matched:0, unmatched:0, updated:0, duplicates:0};
+  const miss=[];
+  const dups=[];
   try{
+    if(typeof db==='undefined') throw new Error('Firestore 연결 없음');
+    locked=await _gsyncAcquireLock(GSYNC_LOCK_MS);
+    if(!locked){
+      log('다른 동기화가 진행 중이라 건너뜀');
+      if(!silent) toast('다른 화면에서 동기화 중입니다','');
+      return false;
+    }
     if(!silent) toast('구글 시트 읽는 중...','');
     let dataRows;
     const isAppsScript=s.url&&(s.url.includes('script.google.com')||s.url.includes('macros/s/'));
-    if(isAppsScript){
-      dataRows=await fetchGsyncData(s.url);
-    } else {
+    if(isAppsScript) dataRows=await fetchGsyncData(s.url);
+    else {
       const csv=await fetchGsyncCsv(s.url);
-      const rows=parseCsv(csv);
-      dataRows=rows.slice(s.headerRows??1);
+      dataRows=parseCsv(csv).slice(s.headerRows??1);
     }
+    if(!Array.isArray(dataRows)) throw new Error('시트 응답에 rows 배열이 없습니다');
+    await _gsyncAcquireLock(GSYNC_LOCK_MS);
 
-    const ci=n=>Math.max(0,(n||1)-1);
-    const cDate=ci(s.colDate||1);   // A열=0
-    const cProd=ci(s.colProduct||2); // B열=1
-    const cRecv=ci(s.colReceiver||4);// D열=3
-    const cUrl =ci(s.colUrl||5);     // E열=4
-
-    // 시트 → 매칭맵 (URL 있는 행 수와 키 맵을 같이 센다)
-    const sheetMap={};
-    let sheetUrlRows=0;
-    dataRows.forEach(row=>{
-      const url=(row[cUrl]||'').trim();
-      if(!url) return;
-      sheetUrlRows++;
-      const key=makeMatchKey(row[cDate]||'', row[cProd]||'', row[cRecv]||'');
-      if(key!=='::') sheetMap[key]=url;
+    const parsed=_gsyncParseSheetRows(dataRows, s, isAppsScript);
+    summary.sheetRows=parsed.length;
+    (RECORDS_CACHE||[]).forEach(r=>_gsyncRemember(r));
+    const urlRows=parsed.filter(r=>r.url);
+    const pending=[];
+    urlRows.forEach(row=>{
+      if(_gsyncRowFetched(row)){
+        const hits=_gsyncCandidates(row);
+        if(hits.length===1 && String(hits[0].reviewUrl||'').trim()===row.url) return;
+      }
+      pending.push(row);
     });
+    summary.targets=pending.length;
 
-    // 완료가 아닌 프로젝트 records. 첫 회만 기준선이고, 이후에는 새 프로젝트와 createdAt 변경분만 읽는다.
     fsBegin('리뷰동기화 읽기 1회');
-    let targetRecords;
-    let gsyncReadDetail='';
     try{
-      const loaded=await _gsyncLoadTargetRecords();
-      targetRecords=loaded.records;
-      gsyncReadDetail=loaded.detail||'';
+      if(_gsyncCreatedCursor) await _gsyncFetchNewRecords();
+      const projIds=[];
+      const receivers=[];
+      pending.forEach(row=>{
+        if(row.projectIds&&row.projectIds.length) row.projectIds.forEach(id=>projIds.push(id));
+        else if(row.receiver) receivers.push(row.receiver);
+      });
+      await _gsyncFetchProjects(projIds);
+      await _gsyncFetchReceivers(receivers);
+      if(!_gsyncCreatedCursor) _gsyncCreatedCursor=new Date(Date.now()-90000).toISOString();
     }finally{
       fsEnd('리뷰동기화 읽기 1회');
-      if(gsyncReadDetail) console.log('[FS 집계] 리뷰동기화 읽기 1회 내역: '+gsyncReadDetail);
     }
+    await _gsyncAcquireLock(GSYNC_LOCK_MS);
 
-    let matched=0, unmatched=0, updated=0;
     const changed=[];
-    const unmatchedSamples=[];
-    targetRecords.forEach(r=>{
-      const key=makeMatchKey(r.purchaseDate||'', r.product||'', r.receiver||'');
-      const newUrl=sheetMap[key];
-      if(newUrl){
-        matched++;
-        if(r.id && newUrl!==r.reviewUrl){
-          updated++;
-          changed.push({id:r.id, reviewUrl:newUrl, projectId:r.projectId});
-        }
-      }else{
-        unmatched++;
-        if(unmatchedSamples.length<5){
-          unmatchedSamples.push({k:key, raw:{date:r.purchaseDate,prod:r.product,recv:r.receiver}});
-        }
+    const syncedAt=new Date().toISOString();
+    pending.forEach(row=>{
+      const hits=_gsyncCandidates(row);
+      if(hits.length>1){
+        summary.duplicates++;
+        if(dups.length<100) dups.push(_gsyncPreviewRow(row, {count:hits.length}));
+        return;
+      }
+      if(hits.length===0){
+        summary.unmatched++;
+        if(miss.length<100) miss.push(_gsyncPreviewRow(row));
+        return;
+      }
+      summary.matched++;
+      const rec=hits[0];
+      const prev=String(rec.reviewUrl||'').trim();
+      if(row.url && prev!==row.url){
+        summary.updated++;
+        changed.push({id:rec.id, reviewUrl:row.url, reviewUrlSyncedAt:syncedAt, projectId:rec.projectId});
       }
     });
-
-    if(unmatchedSamples.length){
-      log('[미매칭 웹앱 키 샘플]');
-      unmatchedSamples.forEach(({k,raw})=>{
-        log('  웹앱: '+k);
-        const similar=Object.keys(sheetMap).filter(sk=>{
-          const p=sk.split(':');
-          return (p[0]===k.split(':')[0]||p[2]===k.split(':')[2]);
-        }).slice(0,2);
-        if(similar.length) similar.forEach(sk=>log('  시트유사: '+sk));
-        else log('  시트: 날짜('+raw.date+') 또는 수취인('+raw.recv+') 일치하는 행 없음');
-      });
-      log('');
-    }
+    _gsyncMissRows=miss;
+    _gsyncDupRows=dups;
+    _gsyncMissTotal=summary.unmatched;
+    _gsyncDupTotal=summary.duplicates;
 
     const col=db.collection('records');
     fsBegin('저장 1회 (리뷰URL 동기화)');
@@ -7483,12 +7855,11 @@ async function doSync(silent=false){
         const chunk=changed.slice(i, i+400);
         await fsCommitWithRetry(async ()=>{
           const batch=db.batch();
-          chunk.forEach(u=>batch.update(col.doc(u.id), {reviewUrl:u.reviewUrl}));
+          chunk.forEach(u=>batch.update(col.doc(u.id), {reviewUrl:u.reviewUrl, reviewUrlSyncedAt:u.reviewUrlSyncedAt}));
           await batch.commit();
         }, '리뷰 URL 동기화');
         chunk.forEach(u=>{
-          const prev=_gsyncRecCache&&_gsyncRecCache.get(u.id);
-          if(prev) _gsyncRecCache.set(u.id, {...prev, reviewUrl:u.reviewUrl});
+          _gsyncRemember({id:u.id, reviewUrl:u.reviewUrl, reviewUrlSyncedAt:u.reviewUrlSyncedAt, projectId:u.projectId});
         });
       }
     }finally{
@@ -7496,35 +7867,43 @@ async function doSync(silent=false){
     }
     _gsyncReflectOpenClient(changed);
 
-    const summary=`시트 URL 행 ${sheetUrlRows} / 대상 records ${targetRecords.length} / 매칭 ${matched} / 미매칭 ${unmatched}`;
-    const msg=`✅ 동기화 완료 — ${updated}건 업데이트 / ${summary}`;
-    log(msg);
-    gsyncSave({...s,lastSync:new Date().toISOString(),lastResult:msg});
-    if(statusEl) statusEl.innerHTML='✅ '+now+'\n'+updated+'건 업데이트';
-    if(!silent) toast(msg,'success');
+    const resultText=_gsyncFormatResult(summary);
+    log(`✅ 동기화 완료 — ${summary.updated}건 업데이트 / ${resultText}`);
+    if(summary.duplicates) log(`중복 매칭 ${summary.duplicates}건은 업데이트하지 않았습니다.`);
+    if(summary.unmatched) log(`미매칭 ${summary.unmatched}건 (목록은 최대 100건)`);
+    const lastResult={
+      ...summary,
+      unmatchedRows: miss,
+      duplicateRows: dups
+    };
+    try{
+      await _gsyncSaveRunMeta({lastRunAt:new Date().toISOString(), lastResult, lastError:''});
+    }catch(e){ console.error('gsync meta', e); }
+    if(!silent) toast(`✅ 동기화 완료 — ${summary.updated}건 업데이트`,'success');
+    log('시각 '+nowLabel);
     return true;
-
   }catch(e){
-    const msg='❌ 동기화 실패: '+e.message;
-    log(msg);
-    if(statusEl) statusEl.textContent='❌ 실패: '+e.message;
-    if(!silent) toast(msg,'error');
+    const msg=e&&e.message?e.message:String(e);
+    log('❌ 동기화 실패: '+msg);
+    if(!silent) toast('❌ 동기화 실패: '+msg,'error');
+    try{
+      await _gsyncSaveRunMeta({
+        lastRunAt:new Date().toISOString(),
+        lastResult:{...summary, unmatchedRows:miss, duplicateRows:dups},
+        lastError:msg
+      });
+    }catch(_){}
     return false;
   }finally{
+    if(locked){ try{ await _gsyncReleaseLock(); }catch(e){} }
     _gsyncRunning=false;
+    _gsyncPaintStatus();
+    _gsyncPaintLists();
   }
 }
 
 function manualSync(){
-  // 수동 동기화는 즉시 실행 + 자동 동기화 백오프 리셋
-  try{ GSYNC_BACKOFF_LEVEL = 0; }catch(e){}
   doSync(false).finally(()=>setupAutoSync(true));
-}
-
-let GSYNC_BACKOFF_LEVEL = 0; // 0=정상(기본간격), 1=2배, 2=6배, 3=12배
-function _gsyncNextMs(baseMin){
-  const mult=[1,2,6,12][Math.max(0,Math.min(3,GSYNC_BACKOFF_LEVEL))]||1;
-  return baseMin*mult*60*1000;
 }
 
 let _gsyncVisBound=false;
@@ -7536,59 +7915,29 @@ function setupAutoSync(forceRestart=false){
       if(document.visibilityState!=='visible' && !_gsyncRunning) _gsyncReleaseLock();
     });
   }
+  if(!_gsyncStatusTimer) _gsyncStatusTimer=setInterval(_gsyncPaintStatus, 30000);
+  _gsyncHydrateStatus();
+  const arm=()=>{
+    if(GSYNC_TIMER) clearTimeout(GSYNC_TIMER);
+    GSYNC_TIMER=setTimeout(run, GSYNC_INTERVAL_MS);
+  };
+  const run=async ()=>{
+    try{
+      if(_gsyncCanAutoRun()) await doSync(true);
+    }catch(e){
+      console.error(e);
+    }
+    arm();
+    _gsyncPaintStatus();
+  };
   const s=gsyncLoad();
   if(s.url){
-    const baseMin = Math.max(5, parseInt(s.interval||5));
-    const loop = async ()=>{
-      // autoSync=true 강제는 _gsyncDefaults가 유지한다.
-      // 보이는 탭 + 관리자 로그인 + gsyncLock 을 잡은 PC만 실제로 돈다.
-      let ok = null;
-      try{
-        if(!_gsyncCanAutoRun()){
-          if(!_gsyncRunning) await _gsyncReleaseLock();
-        }else{
-          const holdMs = _gsyncNextMs(baseMin);
-          const locked = await _gsyncAcquireLock(holdMs);
-          if(locked){
-            ok = await doSync(true);
-            if(ok===true){
-              GSYNC_BACKOFF_LEVEL = 0;
-              try{ await _gsyncRenewLock(_gsyncNextMs(baseMin)); }catch(e){}
-            }else{
-              if(ok===false) GSYNC_BACKOFF_LEVEL = Math.min(3, (GSYNC_BACKOFF_LEVEL||0)+1);
-              try{ await _gsyncReleaseLock(); }catch(e){}
-            }
-          }
-        }
-      }catch(e){
-        console.error(e);
-        GSYNC_BACKOFF_LEVEL = Math.min(3, (GSYNC_BACKOFF_LEVEL||0)+1);
-      }
-      const next = _gsyncNextMs(baseMin);
-      GSYNC_TIMER = setTimeout(loop, next);
-      // 상태문구 갱신
-      const statusEl=document.getElementById('gsync-status');
-      if(statusEl){
-        const curMin = Math.round(next/60000);
-        statusEl.textContent = '🔗 자동동기화 켜짐 (약 '+curMin+'분 간격'+(GSYNC_BACKOFF_LEVEL?'/백오프':'')+')';
-      }
-    };
-    // 시작하자마자 1회 실행 (실패 시 백오프)
-    loop();
+    if(forceRestart) arm();
+    else run();
   }
-  // 사이드바 상태 업데이트
-  const statusEl=document.getElementById('gsync-status');
-  if(statusEl){
-    const s2=gsyncLoad();
-    if(s2.url){
-      statusEl.textContent='🔗 자동동기화 켜짐 ('+(s2.interval||5)+'분)';
-    } else {
-      statusEl.textContent='🔗 시트 연동 미설정';
-    }
-  }
+  _gsyncPaintStatus();
 }
 
-// ════════════════════════════════════════════════
 // 로그인 관리 (user-mgmt)
 // ════════════════════════════════════════════════
 function renderUserMgmt(){
