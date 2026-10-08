@@ -7674,6 +7674,9 @@ async function _gsyncHydrateStatus(){
   if(_gsyncHydrated||typeof db==='undefined') return;
   _gsyncHydrated=true;
   try{
+    if(typeof ensureFirebaseReadAuth==='function'){
+      try{ await ensureFirebaseReadAuth(); }catch(e){}
+    }
     const snap=await db.collection('settings').doc('gsyncLock').get();
     if(snap.exists){
       const data=snap.data()||{};
@@ -7773,6 +7776,13 @@ async function doSync(silent=false){
   const dups=[];
   try{
     if(typeof db==='undefined') throw new Error('Firestore 연결 없음');
+    // 동기화는 settings/gsyncLock·records 읽기/쓰기가 필요하므로 Auth 완료를 먼저 보장
+    if(typeof ensureFirebaseReadAuth==='function'){
+      await ensureFirebaseReadAuth();
+    }
+    if(!(firebase.auth&&firebase.auth().currentUser)){
+      throw new Error('Firebase Auth 로그인 전입니다. 잠시 후 다시 시도해주세요');
+    }
     locked=await _gsyncAcquireLock(GSYNC_LOCK_MS);
     if(!locked){
       log('다른 동기화가 진행 중이라 건너뜀');

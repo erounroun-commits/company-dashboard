@@ -1,0 +1,59 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Firebase Auth 로그인(앱은 익명 로그인 ensureFirebaseReadAuth 사용)이 있어야 접근.
+    // 앱 단 관리자(role=admin) 제한은 클라이언트(_gsyncCanAutoRun 등)에서 유지.
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // settings 문서는 ID 화이트리스트. gsyncLock(동기화 락·마지막 실행 메타) 포함.
+    match /settings/{docId} {
+      allow read, write: if isSignedIn()
+        && docId in ['gsync', 'monthlyCnt', 'uiCols', 'gsyncLock'];
+    }
+
+    // 대시보드 본문 컬렉션 (기존에 앱이 사용 중)
+    match /users/{docId} {
+      allow read, write: if isSignedIn();
+    }
+    match /clients/{docId} {
+      allow read, write: if isSignedIn();
+    }
+    match /projects/{docId} {
+      allow read, write: if isSignedIn();
+    }
+    match /quotes/{docId} {
+      allow read, write: if isSignedIn();
+    }
+    match /records/{docId} {
+      allow read, write: if isSignedIn();
+    }
+    match /settles/{docId} {
+      allow read, write: if isSignedIn();
+    }
+    match /depositHistory/{docId} {
+      allow read, write: if isSignedIn();
+    }
+    match /depositUnmatched/{docId} {
+      allow read, write: if isSignedIn();
+    }
+    match /depNames/{docId} {
+      allow read, write: if isSignedIn();
+    }
+    match /dailySettleRows/{docId} {
+      allow read, write: if isSignedIn();
+    }
+    match /bankTransactions/{docId} {
+      allow read, write: if isSignedIn();
+    }
+    match /companyExpenses/{docId} {
+      allow read, write: if isSignedIn();
+    }
+    match /blogProjects/{docId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // changeLogs 등은 명시적으로 열지 않음 (기본 거부 유지)
+  }
+}
