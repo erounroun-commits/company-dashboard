@@ -417,7 +417,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
       <div class="nav-item nav-sub" onclick="showPage('settle-all')" data-page="settle-all"><span class="nav-icon" style="font-size:12px">💰</span>거래처 정산</div>
       <div class="nav-item nav-sub" onclick="showPage('deposit')" data-page="deposit"><span class="nav-icon" style="font-size:12px">🏦</span>입금 내역</div>
       <div class="nav-item nav-sub" onclick="showPage('daily-settle')" data-page="daily-settle"><span class="nav-icon" style="font-size:12px">📒</span>일/월 정산</div>
-      <div class="nav-item nav-sub" onclick="showPage('user-mgmt');renderUserMgmt()" data-page="user-mgmt"><span class="nav-icon" style="font-size:12px">🔐</span>로그인 관리</div>
+      <div class="nav-item nav-sub" onclick="showPage('user-mgmt')" data-page="user-mgmt"><span class="nav-icon" style="font-size:12px">🔐</span>로그인 관리</div>
       <div class="nav-item nav-sub" onclick="showPage('gsync-settings');renderGsyncSettings()" data-page="gsync-settings"><span class="nav-icon" style="font-size:12px">🔗</span>시트 연동 설정</div>
       <div class="nav-item nav-sub" onclick="openChangeLogModal()"><span class="nav-icon" style="font-size:12px">📜</span>수정 이력</div>
       <div class="nav-item nav-sub" onclick="cleanupOrphanSettles()"><span class="nav-icon" style="font-size:12px">🧹</span>고아 정산 정리</div>
@@ -1364,6 +1364,11 @@ function perfStart(name, countKey){
   console.time(label);
   return {name:name, key:key, label:label, t:(typeof performance!=='undefined'?performance.now():Date.now())};
 }
+let _perfSnapMs=0;
+function perfAddSnap(ms){
+  if(!DEBUG_PERF || !ms || ms<0) return;
+  _perfSnapMs+=ms;
+}
 function perfEnd(token){
   if(!DEBUG_PERF || !token) return;
   console.timeEnd(token.label);
@@ -1384,6 +1389,16 @@ function installPerfLongTaskObserver(){
     po.observe({type:'longtask', buffered:true});
   }catch(e){}
 }
+function perfReport(){
+  if(!DEBUG_PERF) return null;
+  const ov=_perfCounts.renderOverview||0;
+  const lt=_perfCounts.longtask||0;
+  const skip=_perfCounts['skip:overview']||0;
+  const snap=Math.round(_perfSnapMs);
+  console.log('[PERF] 요약 longtask '+lt+'회, onSnapshot 처리 '+snap+'ms, renderOverview '+ov+'회, skip overview '+skip+'회');
+  return {longtask:lt, onSnapshotMs:snap, renderOverview:ov, skipOverview:skip};
+}
+window.perfReport=perfReport;
 
 // ─── KST(한국 표준시) 날짜 유틸 ───────────────────
 function getKSTDate(offsetDays=0){
@@ -2010,6 +2025,9 @@ const _settingsReady = {gsync:false, monthlyCnt:false, uiCols:false};
 
 let _renderTimer = null;
 let _renderCols = new Set();
+const _dirtyPages=new Set();
+let _dirtyDetail=false;
+let _dirtyClientView=false;
 let _mainSubErrNotified = false;
 function refreshDetailProjectSelectors(){
   try{
@@ -2055,6 +2073,95 @@ function _renderColsHit(cols, names){
   for(let i=0;i<names.length;i++){ if(cols.has(names[i])) return true; }
   return false;
 }
+function _appVisible(){
+  const app=document.getElementById('app');
+  return !!(app && !app.classList.contains('hidden'));
+}
+function _activePageId(){
+  return document.querySelector('.page.active')?.id || '';
+}
+function _isTypingEl(el){
+  return !!(el && (el.tagName==='INPUT' || el.tagName==='TEXTAREA' || el.tagName==='SELECT' || el.isContentEditable));
+}
+function _noteHiddenSkip(key){
+  _dirtyPages.add(key);
+  if(typeof DEBUG_PERF!=='undefined' && DEBUG_PERF){
+    _perfCounts['skip:'+key]=(_perfCounts['skip:'+key]||0)+1;
+  }
+}
+function refreshOpenDeposit(){
+  try{ updateUnmatchedBadge(); }catch(e){}
+  const tab=document.querySelector('[data-deptab].active');
+  const name=tab&&tab.dataset.deptab;
+  if(name==='history') renderDepositHistory();
+  else if(name==='names') renderDepNameTable();
+  else if(name==='unmatched') renderUnmatchedTable();
+}
+function refreshOpenDailySettle(){
+  if(typeof DS_DIRTY!=='undefined' && DS_DIRTY) return;
+  const tab=document.querySelector('[data-dstab].active');
+  const name=tab&&tab.dataset.dstab;
+  if(name==='dashboard') renderDsDashboard();
+  else if(name==='monthly'){
+    const v=document.getElementById('ds-month-input');
+    if(v&&v.value) loadMonthlySettle(v.value);
+  }else if(name==='daily'){
+    const ym=document.getElementById('ds-daily-month-input');
+    if(ym&&ym.value) loadDailyMonth(ym.value);
+  }else if(name==='expense') renderCompanyExpenses();
+  else if(name==='bank'){
+    renderBankUnmatched();
+    const sel=document.getElementById('bank-match-date');
+    const cur=sel?sel.value:'';
+    const dates=[...new Set(dsLd().map(r=>r.date))].sort((a,b)=>b.localeCompare(a));
+    if(sel){
+      sel.innerHTML='<option value="">날짜 선택</option>'+dates.map(d=>'<option value="'+d+'">'+d+'</option>').join('');
+      if(cur&&dates.indexOf(cur)>=0) sel.value=cur;
+    }
+    if(cur&&typeof loadBankMatchRows==='function') loadBankMatchRows(cur);
+  }
+}
+function refreshOpenBlogPanels(){
+  if(!CUR_CLIENT) return;
+  if(document.querySelector('.dtab.active[data-dtab="nblog"]')){
+    const el=document.getElementById('dp-nblog-inner');
+    if(el) renderNBlogStatus(el, CUR_CLIENT);
+  }
+  if(document.querySelector('.dtab.active[data-dtab="bloginput"]')){
+    const el=document.getElementById('dp-bloginput-inner');
+    if(el) renderBlogInputPanel(el, CUR_CLIENT);
+  }
+}
+function _staffCoreReady(){ return !!(_svLoaded.cl && _svLoaded.pr); }
+function renderOpenClientDetail(cols){
+  if(!CUR_CLIENT) return;
+  const all=!cols;
+  const hitCl=all||_renderColsHit(cols, ['clients']);
+  const hitPr=all||_renderColsHit(cols, ['projects','uiCols']);
+  const hitRc=all||_renderColsHit(cols, ['records']);
+  const hitQt=all||_renderColsHit(cols, ['quotes']);
+  const hitSt=all||_renderColsHit(cols, ['settles']);
+  const hitDs=all||_renderColsHit(cols, ['dailySettleRows']);
+  const hitBlog=all||_renderColsHit(cols, ['blogProjects']);
+  if(hitCl||hitPr||hitRc){ try{ renderDetDash(); }catch(e){} }
+  if(hitPr||hitRc){ try{ renderDetProjView(); }catch(e){} }
+  if(hitQt){ try{ renderDetQuote(); }catch(e){} }
+  if(hitQt||hitSt||hitDs){ try{ renderDetSettle(); }catch(e){} }
+  if(hitBlog){ try{ refreshOpenBlogPanels(); }catch(e){} }
+  if(hitCl){
+    const d=ld(); const c=d.clients.find(x=>x.id===CUR_CLIENT);
+    if(c) renderInfoForm(c);
+  }
+  if(hitPr){ try{ refreshDetailProjectSelectors(); }catch(e){} }
+}
+function flushDirtyClientDetail(){
+  if(!_dirtyDetail || !CUR_CLIENT) return;
+  const detailEl=document.getElementById('cl-detail');
+  if(!detailEl || detailEl.classList.contains('hidden')) return;
+  if(!_appVisible() || _activePageId()!=='page-clients') return;
+  _dirtyDetail=false;
+  renderOpenClientDetail(null);
+}
 function scheduleRerender(collectionName){
   if(collectionName) _renderCols.add(String(collectionName));
   else _renderCols.add('*');
@@ -2065,112 +2172,128 @@ function scheduleRerender(collectionName){
     try{
     const cols=_renderCols;
     _renderCols=new Set();
+    let typing=false;
     try{
-      // 동시에 여러 사용자가 수정할 때, 내 화면에서 입력/편집 중이면
-      // Firestore 실시간 변경으로 인한 강제 리렌더를 최대한 막아서
-      // 작업하던 내용이 튀거나 날아가지 않도록 보호
-      const activeEl=document.activeElement;
-      const isTyping=activeEl&&(
-        activeEl.tagName==='INPUT'
-        ||activeEl.tagName==='TEXTAREA'
-        ||activeEl.tagName==='SELECT'
-        ||activeEl.isContentEditable
-      );
-      if((typeof SHEET_DIRTY==='boolean'&&SHEET_DIRTY) || isTyping){
-        // 데이터 입력 시트에 미저장 데이터가 있거나,
-        // 어떤 입력 요소든 포커스가 잡혀 있으면
-        // 이번 스냅샷에 대한 전체 리렌더는 건너뛴다.
-        return;
-      }
+      typing=_isTypingEl(document.activeElement) || (typeof SHEET_DIRTY==='boolean' && SHEET_DIRTY);
     }catch(e){}
-    const active = document.querySelector('.page.active')?.id || '';
+    const skipped=[];
     try{
       const clientScreen=document.getElementById('client-screen');
-      if(clientScreen&&!clientScreen.classList.contains('hidden')&&CV_CURRENT_CODE
-        && _renderColsHit(cols, ['clients','projects','records','quotes','blogProjects'])){
-        refreshClientView();
+      const clientOn=!!(clientScreen && !clientScreen.classList.contains('hidden') && CV_CURRENT_CODE);
+      if(_renderColsHit(cols, ['clients','projects','records','quotes','blogProjects'])){
+        if(clientOn && !typing) refreshClientView();
+        else if(CV_CURRENT_CODE) _dirtyClientView=true;
       }
     }catch(e){}
-    try{ updateAdminUI(); }catch(e){}
-    try{ if(active==='page-overview' && _renderColsHit(cols, ['clients','projects','records'])) renderOverview(); }catch(e){}
-    try{ if(active==='page-clients' && _renderColsHit(cols, ['clients','projects'])) renderClients(); }catch(e){}
-    try{ if(active==='page-export' && _renderColsHit(cols, ['clients','projects','records'])) renderExportPage(); }catch(e){}
+    if(_appVisible() && !typing){ try{ updateAdminUI(); }catch(e){} }
+    const markSkip=(key)=>{ const before=_perfCounts['skip:'+key]||0; _noteHiddenSkip(key); if((_perfCounts['skip:'+key]||0)!==before) skipped.push(key); };
+    const paint=(key, pageId, hit, fn)=>{
+      if(!hit) return;
+      const visible=_appVisible() && _activePageId()===pageId;
+      if(visible && !typing){
+        _dirtyPages.delete(key);
+        try{ fn(); }catch(e){}
+      }else if(!visible){
+        markSkip(key);
+      }
+    };
+    const coreReady=_staffCoreReady();
+    paint('overview','page-overview', coreReady && _renderColsHit(cols, ['clients','projects','records']), function(){ renderOverview(); });
+    paint('clients','page-clients', coreReady && _renderColsHit(cols, ['clients','projects']), function(){ renderClients(); });
+    paint('export','page-export', coreReady && _renderColsHit(cols, ['clients','projects','records']), function(){ renderExportPage(); });
+    paint('settle-all','page-settle-all', _renderColsHit(cols, ['settles','quotes','clients']), function(){ renderSettleAll(); });
+    paint('deposit','page-deposit', _renderColsHit(cols, ['depositHistory','depositUnmatched','depNames','settles','clients']), function(){ refreshOpenDeposit(); });
+    paint('daily-settle','page-daily-settle', _renderColsHit(cols, ['dailySettleRows','bankTransactions','companyExpenses']), function(){ refreshOpenDailySettle(); });
+    paint('user-mgmt','page-user-mgmt', _renderColsHit(cols, ['users']), function(){ renderUserMgmt(); });
+    paint('crm','page-crm', _renderColsHit(cols, ['quotes','clients']), function(){ renderCrmQuotes(); });
     try{
-      // 여러 사용자가 동시 작업 시, 편집 중인 상태에서 화면이 갑자기 바뀌거나 작업이 날아가지 않도록
-      // 데이터 입력 미저장(SHEET_DIRTY)이거나 거래처 상세 안에서 입력 중이면 상세 패널은 다시 그리지 않음
-      const detailEl=document.getElementById('cl-detail');
-      const activeEl=document.activeElement;
-      const isEditingInDetail=detailEl&&activeEl&&detailEl.contains(activeEl)&&
-        (activeEl.tagName==='INPUT'||activeEl.tagName==='TEXTAREA'||activeEl.tagName==='SELECT'||activeEl.isContentEditable);
-      const skipDetailRerender=(typeof SHEET_DIRTY==='boolean'&&SHEET_DIRTY)||isEditingInDetail;
-      const detailHit=_renderColsHit(cols, ['clients','projects','records','quotes','settles','uiCols']);
-      if(CUR_CLIENT&&!skipDetailRerender&&detailHit){
-        const hitCl=_renderColsHit(cols, ['clients']);
-        const hitPr=_renderColsHit(cols, ['projects','uiCols']);
-        const hitRc=_renderColsHit(cols, ['records']);
-        const hitQt=_renderColsHit(cols, ['quotes']);
-        const hitSt=_renderColsHit(cols, ['settles']);
-        if(hitCl||hitPr||hitRc){ try{ renderDetDash(); }catch(e){} }
-        if(hitPr||hitRc){ try{ renderDetProjView(); }catch(e){} }
-        if(hitQt){ try{ renderDetQuote(); }catch(e){} }
-        if(hitQt||hitSt){ try{ renderDetSettle(); }catch(e){} }
-        if(hitCl){
-          const d=ld(); const c=d.clients.find(x=>x.id===CUR_CLIENT);
-          if(c) renderInfoForm(c);
+      const detailHit=_renderColsHit(cols, ['clients','projects','records','quotes','settles','uiCols','dailySettleRows','blogProjects']);
+      if(CUR_CLIENT && detailHit){
+        const detailEl=document.getElementById('cl-detail');
+        const detailOn=_appVisible() && _activePageId()==='page-clients' && detailEl && !detailEl.classList.contains('hidden');
+        const editing=!!(detailEl && document.activeElement && detailEl.contains(document.activeElement) && _isTypingEl(document.activeElement));
+        const sheetDirty=typeof SHEET_DIRTY==='boolean' && SHEET_DIRTY;
+        if(detailOn && !typing && !editing && !sheetDirty){
+          _dirtyDetail=false;
+          renderOpenClientDetail(cols);
+        }else if(!detailOn){
+          _dirtyDetail=true;
+          markSkip('clients-detail');
         }
-        if(hitPr) refreshDetailProjectSelectors();
       }
     }catch(e){}
-    try{
-      if(active==='page-settle-all' && _renderColsHit(cols, ['settles','quotes','clients'])) renderSettleAll();
-      if(active==='page-deposit' && _renderColsHit(cols, ['depositHistory','depositUnmatched','depNames','settles','clients'])){ updateUnmatchedBadge(); renderDepositHistory?.(); }
-      if(active==='page-user-mgmt' && _renderColsHit(cols, ['users'])) renderUserMgmt();
-      if(active==='page-crm' && _renderColsHit(cols, ['quotes','clients'])) renderCrmQuotes();
-    }catch(e){}
+    if(typeof DEBUG_PERF!=='undefined' && DEBUG_PERF && skipped.length){
+      console.log('[PERF] skip hidden: '+skipped.join(', ')+' (overview 대기 '+(_perfCounts['skip:overview']||0)+'회)');
+    }
     }finally{ perfEnd(_perf); }
   }, 300);
 }
 
-function subscribeMainDataFromFirestore(){
-  if(typeof db === 'undefined') return;
-  if(_unsubMain) return; // 중복 구독 방지
-  const onSubErr = (err)=>{
-    console.error('main snapshot error', err);
-    if(!_mainSubErrNotified){
-      _mainSubErrNotified = true;
-      try{ toast('데이터 읽기 권한 오류가 있어 화면 반영이 지연됩니다. Firebase 권한을 확인해주세요.','error'); }catch(_){}
-    }
-  };
-  const unsubs = [];
-  unsubs.push(db.collection('clients').onSnapshot(snap=>_svOnSnap('cl', snap), onSubErr));
-  unsubs.push(db.collection('projects').onSnapshot(snap=>_svOnSnap('pr', snap), onSubErr));
-  unsubs.push(db.collection('quotes').onSnapshot(snap=>_svOnSnap('qt', snap), onSubErr));
-  _unsubMain = ()=>{ unsubs.forEach(fn=>{try{fn&&fn();}catch(e){}}); _unsubMain=null; };
+const _colUnsub={};
+let _staffCoreStarted=false;
+function _colAlreadyListening(key){
+  if(_colUnsub[key]) return true;
+  if(key==='st') return !!_unsubSettles;
+  if(key==='dep') return !!_unsubDepHist;
+  if(key==='um') return !!_unsubUnmatched;
+  if(key==='dn') return !!_unsubDepNames;
+  if(key==='ds') return !!_unsubDs;
+  if(key==='bank') return !!_unsubBankTx;
+  if(key==='exp') return !!_unsubCompanyExp;
+  if(key==='bp') return !!_unsubBlogProjects;
+  return false;
 }
-
+function _rememberColUnsub(key, fn){
+  _colUnsub[key]=fn;
+  if(key==='st') _unsubSettles=fn;
+  else if(key==='dep') _unsubDepHist=fn;
+  else if(key==='um') _unsubUnmatched=fn;
+  else if(key==='dn') _unsubDepNames=fn;
+  else if(key==='ds') _unsubDs=fn;
+  else if(key==='bank') _unsubBankTx=fn;
+  else if(key==='exp') _unsubCompanyExp=fn;
+  else if(key==='bp') _unsubBlogProjects=fn;
+}
+function ensureCollectionSubs(keys){
+  if(!CUR_ADMIN || typeof db==='undefined' || !keys) return;
+  keys.forEach(function(key){
+    if(!SV_COL[key] || _colAlreadyListening(key)) return;
+    const colName=SV_COL[key];
+    const unsub=db.collection(colName).onSnapshot(function(snap){
+      _svOnSnap(key, snap);
+    }, function(err){
+      console.error(colName+' snapshot', err);
+      if(key==='cl'||key==='pr'||key==='qt'){
+        if(!_mainSubErrNotified){
+          _mainSubErrNotified=true;
+          try{ toast('데이터 읽기 권한 오류가 있어 화면 반영이 지연됩니다. Firebase 권한을 확인해주세요.','error'); }catch(_){}
+        }
+      }
+    });
+    _rememberColUnsub(key, unsub);
+  });
+}
+function ensurePageSubscriptions(page){
+  const map={
+    crm:['qt'],
+    'settle-all':['qt','st'],
+    deposit:['dep','um','dn','st','qt'],
+    'daily-settle':['ds','bank','exp']
+  };
+  if(map[page]) ensureCollectionSubs(map[page]);
+}
+function subscribeMainDataFromFirestore(){
+  ensureCollectionSubs(['cl','pr']);
+  if(!_unsubMain) _unsubMain=function(){};
+}
+function subscribeStaffCore(){
+  if(_staffCoreStarted) return;
+  _staffCoreStarted=true;
+  subscribeMainDataFromFirestore();
+  subscribeAuxCollectionsFromFirestore();
+}
 function subscribeAuxCollectionsFromFirestore(){
   if(typeof db === 'undefined') return;
-  if(!_unsubSettles){
-    _unsubSettles = db.collection('settles').onSnapshot(snap=>_svOnSnap('st', snap));
-  }
-  if(!_unsubDepHist){
-    _unsubDepHist = db.collection('depositHistory').onSnapshot(snap=>_svOnSnap('dep', snap));
-  }
-  if(!_unsubUnmatched){
-    _unsubUnmatched = db.collection('depositUnmatched').onSnapshot(snap=>_svOnSnap('um', snap));
-  }
-  if(!_unsubDepNames){
-    _unsubDepNames = db.collection('depNames').onSnapshot(snap=>_svOnSnap('dn', snap));
-  }
-  if(!_unsubDs){
-    _unsubDs = db.collection('dailySettleRows').onSnapshot(snap=>_svOnSnap('ds', snap));
-  }
-  if(!_unsubBankTx){
-    _unsubBankTx = db.collection('bankTransactions').onSnapshot(snap=>_svOnSnap('bank', snap));
-  }
-  if(!_unsubCompanyExp){
-    _unsubCompanyExp = db.collection('companyExpenses').onSnapshot(snap=>_svOnSnap('exp', snap));
-  }
   if(!_unsubMonthlyCnt){
     _unsubMonthlyCnt = db.collection('settings').doc('monthlyCnt').onSnapshot(doc=>{
       MONTHLY_CNT_CACHE = (doc && doc.exists && (doc.data()?.data)) ? (doc.data().data||{}) : {};
@@ -2183,10 +2306,8 @@ function subscribeAuxCollectionsFromFirestore(){
       GSYNC_CACHE = (doc && doc.exists) ? (doc.data()||{}) : {};
       _settingsReady.gsync=true;
       _maybeMigrateGsyncUrl();
+      try{ armAutoSyncOnce(); }catch(e){}
     });
-  }
-  if(!_unsubBlogProjects){
-    _unsubBlogProjects = db.collection('blogProjects').onSnapshot(snap=>_svOnSnap('bp', snap), err=>{ console.warn('blogProjects snapshot error', err); });
   }
   if(!_unsubUiCols){
     _unsubUiCols = db.collection('settings').doc('uiCols').onSnapshot(doc=>{
@@ -2205,8 +2326,9 @@ async function loadMainDataFromFirestore(force = false){
   if(_mainDataLoaded) return;
   // 리스너가 있으면 초기 스냅샷이 곧 캐시를 채운다. 같은 컬렉션을 get()으로 다시 읽지 않는다.
   if(_unsubMain){
-    await _waitSvLoaded(['cl','pr','qt'], 20000);
-    _mainDataLoaded = !!(_svLoaded.cl && _svLoaded.pr && _svLoaded.qt);
+    const keys=['cl','pr'].concat(_colUnsub.qt?['qt']:[]);
+    await _waitSvLoaded(keys, 20000);
+    _mainDataLoaded = keys.every(function(k){ return !!_svLoaded[k]; });
     return;
   }
   if(_mainDataPromise && !force) return _mainDataPromise;
@@ -2280,11 +2402,15 @@ let _recordsLoadToken=0;
 let _recordsUnsubs=[];
 let _recordsSubClientId=null;
 let _recordsSubProjKey='';
+let _recordsChunksReady=false;
+let _projAutoStatusTimer=null;
 function unsubscribeRecords(){
   (_recordsUnsubs||[]).forEach(fn=>{ try{ fn(); }catch(e){} });
   _recordsUnsubs=[];
   _recordsSubClientId=null;
   _recordsSubProjKey='';
+  _recordsChunksReady=false;
+  if(_projAutoStatusTimer){ clearTimeout(_projAutoStatusTimer); _projAutoStatusTimer=null; }
 }
 function _applyRecordsRows(clientId, rows){
   if(CUR_CLIENT && clientId!==CUR_CLIENT) return;
@@ -2323,6 +2449,7 @@ function subscribeRecordsForClient(clientId){
   _recordsSubClientId=clientId;
   _recordsSubProjKey=projIds.slice().sort().join(',');
   if(!projIds.length){
+    _recordsChunksReady=true;
     _applyRecordsRows(clientId, []);
     return Promise.resolve();
   }
@@ -2336,6 +2463,7 @@ function subscribeRecordsForClient(clientId){
     if(_recordsSubClientId!==clientId) return;
     if(CUR_CLIENT && clientId!==CUR_CLIENT) return;
     if(partials.some(p=>p===null)) return;
+    _recordsChunksReady=true;
     const seen=new Set();
     const merged=[];
     partials.forEach(list=>(list||[]).forEach(rec=>{
@@ -2939,38 +3067,88 @@ function _svAcceptServerRows(key, rows){
   _svReindex(key, _svGetCache(key));
 }
 const _svSnapReady={};
-function _pruneRowsToSnap(rows, snap, sync){
-  const live=new Set();
-  snap.docs.forEach(d=>{ if(d&&d.id!=null&&d.id!=='') live.add(d.id); });
+function _pruneRowsToIds(rows, live, sync){
   for(let i=rows.length-1;i>=0;i--){
     const id=rows[i]&&rows[i].id;
-    if(id==null||id===''||live.has(id)) continue;
+    if(id==null||id===''||(live&&live.has(id))) continue;
     rows.splice(i,1);
     if(sync&&id!=null) sync.delete(id);
   }
 }
-function _svOnSnap(key, snap){
-  _svLoaded[key]=true;
-  const changes=snap.docChanges();
-  let rows=_svGetCache(key);
-  if(!Array.isArray(rows)){
-    rows=[];
-    _svSetCache(key, rows);
-  }
-  const index=_svEnsureIndex(key, rows);
-  const sync=_svSync[key]||(_svSync[key]=new Map());
-  if(changes.length) _applyDocChangesToRows(rows, changes, index, sync);
-  const firstSnap=!_svSnapReady[key];
-  if(firstSnap){
+function _pruneRowsToSnap(rows, snap, sync){
+  const live=new Set();
+  if(snap&&snap.docs) snap.docs.forEach(d=>{ if(d&&d.id!=null&&d.id!=='') live.add(d.id); });
+  _pruneRowsToIds(rows, live, sync);
+}
+const _svApplyQueue={};
+const _svApplyPump={};
+const _svFirstQueued={};
+const SV_SNAP_CHUNK=500;
+function _svFinishSnapJob(key, job, rows){
+  if(job.first){
     _svSnapReady[key]=true;
-    _pruneRowsToSnap(rows, snap, sync);
+    if(job.liveIds) _pruneRowsToIds(rows, job.liveIds, _svSync[key]);
     _svReindex(key, rows);
   }
+  _svLoaded[key]=true;
   if(key==='pr'){
     try{ refreshRecordsSubscriptionIfProjectsChanged(); }catch(e){}
-    try{ _gsyncNoteProjectChanges(changes); }catch(e){}
+    try{ _gsyncNoteProjectChanges(job.changes); }catch(e){}
   }
-  if(changes.length||firstSnap) scheduleRerender(SV_COL[key]||key);
+  if(key==='cl'||key==='pr'){ try{ armAutoSyncOnce(); }catch(e){} }
+  if((job.changes&&job.changes.length)||job.first) scheduleRerender(SV_COL[key]||key);
+}
+function _svPump(key){
+  if(_svApplyPump[key]) return;
+  const queued=_svApplyQueue[key];
+  if(!queued||!queued.length) return;
+  _svApplyPump[key]=true;
+  const step=function(){
+    const queue=_svApplyQueue[key];
+    if(!queue||!queue.length){ _svApplyPump[key]=false; return; }
+    const job=queue[0];
+    let rows=_svGetCache(key);
+    if(!Array.isArray(rows)){
+      rows=[];
+      _svSetCache(key, rows);
+    }
+    const index=_svEnsureIndex(key, rows);
+    const sync=_svSync[key]||(_svSync[key]=new Map());
+    const t0=(typeof performance!=='undefined'?performance.now():Date.now());
+    const end=Math.min(job.index+SV_SNAP_CHUNK, job.changes.length);
+    if(job.index<end){
+      const slice=job.changes.slice(job.index, end);
+      _applyDocChangesToRows(rows, slice, index, sync);
+      if(job.liveIds){
+        slice.forEach(function(ch){
+          if(!ch||!ch.doc||ch.type==='removed') return;
+          if(ch.doc.id!=null&&ch.doc.id!=='') job.liveIds.add(ch.doc.id);
+        });
+      }
+      job.index=end;
+    }
+    perfAddSnap((typeof performance!=='undefined'?performance.now():Date.now())-t0);
+    if(job.index<job.changes.length){
+      setTimeout(step, 0);
+      return;
+    }
+    queue.shift();
+    _svFinishSnapJob(key, job, rows);
+    if(queue.length) setTimeout(step, 0);
+    else _svApplyPump[key]=false;
+  };
+  if(queued[0].changes.length>SV_SNAP_CHUNK) setTimeout(step, 0);
+  else step();
+}
+function _svOnSnap(key, snap){
+  const t0=(typeof performance!=='undefined'?performance.now():Date.now());
+  const changes=(snap&&typeof snap.docChanges==='function')?snap.docChanges():[];
+  perfAddSnap((typeof performance!=='undefined'?performance.now():Date.now())-t0);
+  const first=!_svSnapReady[key] && !_svFirstQueued[key];
+  if(first) _svFirstQueued[key]=true;
+  const job={changes:changes, index:0, first:first, liveIds:first?new Set():null};
+  (_svApplyQueue[key]||(_svApplyQueue[key]=[])).push(job);
+  _svPump(key);
 }
 function _svRequireLoaded(key){
   if(!_svLoaded[key]) throw new Error('데이터 로드 전 저장 차단');
@@ -3489,6 +3667,7 @@ function showClientView(code){
 }
 function refreshClientView(){
   if(!CV_CURRENT_CODE)return;
+  _dirtyClientView=false;
   const d=ld(),c=d.clients.find(x=>x.code===CV_CURRENT_CODE);
   if(!c){
     document.getElementById('cvpanel-dashboard').innerHTML='<div style="text-align:center;padding:80px"><div style="font-size:48px">🔍</div><div style="font-size:18px;font-weight:700;margin-top:16px">유효하지 않은 링크</div></div>';
@@ -5065,12 +5244,44 @@ function renderNBlogStatus(container, clientId){
 // ═══════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════
+function _perfReportWhenCoreReady(){
+  const started=Date.now();
+  (function tick(){
+    if((_svLoaded.cl && _svLoaded.pr) || Date.now()-started>25000){
+      if(typeof perfReport==='function') perfReport();
+      return;
+    }
+    setTimeout(tick, 500);
+  })();
+}
 function initApp(){
+  subscribeStaffCore();
   document.getElementById('ov-date').textContent='업데이트: '+new Date().toLocaleString('ko-KR');
   updateAdminUI();
-  renderOverview();renderClients();renderExportPage();
+  const active=(_activePageId().replace(/^page-/,'')||'overview');
+  ensurePageSubscriptions(active);
+  const needsCore=active==='overview'||active==='clients'||active==='export';
+  if(needsCore && !_staffCoreReady()){
+    _dirtyPages.add(active);
+  }else{
+    _dirtyPages.delete(active);
+    if(active==='clients'){ renderClients(); flushDirtyClientDetail(); }
+    else if(active==='export') renderExportPage();
+    else if(active==='crm') renderCrmQuotes();
+    else if(active==='settle-all') renderSettleAll();
+    else if(active==='deposit'){ showDepTab('names'); updateUnmatchedBadge(); }
+    else if(active==='daily-settle') initDailySettle();
+    else if(active==='user-mgmt') renderUserMgmt();
+    else renderOverview();
+  }
   _maybeMigrateGsyncUrl();
-  setupAutoSync();
+  try{ armAutoSyncOnce(); }catch(e){}
+  setTimeout(function(){
+    if(_gsyncBootArmed) return;
+    _gsyncBootArmed=true;
+    setupAutoSync();
+  }, 8000);
+  _perfReportWhenCoreReady();
 }
 
 // ════════════════════════════════════════
@@ -7003,6 +7214,13 @@ async function delSettleRow(stId){
 // 구글 시트 리뷰 URL 동기화 (wv_gsync)
 // ══════════════════════════════════════════════════════════════
 let GSYNC_TIMER = null;
+let _gsyncBootArmed=false;
+function armAutoSyncOnce(){
+  if(_gsyncBootArmed) return;
+  if(!_settingsReady.gsync || !_svLoaded.cl || !_svLoaded.pr) return;
+  _gsyncBootArmed=true;
+  setupAutoSync();
+}
 const GSYNC_LOCK_MS = 3*60*1000;
 const GSYNC_INTERVAL_MS = 10*60*1000;
 let _gsyncLastMeta=null;
@@ -8144,13 +8362,18 @@ function showPage(n){
     document.getElementById('nav-admin-toggle').classList.add('active');
     openAdminMenu();
   }
-  if(n==='overview')renderOverview();
-  if(n==='clients')renderClients();
-  if(n==='export')renderExportPage();
+  _dirtyPages.delete(n);
+  ensurePageSubscriptions(n);
+  const deferCore=(n==='overview'||n==='clients'||n==='export') && !_staffCoreReady();
+  if(deferCore) _dirtyPages.add(n);
+  if(!deferCore && n==='overview')renderOverview();
+  if(!deferCore && n==='clients'){ renderClients(); flushDirtyClientDetail(); }
+  if(!deferCore && n==='export')renderExportPage();
   if(n==='crm')renderCrmQuotes();
   if(n==='settle-all')renderSettleAll();
   if(n==='deposit'){showDepTab('names');updateUnmatchedBadge();}
   if(n==='daily-settle')initDailySettle();
+  if(n==='user-mgmt')renderUserMgmt();
   }finally{
     const label='탭 전환 1회 ('+n+')';
     setTimeout(()=>fsEnd(label), 0);
@@ -8363,6 +8586,7 @@ async function openDetail(cid){
   document.getElementById('det-info').textContent=`${c.manager||''} ${c.phone?'· '+c.phone:''} · 코드: ${c.code}`;
   try{ if(typeof subscribeRecordsForClient==='function') await subscribeRecordsForClient(cid); }catch(e){ console.error(e); }
   if(CUR_CLIENT!==cid) return;
+  _dirtyDetail=false;
   showDTab('dash');
   renderDetDash();renderDetProjView();renderDetQuote();renderDetSettle();renderInfoForm(c);
   // daily 탭은 lazy render on tab click
@@ -8387,7 +8611,14 @@ function showDTab(name){
   document.querySelectorAll('[data-dtab]').forEach(t=>t.classList.toggle('active',t.dataset.dtab===name));
   // dpanel 클래스 가진 것만 토글 (dp-daily-inner 등 내부 div 제외)
   document.querySelectorAll('.dpanel[id^="dp-"]').forEach(p=>p.classList.toggle('active',p.id==='dp-'+name));
-  if(name==='settle')renderDetSettle();
+  if(name==='quote'){
+    ensureCollectionSubs(['qt']);
+    renderDetQuote();
+  }
+  if(name==='settle'){
+    ensureCollectionSubs(['st','qt','ds']);
+    renderDetSettle();
+  }
   if(name==='daily')renderDailyPanel('dp',CUR_CLIENT);
   if(name==='prodstat')renderProdStat();
   if(name==='waysvc'){
@@ -8395,10 +8626,12 @@ function showDTab(name){
     if(el)el.innerHTML=buildWayServicePanelHtml();
   }
   if(name==='nblog'){
+    ensureCollectionSubs(['bp']);
     const el=document.getElementById('dp-nblog-inner');
     if(el)renderNBlogStatus(el, CUR_CLIENT);
   }
   if(name==='bloginput'){
+    ensureCollectionSubs(['bp']);
     const el=document.getElementById('dp-bloginput-inner');
     if(el)renderBlogInputPanel(el, CUR_CLIENT);
   }
@@ -9571,26 +9804,23 @@ function renderDetProjView(){
     +'<select id="projview-filter-status" class="fs" style="font-size:12px;padding:5px 10px;min-width:180px" onchange="renderDetProjView()">'+statusOpts+'</select>'
     +'<input type="text" id="projview-filter-name" class="fi" placeholder="프로젝트 이름 검색" value="'+(filterName?String(filterName).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):'')+'" style="font-size:12px;padding:5px 10px;min-width:160px" oninput="renderDetProjView()">'
     +'</div></div>';
-  let autoChanged=false;
+  let projAutoDirty=false;
   const listBody=projs.length?projs.map(p=>{
     const rc=d.records.filter(r=>r.projectId===p.id);
     const reqTotal=p.contractTotal||p.total||rc.length||0;
     const buyDone=rc.filter(r=>r.nickname||r.tracking).length; // 닉네임 있으면 구매완료
     const rvDone=rc.filter(r=>r.reviewUrl).length;
     const notDone=countProjReviewPending(rc);
-    // 자동 진행상태 계산 (단, 사용자가 수동으로 잠근(statusManual) 프로젝트는 유지)
+    // 화면에는 계산된 상태를 보여 주되, 저장은 렌더 밖에서 debounce로 한 번만 한다.
+    // records 청크가 다 들어오기 전에는 저장된 상태를 그대로 보여 주고 저장하지 않는다.
     let status=p.status||'';
-    if(p.statusManual){
-      // 수동 설정값 유지
-      if(!status){
-        status=computeProjAutoStatus(reqTotal,buyDone,rvDone);
-      }
-    }else{
+    if(_recordsChunksReady){
       const autoStatus=computeProjAutoStatus(reqTotal,buyDone,rvDone);
-      if(autoStatus && autoStatus!==status){
+      if(p.statusManual){
+        if(!status && autoStatus){ status=autoStatus; projAutoDirty=true; }
+      }else if(autoStatus && autoStatus!==status){
         status=autoStatus;
-        p.status=autoStatus;
-        autoChanged=true;
+        projAutoDirty=true;
       }
     }
     const pp=reqTotal>0?~~((rvDone/reqTotal)*100):0;
@@ -9652,10 +9882,39 @@ function renderDetProjView(){
       </div>
     </div>`;
   }).join(''):'<div style="text-align:center;padding:40px;color:var(--text3)">검색 결과 없음</div>';
-  if(autoChanged){
-    sv('pr',d.projects);
-  }
   document.getElementById('dp-projview').innerHTML=filterHtml+'<div style="display:flex;flex-direction:column;gap:12px">'+listBody+'</div>';
+  if(projAutoDirty) scheduleProjAutoStatus();
+}
+
+function scheduleProjAutoStatus(){
+  if(!_recordsChunksReady || !CUR_CLIENT) return;
+  if(_projAutoStatusTimer) clearTimeout(_projAutoStatusTimer);
+  _projAutoStatusTimer=setTimeout(flushProjAutoStatus, 400);
+}
+function flushProjAutoStatus(){
+  _projAutoStatusTimer=null;
+  if(!_recordsChunksReady || !CUR_CLIENT) return;
+  const clientId=CUR_CLIENT;
+  const d=ld();
+  const rows=[];
+  (d.projects||[]).forEach(p=>{
+    if(!p || p.clientId!==clientId) return;
+    const rc=(d.records||[]).filter(r=>r.projectId===p.id);
+    const reqTotal=p.contractTotal||p.total||rc.length||0;
+    const buyDone=rc.filter(r=>r.nickname||r.tracking).length;
+    const rvDone=rc.filter(r=>r.reviewUrl).length;
+    const autoStatus=computeProjAutoStatus(reqTotal,buyDone,rvDone);
+    const cur=p.status||'';
+    if(p.statusManual){
+      if(cur || !autoStatus) return;
+    }else if(!autoStatus || autoStatus===cur){
+      return;
+    }
+    p.status=autoStatus;
+    rows.push(p);
+  });
+  if(!rows.length) return;
+  sv('pr', rows).catch(e=>console.error('proj auto status', e));
 }
 
 // 프로젝트 메모 저장 (거래처 - 프로젝트별 보기)
@@ -15064,11 +15323,7 @@ installPerfProbes();
       var _perfBoot=(typeof perfStart==='function')?perfStart('bootstrap(대기 포함)'):null;
       try {
         subscribeUsersFromFirestore();
-        subscribeMainDataFromFirestore();
-        subscribeAuxCollectionsFromFirestore();
-        await _waitSvLoaded(['cl','pr','qt','st','dep','um','dn','ds','bank','exp','bp'], 20000);
         await Promise.race([_usersReady, new Promise(function (r) { setTimeout(r, 20000); })]);
-        await _waitFlag(function () { return _settingsReady.gsync && _settingsReady.monthlyCnt && _settingsReady.uiCols; }, 20000);
       } finally {
         fsEnd('페이지 로드 1회');
         if(typeof perfEnd==='function') perfEnd(_perfBoot);
