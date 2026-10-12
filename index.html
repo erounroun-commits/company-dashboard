@@ -1342,6 +1342,49 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
 
 <script>
 
+// ── 메인 스레드 진단. 나중에 지울 때 이 블록, perfStart/perfEnd 호출, installPerfProbes 를 같이 제거 ──
+const DEBUG_PERF = true;
+const _perfCounts = Object.create(null);
+let _perfListenerActive = 0;
+function perfQueryLabel(ref){
+  try{
+    if(ref && typeof ref.path==='string' && ref.path) return ref.path;
+    const q=ref && (ref._query || (ref._delegate && ref._delegate._query));
+    const p=q && q.path;
+    if(p && typeof p.canonicalString==='function') return p.canonicalString();
+    if(p && Array.isArray(p.segments)) return p.segments.join('/');
+  }catch(e){}
+  return 'unknown';
+}
+function perfStart(name, countKey){
+  if(!DEBUG_PERF) return null;
+  const key=countKey||name;
+  const n=(_perfCounts[key]=(_perfCounts[key]||0)+1);
+  const label='[PERF] '+key+'#'+n;
+  console.time(label);
+  return {name:name, key:key, label:label, t:(typeof performance!=='undefined'?performance.now():Date.now())};
+}
+function perfEnd(token){
+  if(!DEBUG_PERF || !token) return;
+  console.timeEnd(token.label);
+  const now=(typeof performance!=='undefined'?performance.now():Date.now());
+  const total=_perfCounts[token.key]||0;
+  console.log('[PERF] '+token.name+': '+(now-token.t).toFixed(1)+'ms (호출 '+total+'회)');
+}
+function installPerfLongTaskObserver(){
+  if(!DEBUG_PERF || typeof PerformanceObserver!=='function') return;
+  try{
+    const po=new PerformanceObserver(function(list){
+      list.getEntries().forEach(function(entry){
+        if(!entry || entry.duration<100) return;
+        const n=(_perfCounts.longtask=(_perfCounts.longtask||0)+1);
+        console.log('[PERF] longtask: '+entry.duration.toFixed(1)+'ms (호출 '+n+'회)');
+      });
+    });
+    po.observe({type:'longtask', buffered:true});
+  }catch(e){}
+}
+
 // ─── KST(한국 표준시) 날짜 유틸 ───────────────────
 function getKSTDate(offsetDays=0){
   // UTC + 9시간 + offsetDays
@@ -1459,18 +1502,34 @@ function installFirestoreCounter(db){
     proto.onSnapshot=function(next, err){
       FS_METER.listeners++;
       let first=true;
+      const listenerLabel=(typeof DEBUG_PERF!=='undefined' && DEBUG_PERF) ? perfQueryLabel(this) : '';
       const wrapped=function(snap){
         const cache=!!(snap && snap.metadata && snap.metadata.fromCache);
+        const wasFirst=first;
         let n=0;
         if(first) n=_fsSnapCount(snap);
         else if(snap && typeof snap.docChanges==='function') n=snap.docChanges().length;
         else n=_fsSnapCount(snap);
         first=false;
         if(cache) fsAdd({cacheReads:n}); else fsAdd({serverReads:n});
-        if(typeof next==='function') return next(snap);
+        const run=function(){ if(typeof next==='function') return next(snap); };
+        if(typeof DEBUG_PERF==='undefined' || !DEBUG_PERF) return run();
+        const detail=wasFirst
+          ? ('문서 '+n+(cache?', cache':''))
+          : ('문서 '+_fsSnapCount(snap)+', 변경 '+n+(cache?', cache':''));
+        const token=perfStart('onSnapshot '+listenerLabel+' ('+detail+')', 'onSnapshot '+listenerLabel);
+        try{ return run(); }
+        finally{ perfEnd(token); }
       };
-      if(arguments.length>1) return orig.call(this, wrapped, err);
-      return orig.call(this, wrapped);
+      const unsub=arguments.length>1 ? orig.call(this, wrapped, err) : orig.call(this, wrapped);
+      if(typeof DEBUG_PERF==='undefined' || !DEBUG_PERF) return unsub;
+      _perfListenerActive++;
+      console.log('[LISTENER] '+listenerLabel+' 등록 (현재 활성 '+_perfListenerActive+'개)');
+      return function(){
+        _perfListenerActive=Math.max(0, _perfListenerActive-1);
+        console.log('[LISTENER] '+listenerLabel+' 해제 (현재 활성 '+_perfListenerActive+'개)');
+        if(typeof unsub==='function') return unsub();
+      };
     };
   }
   patchSnap(QueryProto);
@@ -2002,6 +2061,8 @@ function scheduleRerender(collectionName){
   if(_renderTimer) return;
   _renderTimer = setTimeout(()=>{
     _renderTimer = null;
+    const _perf=perfStart('scheduleRerender');
+    try{
     const cols=_renderCols;
     _renderCols=new Set();
     try{
@@ -2066,6 +2127,7 @@ function scheduleRerender(collectionName){
       if(active==='page-user-mgmt' && _renderColsHit(cols, ['users'])) renderUserMgmt();
       if(active==='page-crm' && _renderColsHit(cols, ['quotes','clients'])) renderCrmQuotes();
     }catch(e){}
+    }finally{ perfEnd(_perf); }
   }, 300);
 }
 
@@ -14822,6 +14884,53 @@ function exportDsExcel(){
   toast('엑셀 내보내기 완료');
 }
 
+// DEBUG_PERF 프로브. 플래그가 false면 원본 함수를 그대로 둔다.
+function installPerfProbes(){
+  if(typeof DEBUG_PERF==='undefined' || !DEBUG_PERF) return;
+  const names=[
+    'initApp','doLogin','showPage','openDetail','showClientView',
+    'loadClientScopedData','loadMainDataFromFirestore','loadRecordsByClient',
+    'loadSettlesFromFirestore','loadDepositHistoryFromFirestore','loadDepositUnmatchedFromFirestore',
+    'loadDepNamesFromFirestore','loadGsyncFromFirestore','loadDailySettleFromFirestore',
+    'loadBankTxFromFirestore','loadCompanyExpFromFirestore','loadMonthlyCntFromFirestore',
+    'loadBlogProjectsFromFirestore','loadUiColsFromFirestore',
+    'subscribeUsersFromFirestore','subscribeMainDataFromFirestore','subscribeAuxCollectionsFromFirestore',
+    'subscribeRecordsForClient','sv','saveUsers','_svOnSnap','_applyDocChangesToRows','_pruneRowsToSnap',
+    'renderOverview','renderClients','renderExportPage',
+    'renderDetDash','renderDetProjView','renderDetQuote','renderDetSettle','renderInfoForm',
+    'renderDetAllData','filterDetAllData','renderSheet','loadSheet','applySheetFilters',
+    'renderDailyPanel','renderProdStat','renderSettleAll','renderDepositHistory',
+    'renderCrmQuotes','renderUserMgmt','renderDsDashboard','renderDsTable',
+    'refreshClientView','buildCvDash','buildCvProjects','buildCvQuote',
+    'setupAutoSync','doSync'
+  ];
+  const missed=[];
+  names.forEach(function(name){
+    const fn=window[name];
+    if(typeof fn!=='function' || fn.__perfWrapped){ if(typeof fn!=='function') missed.push(name); return; }
+    const wrapped=function(){
+      const token=perfStart(name);
+      try{
+        const ret=fn.apply(this, arguments);
+        if(ret && typeof ret.then==='function'){
+          return ret.then(function(v){ perfEnd(token); return v; }, function(err){ perfEnd(token); throw err; });
+        }
+        perfEnd(token);
+        return ret;
+      }catch(err){
+        perfEnd(token);
+        throw err;
+      }
+    };
+    wrapped.__perfWrapped=true;
+    window[name]=wrapped;
+  });
+  installPerfLongTaskObserver();
+  if(missed.length) console.warn('[PERF] 프로브를 못 찾은 함수: '+missed.join(', '));
+  console.log('[PERF] 진단 켜짐. 끄려면 DEBUG_PERF=false 로 바꾸고 새로고침.');
+}
+installPerfProbes();
+
 </script>
 
 <!-- ══ 일/월 정산: 행 추가 모달 ══ -->
@@ -14952,6 +15061,7 @@ function exportDsExcel(){
         return;
       }
       fsBegin('페이지 로드 1회');
+      var _perfBoot=(typeof perfStart==='function')?perfStart('bootstrap(대기 포함)'):null;
       try {
         subscribeUsersFromFirestore();
         subscribeMainDataFromFirestore();
@@ -14961,6 +15071,7 @@ function exportDsExcel(){
         await _waitFlag(function () { return _settingsReady.gsync && _settingsReady.monthlyCnt && _settingsReady.uiCols; }, 20000);
       } finally {
         fsEnd('페이지 로드 1회');
+        if(typeof perfEnd==='function') perfEnd(_perfBoot);
       }
     })();
   });
