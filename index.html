@@ -1343,7 +1343,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
 <script>
 
 // ── 메인 스레드 진단. 나중에 지울 때 이 블록, perfStart/perfEnd 호출, installPerfProbes 를 같이 제거 ──
-const DEBUG_PERF = true;
+const DEBUG_PERF = false;
 const _perfCounts = Object.create(null);
 let _perfListenerActive = 0;
 function perfQueryLabel(ref){
@@ -2275,17 +2275,8 @@ function ensureCollectionSubs(keys){
     _rememberColUnsub(key, unsub);
   });
 }
-function ensurePageSubscriptions(page){
-  const map={
-    crm:['qt'],
-    'settle-all':['qt','st'],
-    deposit:['dep','um','dn','st','qt'],
-    'daily-settle':['ds','bank','exp']
-  };
-  if(map[page]) ensureCollectionSubs(map[page]);
-}
 function subscribeMainDataFromFirestore(){
-  ensureCollectionSubs(['cl','pr']);
+  ensureCollectionSubs(['cl','pr','qt','st','dep','um','dn','ds','bank','exp','bp']);
   if(!_unsubMain) _unsubMain=function(){};
 }
 function subscribeStaffCore(){
@@ -2328,7 +2319,7 @@ async function loadMainDataFromFirestore(force = false){
   if(_mainDataLoaded) return;
   // 리스너가 있으면 초기 스냅샷이 곧 캐시를 채운다. 같은 컬렉션을 get()으로 다시 읽지 않는다.
   if(_unsubMain){
-    const keys=['cl','pr'].concat(_colUnsub.qt?['qt']:[]);
+    const keys=['cl','pr','qt'];
     await _waitSvLoaded(keys, 20000);
     _mainDataLoaded = keys.every(function(k){ return !!_svLoaded[k]; });
     return;
@@ -3152,111 +3143,6 @@ function _svOnSnap(key, snap){
   (_svApplyQueue[key]||(_svApplyQueue[key]=[])).push(job);
   _svPump(key);
 }
-const SV_LAZY_LOAD_KEYS=['qt','st','dep','um','dn','ds','bank','exp','bp'];
-const SV_LOAD_TIMEOUT_MS=15000;
-const _svLoadWaiters={};
-let _saveBusyDepth=0;
-function _svResolveKey(nameOrKey){
-  if(nameOrKey==null||nameOrKey==='') return null;
-  const name=String(nameOrKey);
-  if(SV_COL[name]) return name;
-  const keys=Object.keys(SV_COL);
-  for(let i=0;i<keys.length;i++){
-    if(SV_COL[keys[i]]===name) return keys[i];
-  }
-  return null;
-}
-function _quoteSaveButtons(){
-  const out=[];
-  ['qt-new-form','crm-form-wrap'].forEach(function(id){
-    const root=document.getElementById(id);
-    if(!root||root.classList.contains('hidden')) return;
-    root.querySelectorAll('button').forEach(function(btn){
-      if(btn.dataset.saveBusyOn==='1'||/저장/.test(btn.textContent||'')) out.push(btn);
-    });
-  });
-  return out;
-}
-function _pushSaveBusy(){
-  _saveBusyDepth++;
-  if(_saveBusyDepth!==1) return;
-  try{ toast('불러오는 중…'); }catch(e){}
-  _quoteSaveButtons().forEach(function(btn){
-    btn.dataset.saveBusyOn='1';
-    btn.dataset.saveBusyDisabled=btn.disabled?'1':'0';
-    btn.disabled=true;
-    if(!btn.dataset.saveBusyLabel){
-      btn.dataset.saveBusyLabel=btn.textContent;
-      btn.textContent='불러오는 중';
-    }
-  });
-}
-function _popSaveBusy(){
-  _saveBusyDepth=Math.max(0,_saveBusyDepth-1);
-  if(_saveBusyDepth!==0) return;
-  document.querySelectorAll('button[data-save-busy-on="1"]').forEach(function(btn){
-    btn.disabled=btn.dataset.saveBusyDisabled==='1';
-    if(btn.dataset.saveBusyLabel) btn.textContent=btn.dataset.saveBusyLabel;
-    delete btn.dataset.saveBusyOn;
-    delete btn.dataset.saveBusyDisabled;
-    delete btn.dataset.saveBusyLabel;
-  });
-}
-function _waitUntilCollectionLoaded(key){
-  if(_svLoaded[key]) return Promise.resolve(true);
-  if(_svLoadWaiters[key]) return _svLoadWaiters[key];
-  ensureCollectionSubs([key]);
-  const wrapped=new Promise(function(resolve){
-    const started=Date.now();
-    const tick=function(){
-      if(_svLoaded[key]){ resolve(true); return; }
-      if(Date.now()-started>=SV_LOAD_TIMEOUT_MS){ resolve(false); return; }
-      setTimeout(tick, 40);
-    };
-    tick();
-  }).finally(function(){
-    if(_svLoadWaiters[key]===wrapped) delete _svLoadWaiters[key];
-  });
-  _svLoadWaiters[key]=wrapped;
-  return wrapped;
-}
-async function ensureCollectionLoaded(nameOrKey){
-  const key=_svResolveKey(nameOrKey);
-  if(!key||_svLoaded[key]) return true;
-  if(SV_LAZY_LOAD_KEYS.indexOf(key)<0) return false;
-  _pushSaveBusy();
-  try{
-    return await _waitUntilCollectionLoaded(key);
-  }finally{
-    _popSaveBusy();
-  }
-}
-function nextClientQuoteNo(clientId){
-  const d=ld();
-  const cnt=(d.quotes.filter(q=>q.clientId===clientId).length||0)+1;
-  return `Q${new Date().toISOString().slice(0,7).replace('-','')}-${String(cnt).padStart(3,'0')}`;
-}
-function bindAutoQuoteNo(el){
-  if(!el||el.dataset.autoNoBound) return;
-  el.dataset.autoNoBound='1';
-  el.addEventListener('input',function(){ el.dataset.userEdited='1'; });
-}
-function writeAutoQuoteNo(){
-  if(QT_EDIT_ID) return;
-  const form=document.getElementById('qt-new-form');
-  if(!form||form.classList.contains('hidden')) return;
-  const el=document.getElementById('qn-no');
-  if(!el||el.dataset.userEdited==='1') return;
-  bindAutoQuoteNo(el);
-  el.value=nextClientQuoteNo(CUR_CLIENT);
-}
-function refreshAutoQuoteNo(){
-  writeAutoQuoteNo();
-  ensureCollectionLoaded('quotes').then(writeAutoQuoteNo).catch(function(){});
-}
-function prefetchQuoteWriteCollections(){
-  ensureCollectionSubs(['qt','st','ds']);
-}
 function _svRequireLoaded(key){
   if(!_svLoaded[key]) throw new Error('데이터 로드 전 저장 차단');
 }
@@ -3271,7 +3157,6 @@ async function sv(key, value){
   if(typeof db==='undefined') return;
   if(!SV_COL[key]) return;
   if(key==='rc' && !guardRecordsSave()) return;
-  await ensureCollectionLoaded(key);
   _svRequireLoaded(key);
   fsBegin('저장 1회 (sv '+key+')');
   const rows=Array.isArray(value)?value.slice():[];
@@ -3318,7 +3203,6 @@ async function sv(key, value){
 async function svDelete(key, ids){
   if(typeof db==='undefined') return;
   if(!SV_COL[key]) return;
-  await ensureCollectionLoaded(key);
   _svRequireLoaded(key);
   const unique=[];
   const seen=new Set();
@@ -3379,7 +3263,6 @@ async function commitSvOps(ops){
   const list=[...map.values()];
   if(!list.length) return;
   const keys=new Set(list.map(op=>op.key));
-  await Promise.all([...keys].map(function(k){ return ensureCollectionLoaded(k); }));
   keys.forEach(k=>{ if(!_svLoaded[k]) throw new Error('데이터 로드 전 저장 차단'); });
 
   const setByKey={};
@@ -5369,7 +5252,6 @@ function initApp(){
   document.getElementById('ov-date').textContent='업데이트: '+new Date().toLocaleString('ko-KR');
   updateAdminUI();
   const active=(_activePageId().replace(/^page-/,'')||'overview');
-  ensurePageSubscriptions(active);
   const needsCore=active==='overview'||active==='clients'||active==='export';
   if(needsCore && !_staffCoreReady()){
     _dirtyPages.add(active);
@@ -8473,7 +8355,6 @@ function showPage(n){
     document.getElementById('nav-admin-toggle').classList.add('active');
     openAdminMenu();
   }
-  ensurePageSubscriptions(n);
   const deferCore=(n==='overview'||n==='clients'||n==='export') && !_staffCoreReady();
   if(deferCore){
     _dirtyPages.add(n);
@@ -8748,14 +8629,8 @@ function showDTab(name){
   document.querySelectorAll('.dpanel[id^="dp-"]').forEach(p=>p.classList.toggle('active',p.id==='dp-'+name));
   if(name==='dash') _paintDetailTab('dash', function(){ renderDetDash(); });
   if(name==='projview') _paintDetailTab('projview', function(){ renderDetProjView(); });
-  if(name==='quote'){
-    ensureCollectionSubs(['qt']);
-    _paintDetailTab('quote', function(){ renderDetQuote(); });
-  }
-  if(name==='settle'){
-    ensureCollectionSubs(['st','qt','ds']);
-    _paintDetailTab('settle', function(){ renderDetSettle(); });
-  }
+  if(name==='quote') _paintDetailTab('quote', function(){ renderDetQuote(); });
+  if(name==='settle') _paintDetailTab('settle', function(){ renderDetSettle(); });
   if(name==='daily') _paintDetailTab('daily', function(){ renderDailyPanel('dp',CUR_CLIENT); });
   if(name==='prodstat') _paintDetailTab('prodstat', function(){ renderProdStat(); });
   if(name==='waysvc'){
@@ -8765,14 +8640,12 @@ function showDTab(name){
     });
   }
   if(name==='nblog'){
-    ensureCollectionSubs(['bp']);
     _paintDetailTab('nblog', function(){
       const el=document.getElementById('dp-nblog-inner');
       if(el)renderNBlogStatus(el, CUR_CLIENT);
     });
   }
   if(name==='bloginput'){
-    ensureCollectionSubs(['bp']);
     _paintDetailTab('bloginput', function(){
       const el=document.getElementById('dp-bloginput-inner');
       if(el)renderBlogInputPanel(el, CUR_CLIENT);
@@ -9392,9 +9265,6 @@ function collectQuoteLinkDeleteOps(qtId){
   return ops;
 }
 async function deleteQuoteWithLinks(qtId){
-  await ensureCollectionLoaded('quotes');
-  await ensureCollectionLoaded('settles');
-  await ensureCollectionLoaded('dailySettleRows');
   if(!_svLoaded.qt||!_svLoaded.st||!_svLoaded.ds) throw new Error('데이터 로드 전 저장 차단');
   await commitSvOps(collectQuoteLinkDeleteOps(qtId));
 }
@@ -10574,7 +10444,6 @@ function getSelectedSupplier(){
   return {supplierKey:biz.key||key, supplier:{...biz}};
 }
 function openNewQuoteForm(){
-  prefetchQuoteWriteCollections();
   QT_EDIT_ID=null;
   const hid=document.getElementById('qn-edit-id');if(hid)hid.value='';
   const ttl=document.getElementById('qn-form-title');if(ttl)ttl.textContent='✏️ 견적서 작성';
@@ -10596,9 +10465,8 @@ function openNewQuoteForm(){
   renderQtNewItems();
   QT_FORM_OPEN=true;
   show('qt-new-form');
-  const noEl=document.getElementById('qn-no');
-  if(noEl) delete noEl.dataset.userEdited;
-  refreshAutoQuoteNo();
+  const cnt=(_d.quotes.filter(q=>q.clientId===CUR_CLIENT).length||0)+1;
+  document.getElementById('qn-no').value=`Q${new Date().toISOString().slice(0,7).replace('-','')}-${String(cnt).padStart(3,'0')}`;
 }
 function closeNewQuoteForm(){
   hide('qt-new-form');
@@ -10655,7 +10523,6 @@ function fillQuoteFormFields(qt, opts={}){
 }
 
 function openEditQuoteForm(qtId){
-  prefetchQuoteWriteCollections();
   const d=ld();
   const qt=(d.quotes||[]).find(q=>q.id===qtId);
   if(!qt){toast('견적서를 찾을 수 없습니다','error');return;}
@@ -10669,22 +10536,20 @@ function openEditQuoteForm(qtId){
 }
 
 function openDuplicateQuoteForm(qtId){
-  prefetchQuoteWriteCollections();
   const d=ld();
   const qt=(d.quotes||[]).find(q=>q.id===qtId);
   if(!qt){toast('견적서를 찾을 수 없습니다','error');return;}
   QT_EDIT_ID=null;
   const hid=document.getElementById('qn-edit-id');if(hid)hid.value='';
-  const noEl=document.getElementById('qn-no');
-  if(noEl) delete noEl.dataset.userEdited;
   const ttl=document.getElementById('qn-form-title');if(ttl)ttl.textContent='📋 견적서 복제 — 날짜/상세내역 수정 후 저장';
-  fillQuoteFormFields(qt, {newItemIds:true, no:nextClientQuoteNo(CUR_CLIENT)});
+  const cnt=(d.quotes.filter(q=>q.clientId===CUR_CLIENT).length||0)+1;
+  const newNo=`Q${new Date().toISOString().slice(0,7).replace('-','')}-${String(cnt).padStart(3,'0')}`;
+  fillQuoteFormFields(qt, {newItemIds:true, no:newNo});
   // 복제본은 기본적으로 오늘 날짜로 두고, 사용자가 바로 수정 가능
   const dateEl=document.getElementById('qn-date');
   if(dateEl) dateEl.value=getKSTDate();
   QT_FORM_OPEN=true;
   show('qt-new-form');
-  refreshAutoQuoteNo();
   setTimeout(()=>{ try{ document.getElementById('qt-new-form')?.scrollIntoView({behavior:'smooth',block:'start'}); }catch(e){} },20);
   toast('동일 내역으로 복제됨 — 날짜·상세를 수정한 뒤 저장하세요');
 }
@@ -10951,8 +10816,6 @@ async function saveNewQuote(){
   const date=document.getElementById('qn-date')?.value;
   if(!date){toast('견적일자를 입력하세요','error');return;}
   if(!QT_NEW_ITEMS.length){toast('견적 항목을 1개 이상 추가하세요','error');return;}
-  await ensureCollectionLoaded('quotes');
-  writeAutoQuoteNo();
   const taxYn=document.getElementById('qn-tax-yn')?.checked||false;
   const taxItems=getQtTaxItems();
   const items=QT_NEW_ITEMS.map(it=>{
@@ -11295,9 +11158,6 @@ async function runQuoteLinkRepair(){
 }
 async function reconcileQuoteLinks(opt){
   const dryRun=!!(opt&&opt.dryRun);
-  await ensureCollectionLoaded('quotes');
-  await ensureCollectionLoaded('settles');
-  await ensureCollectionLoaded('dailySettleRows');
   if(!quoteLinkReady()){
     if(dryRun) toast('견적·거래처 정산·일/월 정산 로드가 끝난 뒤 다시 실행하세요','error');
     else throw new Error('데이터 로드 전 저장 차단');
@@ -11552,7 +11412,6 @@ function renderCrmQuotes(){
   el.innerHTML=html;
 }
 function openCrmQuoteForm(id){
-  ensureCollectionSubs(['qt']);
   CRM_EDIT_ID=id||null;
   const d=ld();
   const q=id?(d.quotes||[]).find(x=>x.id===id&&x.crmMode===true):null;
