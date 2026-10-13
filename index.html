@@ -3073,75 +3073,29 @@ function _pruneRowsToSnap(rows, snap, sync){
   if(snap&&snap.docs) snap.docs.forEach(d=>{ if(d&&d.id!=null&&d.id!=='') live.add(d.id); });
   _pruneRowsToIds(rows, live, sync);
 }
-const _svApplyQueue={};
-const _svApplyPump={};
-const _svFirstQueued={};
-const SV_SNAP_CHUNK=500;
-function _svFinishSnapJob(key, job, rows){
-  if(job.first){
+function _svOnSnap(key, snap){
+  _svLoaded[key]=true;
+  const changes=(snap&&typeof snap.docChanges==='function')?snap.docChanges():[];
+  let rows=_svGetCache(key);
+  if(!Array.isArray(rows)){
+    rows=[];
+    _svSetCache(key, rows);
+  }
+  const index=_svEnsureIndex(key, rows);
+  const sync=_svSync[key]||(_svSync[key]=new Map());
+  if(changes.length) _applyDocChangesToRows(rows, changes, index, sync);
+  const firstSnap=!_svSnapReady[key];
+  if(firstSnap){
     _svSnapReady[key]=true;
-    if(job.liveIds) _pruneRowsToIds(rows, job.liveIds, _svSync[key]);
+    _pruneRowsToSnap(rows, snap, sync);
     _svReindex(key, rows);
   }
-  _svLoaded[key]=true;
   if(key==='pr'){
     try{ refreshRecordsSubscriptionIfProjectsChanged(); }catch(e){}
-    try{ _gsyncNoteProjectChanges(job.changes); }catch(e){}
+    try{ _gsyncNoteProjectChanges(changes); }catch(e){}
   }
   if(key==='cl'||key==='pr'){ try{ armAutoSyncOnce(); }catch(e){} }
-  if((job.changes&&job.changes.length)||job.first) scheduleRerender(SV_COL[key]||key);
-}
-function _svPump(key){
-  if(_svApplyPump[key]) return;
-  const queued=_svApplyQueue[key];
-  if(!queued||!queued.length) return;
-  _svApplyPump[key]=true;
-  const step=function(){
-    const queue=_svApplyQueue[key];
-    if(!queue||!queue.length){ _svApplyPump[key]=false; return; }
-    const job=queue[0];
-    let rows=_svGetCache(key);
-    if(!Array.isArray(rows)){
-      rows=[];
-      _svSetCache(key, rows);
-    }
-    const index=_svEnsureIndex(key, rows);
-    const sync=_svSync[key]||(_svSync[key]=new Map());
-    const t0=(typeof performance!=='undefined'?performance.now():Date.now());
-    const end=Math.min(job.index+SV_SNAP_CHUNK, job.changes.length);
-    if(job.index<end){
-      const slice=job.changes.slice(job.index, end);
-      _applyDocChangesToRows(rows, slice, index, sync);
-      if(job.liveIds){
-        slice.forEach(function(ch){
-          if(!ch||!ch.doc||ch.type==='removed') return;
-          if(ch.doc.id!=null&&ch.doc.id!=='') job.liveIds.add(ch.doc.id);
-        });
-      }
-      job.index=end;
-    }
-    perfAddSnap((typeof performance!=='undefined'?performance.now():Date.now())-t0);
-    if(job.index<job.changes.length){
-      setTimeout(step, 0);
-      return;
-    }
-    queue.shift();
-    _svFinishSnapJob(key, job, rows);
-    if(queue.length) setTimeout(step, 0);
-    else _svApplyPump[key]=false;
-  };
-  if(queued[0].changes.length>SV_SNAP_CHUNK) setTimeout(step, 0);
-  else step();
-}
-function _svOnSnap(key, snap){
-  const t0=(typeof performance!=='undefined'?performance.now():Date.now());
-  const changes=(snap&&typeof snap.docChanges==='function')?snap.docChanges():[];
-  perfAddSnap((typeof performance!=='undefined'?performance.now():Date.now())-t0);
-  const first=!_svSnapReady[key] && !_svFirstQueued[key];
-  if(first) _svFirstQueued[key]=true;
-  const job={changes:changes, index:0, first:first, liveIds:first?new Set():null};
-  (_svApplyQueue[key]||(_svApplyQueue[key]=[])).push(job);
-  _svPump(key);
+  if(changes.length||firstSnap) scheduleRerender(SV_COL[key]||key);
 }
 function _svRequireLoaded(key){
   if(!_svLoaded[key]) throw new Error('데이터 로드 전 저장 차단');
@@ -8575,7 +8529,7 @@ function renderClients(){
 // CLIENT DETAIL
 // ═══════════════════════════════════════════
 async function openDetail(cid){
-  console.time('거래처 열기');
+  if(DEBUG_PERF) console.time('거래처 열기');
   try{
   clearSheetScope();
   CUR_CLIENT=cid;
@@ -8602,7 +8556,7 @@ async function openDetail(cid){
   document.getElementById('sheet-container').innerHTML='<div style="text-align:center;padding:60px;color:var(--text3);font-size:13px">프로젝트를 선택하면 스프레드시트가 열립니다</div>';
   document.getElementById('imp-proj').innerHTML=projs.map(p=>`<option value="${p.id}">${p.name}</option>`).join('');
   }finally{
-    console.timeEnd('거래처 열기');
+    if(DEBUG_PERF) console.timeEnd('거래처 열기');
   }
 }
 function backToList(){
@@ -10572,7 +10526,7 @@ async function updateSettleFromQuote(qt){
 }
 
 async function saveQuoteForm(){
-  console.time('견적 저장');
+  if(DEBUG_PERF) console.time('견적 저장');
   try{
   const date=document.getElementById('qn-date')?.value;
   if(!date){toast('견적일자를 입력하세요','error');return;}
@@ -10628,7 +10582,7 @@ async function saveQuoteForm(){
     await saveNewQuote();
   }
   }finally{
-    console.timeEnd('견적 저장');
+    if(DEBUG_PERF) console.timeEnd('견적 저장');
   }
 }
 
@@ -13049,7 +13003,7 @@ function delExtraCol(ci){
 }
 
 async function saveSheet(){
-  console.time('시트 저장');
+  if(DEBUG_PERF) console.time('시트 저장');
   try{
   if(!SHEET_PROJ){toast('프로젝트를 선택하세요','error');return;}
   if(!guardRecordsSave()) return;
@@ -13111,7 +13065,7 @@ async function saveSheet(){
     if(saveBtn){saveBtn.disabled=false;saveBtn.textContent='💾 저장';}
   }
   }finally{
-    console.timeEnd('시트 저장');
+    if(DEBUG_PERF) console.timeEnd('시트 저장');
   }
 }
 
