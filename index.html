@@ -2026,6 +2026,7 @@ const _settingsReady = {gsync:false, monthlyCnt:false, uiCols:false};
 let _renderTimer = null;
 let _renderCols = new Set();
 const _dirtyPages=new Set();
+const _pagePainted=new Set();
 let _dirtyDetail=false;
 let _dirtyClientView=false;
 let _mainSubErrNotified = false;
@@ -2192,6 +2193,7 @@ function scheduleRerender(collectionName){
       const visible=_appVisible() && _activePageId()===pageId;
       if(visible && !typing){
         _dirtyPages.delete(key);
+        _pagePainted.add(key);
         try{ fn(); }catch(e){}
       }else if(!visible){
         markSkip(key);
@@ -5373,6 +5375,7 @@ function initApp(){
     _dirtyPages.add(active);
   }else{
     _dirtyPages.delete(active);
+    _pagePainted.add(active);
     if(active==='clients'){ renderClients(); flushDirtyClientDetail(); }
     else if(active==='export') renderExportPage();
     else if(active==='crm') renderCrmQuotes();
@@ -8470,10 +8473,19 @@ function showPage(n){
     document.getElementById('nav-admin-toggle').classList.add('active');
     openAdminMenu();
   }
-  _dirtyPages.delete(n);
   ensurePageSubscriptions(n);
   const deferCore=(n==='overview'||n==='clients'||n==='export') && !_staffCoreReady();
-  if(deferCore) _dirtyPages.add(n);
+  if(deferCore){
+    _dirtyPages.add(n);
+    return;
+  }
+  const needsPaint=!_pagePainted.has(n) || _dirtyPages.has(n);
+  if(!needsPaint){
+    if(n==='clients') flushDirtyClientDetail();
+    return;
+  }
+  _dirtyPages.delete(n);
+  _pagePainted.add(n);
   if(!deferCore && n==='overview')renderOverview();
   if(!deferCore && n==='clients'){ renderClients(); flushDirtyClientDetail(); }
   if(!deferCore && n==='export')renderExportPage();
@@ -8685,19 +8697,23 @@ async function openDetail(cid){
   console.time('거래처 열기');
   try{
   clearSheetScope();
-  unsubscribeRecords();
-  RECORDS_CLIENT_ID=null;
   CUR_CLIENT=cid;
   const d=ld(),c=d.clients.find(x=>x.id===cid);if(!c){CUR_CLIENT=null;return;}
   hide('cl-list');show('cl-detail');
   document.getElementById('det-name').textContent=c.name;
   document.getElementById('det-info').textContent=`${c.manager||''} ${c.phone?'· '+c.phone:''} · 코드: ${c.code}`;
-  try{ if(typeof subscribeRecordsForClient==='function') await subscribeRecordsForClient(cid); }catch(e){ console.error(e); }
-  if(CUR_CLIENT!==cid) return;
   _dirtyDetail=false;
+  _detailTabsClient=null;
+  if(_recordsSubClientId!==cid){
+    try{
+      if(typeof subscribeRecordsForClient==='function'){
+        Promise.resolve(subscribeRecordsForClient(cid)).catch(function(e){ console.error(e); });
+      }
+    }catch(e){ console.error(e); }
+  }
   showDTab('dash');
-  renderDetDash();renderDetProjView();renderDetQuote();renderDetSettle();renderInfoForm(c);
-  // daily 탭은 lazy render on tab click
+  renderInfoForm(c);
+  _detailTabsPainted.add('info');
   const projs=d.projects.filter(p=>p.clientId===cid);
   const sel=document.getElementById('sheet-proj-sel');
   sel.innerHTML='<option value="">선택하세요</option><option value="__all__">[전체 프로젝트]</option><option value="__new__">+ 신규 프로젝트 생성</option>'+projs.map(p=>`<option value="${p.id}">${p.name}</option>`).join('');
@@ -8715,40 +8731,65 @@ function backToList(){
   RECORDS_CLIENT_ID=null;
   hide('cl-detail');show('cl-list');CUR_CLIENT=null;
 }
+let _detailTabsClient=null;
+const _detailTabsPainted=new Set();
+function _paintDetailTab(name, fn){
+  if(_detailTabsClient!==CUR_CLIENT){
+    _detailTabsClient=CUR_CLIENT;
+    _detailTabsPainted.clear();
+  }
+  if(_detailTabsPainted.has(name)) return;
+  _detailTabsPainted.add(name);
+  fn();
+}
 function showDTab(name){
   document.querySelectorAll('[data-dtab]').forEach(t=>t.classList.toggle('active',t.dataset.dtab===name));
   // dpanel 클래스 가진 것만 토글 (dp-daily-inner 등 내부 div 제외)
   document.querySelectorAll('.dpanel[id^="dp-"]').forEach(p=>p.classList.toggle('active',p.id==='dp-'+name));
+  if(name==='dash') _paintDetailTab('dash', function(){ renderDetDash(); });
+  if(name==='projview') _paintDetailTab('projview', function(){ renderDetProjView(); });
   if(name==='quote'){
-    prefetchQuoteWriteCollections();
-    renderDetQuote();
+    ensureCollectionSubs(['qt']);
+    _paintDetailTab('quote', function(){ renderDetQuote(); });
   }
   if(name==='settle'){
     ensureCollectionSubs(['st','qt','ds']);
-    renderDetSettle();
+    _paintDetailTab('settle', function(){ renderDetSettle(); });
   }
-  if(name==='daily')renderDailyPanel('dp',CUR_CLIENT);
-  if(name==='prodstat')renderProdStat();
+  if(name==='daily') _paintDetailTab('daily', function(){ renderDailyPanel('dp',CUR_CLIENT); });
+  if(name==='prodstat') _paintDetailTab('prodstat', function(){ renderProdStat(); });
   if(name==='waysvc'){
-    const el=document.getElementById('dp-waysvc-inner');
-    if(el)el.innerHTML=buildWayServicePanelHtml();
+    _paintDetailTab('waysvc', function(){
+      const el=document.getElementById('dp-waysvc-inner');
+      if(el)el.innerHTML=buildWayServicePanelHtml();
+    });
   }
   if(name==='nblog'){
     ensureCollectionSubs(['bp']);
-    const el=document.getElementById('dp-nblog-inner');
-    if(el)renderNBlogStatus(el, CUR_CLIENT);
+    _paintDetailTab('nblog', function(){
+      const el=document.getElementById('dp-nblog-inner');
+      if(el)renderNBlogStatus(el, CUR_CLIENT);
+    });
   }
   if(name==='bloginput'){
     ensureCollectionSubs(['bp']);
-    const el=document.getElementById('dp-bloginput-inner');
-    if(el)renderBlogInputPanel(el, CUR_CLIENT);
+    _paintDetailTab('bloginput', function(){
+      const el=document.getElementById('dp-bloginput-inner');
+      if(el)renderBlogInputPanel(el, CUR_CLIENT);
+    });
   }
   if(name==='input'){
     var d=ld();
     var projs=d.projects.filter(function(p){return p.clientId===CUR_CLIENT;});
     if(typeof SHEET_PROJ!=='undefined'&&SHEET_PROJ&&(SHEET_PROJ==='__all__'||projs.some(function(p){return p.id===SHEET_PROJ;})))loadSheet(SHEET_PROJ);
   }
-   if(name==='alldata')renderDetAllData();
+  if(name==='alldata') _paintDetailTab('alldata', function(){ renderDetAllData(); });
+  if(name==='info'){
+    _paintDetailTab('info', function(){
+      const c=ld().clients.find(x=>x.id===CUR_CLIENT);
+      if(c) renderInfoForm(c);
+    });
+  }
 }
 
 // ════════════════════════════════════════════════════════
