@@ -5226,7 +5226,7 @@ function initApp(){
   setTimeout(function(){
     if(_gsyncBootArmed) return;
     _gsyncBootArmed=true;
-    setupAutoSync();
+    setupAutoSync(true);
   }, 8000);
   _perfReportWhenCoreReady();
 }
@@ -7166,7 +7166,8 @@ function armAutoSyncOnce(){
   if(_gsyncBootArmed) return;
   if(!_settingsReady.gsync || !_svLoaded.cl || !_svLoaded.pr) return;
   _gsyncBootArmed=true;
-  setupAutoSync();
+  // 로그인 직후 명단 전체를 읽으면 화면이 멈춘다. 첫 자동 실행은 10분 뒤로 둔다.
+  setupAutoSync(true);
 }
 const GSYNC_LOCK_MS = 3*60*1000;
 const GSYNC_INTERVAL_MS = 10*60*1000;
@@ -7468,6 +7469,7 @@ function _gsyncReleaseLock(){ return _gsyncMutateLock(0, true).catch(()=>{}); }
 
 let _gsyncRecCache=null;
 let _gsyncByRecv=null;
+let _gsyncRecvSeen=null;
 let _gsyncFetchedRecv=null;
 let _gsyncFetchedProj=null;
 let _gsyncNeedProj=null;
@@ -7629,33 +7631,81 @@ function _gsyncSameProduct(a,b){
   const x=normalizeText(a), y=normalizeText(b);
   return !!x && x===y;
 }
+function _gsyncBreath(){
+  return new Promise(resolve=>{
+    const ch=new MessageChannel();
+    ch.port1.onmessage=()=>{ ch.port1.close(); resolve(); };
+    ch.port2.postMessage(0);
+  });
+}
+function _gsyncSlim(rec){
+  return {
+    id: rec.id,
+    projectId: rec.projectId||'',
+    receiver: rec.receiver||'',
+    nickname: rec.nickname||'',
+    phone: rec.phone||'',
+    purchaseDate: rec.purchaseDate||'',
+    product: rec.product||'',
+    reviewUrl: rec.reviewUrl||'',
+    reviewUrlSyncedAt: rec.reviewUrlSyncedAt||''
+  };
+}
 function _gsyncEnsureIndexes(){
   if(!_gsyncRecCache) _gsyncRecCache=new Map();
   if(!_gsyncByRecv) _gsyncByRecv=new Map();
   if(!_gsyncFetchedProj) _gsyncFetchedProj=new Set();
   if(!_gsyncFetchedRecv) _gsyncFetchedRecv=new Set();
+  if(!_gsyncRecvSeen){
+    _gsyncRecvSeen=new Map();
+    _gsyncByRecv.forEach((arr, key)=>{
+      const seen=new Set();
+      (arr||[]).forEach(r=>{ if(r&&r.id) seen.add(r.id); });
+      _gsyncRecvSeen.set(key, seen);
+    });
+  }
+}
+function _gsyncReleaseRosterCache(){
+  // 매칭에 쓰는 짧은 색인은 남긴다. 지우고 다음 실행에서 다시 받으면 읽기가 5만 건 늘어난다.
+  _gsyncRecvSeen=null;
 }
 function _gsyncRemember(rec){
   _gsyncEnsureIndexes();
   if(!rec||!rec.id) return;
   const prev=_gsyncRecCache.get(rec.id);
-  const merged=prev?{...prev,...rec,id:rec.id}:{...rec,id:rec.id};
+  const merged=_gsyncSlim(prev?{...prev,...rec,id:rec.id}:{...rec,id:rec.id});
   _gsyncRecCache.set(rec.id, merged);
   const key=_gsyncNormName(merged.receiver);
   if(!key) return;
   let arr=_gsyncByRecv.get(key);
   if(!arr){ arr=[]; _gsyncByRecv.set(key, arr); }
-  const i=arr.findIndex(x=>x&&x.id===merged.id);
-  if(i>=0) arr[i]=merged; else arr.push(merged);
+  let seen=_gsyncRecvSeen.get(key);
+  if(!seen){ seen=new Set(); _gsyncRecvSeen.set(key, seen); }
+  if(seen.has(merged.id)){
+    const i=arr.findIndex(x=>x&&x.id===merged.id);
+    if(i>=0) arr[i]=merged;
+    return;
+  }
+  seen.add(merged.id);
+  arr.push(merged);
 }
 function _gsyncBuildScopeIndex(){
   const projects=PROJECTS_CACHE||[];
   const clients=CLIENTS_CACHE||[];
   const byProjName=new Map();
   const byClientName=new Map();
+  const byProjId=new Set();
+  const idsByClient=new Map();
   projects.forEach(p=>{
-    const n=_gsyncNormName(p&&p.name);
-    if(!n||!p.id) return;
+    if(!p||!p.id) return;
+    byProjId.add(String(p.id));
+    if(p.clientId){
+      const list=idsByClient.get(p.clientId)||[];
+      list.push(p.id);
+      idsByClient.set(p.clientId, list);
+    }
+    const n=_gsyncNormName(p.name);
+    if(!n) return;
     const arr=byProjName.get(n)||[];
     arr.push(p.id);
     byProjName.set(n, arr);
@@ -7663,19 +7713,18 @@ function _gsyncBuildScopeIndex(){
   clients.forEach(c=>{
     const n=_gsyncNormName(c&&c.name);
     if(!n) return;
-    const ids=projects.filter(p=>p&&p.clientId===c.id&&p.id).map(p=>p.id);
-    if(ids.length) byClientName.set(n, ids);
+    const ids=idsByClient.get(c.id);
+    if(ids&&ids.length) byClientName.set(n, ids);
   });
-  return {byProjName, byClientName};
+  return {byProjName, byClientName, byProjId};
 }
 function _gsyncAddNames(ids, raw, scope){
   const key=_gsyncNormName(raw);
   if(!key) return;
   (scope.byProjName.get(key)||[]).forEach(id=>ids.add(id));
   (scope.byClientName.get(key)||[]).forEach(id=>ids.add(id));
-  (PROJECTS_CACHE||[]).forEach(p=>{
-    if(p&&p.id&&String(p.id)===String(raw||'').trim()) ids.add(p.id);
-  });
+  const id=String(raw||'').trim();
+  if(id&&scope.byProjId&&scope.byProjId.has(id)) ids.add(id);
 }
 function _gsyncLooksLikeHeader(row){
   const text=(row||[]).map(c=>String(c||'')).join(' ');
@@ -7697,7 +7746,7 @@ function _gsyncHeaderMap(row){
   });
   return map;
 }
-function _gsyncParseSheetRows(dataRows, s, isAppsScript){
+async function _gsyncParseSheetRows(dataRows, s, isAppsScript){
   const ci=n=>Math.max(0,(Number(n)||1)-1);
   let cDate=ci(s.colDate||1);
   let cProd=ci(s.colProduct||2);
@@ -7725,6 +7774,7 @@ function _gsyncParseSheetRows(dataRows, s, isAppsScript){
   const scope=_gsyncBuildScopeIndex();
   const identity=new Set([cDate,cProd,cRecv,cUrl,cNick,cPhone,10]);
   const rows=[];
+  let stamp=performance.now();
   for(let i=start;i<dataRows.length;i++){
     const cells=dataRows[i]||[];
     const cell=idx=>idx>=0?String(cells[idx]||'').trim():'';
@@ -7747,6 +7797,7 @@ function _gsyncParseSheetRows(dataRows, s, isAppsScript){
       product: cell(cProd),
       projectIds: [...ids]
     });
+    if(performance.now()-stamp>=40){ await _gsyncBreath(); stamp=performance.now(); }
   }
   return rows;
 }
@@ -7776,6 +7827,15 @@ function _gsyncRowFetched(row){
   const key=_gsyncNormName(row.receiver);
   return !!(key&&_gsyncFetchedRecv&&_gsyncFetchedRecv.has(key));
 }
+async function _gsyncIngestSnap(snap){
+  const docs=snap&&snap.docs?snap.docs:[];
+  let stamp=performance.now();
+  for(let i=0;i<docs.length;i++){
+    const doc=docs[i];
+    _gsyncRemember({id:doc.id,...(doc.data()||{})});
+    if(performance.now()-stamp>=40){ await _gsyncBreath(); stamp=performance.now(); }
+  }
+}
 async function _gsyncFetchProjects(ids){
   _gsyncEnsureIndexes();
   const need=[];
@@ -7794,7 +7854,7 @@ async function _gsyncFetchProjects(ids){
     const snap=await db.collection('records').where('projectId','in',chunk).get();
     _gsyncBillEmpty(snap);
     chunk.forEach(id=>_gsyncFetchedProj.add(id));
-    snap.docs.forEach(doc=>_gsyncRemember({id:doc.id,...(doc.data()||{})}));
+    await _gsyncIngestSnap(snap);
   }
 }
 async function _gsyncFetchReceivers(raws){
@@ -7817,14 +7877,14 @@ async function _gsyncFetchReceivers(raws){
     const snap=await db.collection('records').where('receiver','in',chunk).get();
     _gsyncBillEmpty(snap);
     chunk.forEach(v=>_gsyncFetchedRecv.add(_gsyncNormName(v)));
-    snap.docs.forEach(doc=>_gsyncRemember({id:doc.id,...(doc.data()||{})}));
+    await _gsyncIngestSnap(snap);
   }
 }
 async function _gsyncFetchNewRecords(){
   if(!_gsyncCreatedCursor||typeof db==='undefined') return;
   const snap=await db.collection('records').where('createdAt','>',_gsyncCreatedCursor).get();
   _gsyncBillEmpty(snap);
-  snap.docs.forEach(doc=>_gsyncRemember({id:doc.id,...(doc.data()||{})}));
+  await _gsyncIngestSnap(snap);
   _gsyncCreatedCursor=new Date(Date.now()-90000).toISOString();
 }
 function _gsyncFormatResult(r){
@@ -8017,18 +8077,25 @@ async function doSync(silent=false){
     if(!Array.isArray(dataRows)) throw new Error('시트 응답에 rows 배열이 없습니다');
     await _gsyncAcquireLock(GSYNC_LOCK_MS);
 
-    const parsed=_gsyncParseSheetRows(dataRows, s, isAppsScript);
+    const parsed=await _gsyncParseSheetRows(dataRows, s, isAppsScript);
     summary.sheetRows=parsed.length;
     (RECORDS_CACHE||[]).forEach(r=>_gsyncRemember(r));
-    const urlRows=parsed.filter(r=>r.url);
+    const urlRows=[];
+    let stamp=performance.now();
+    for(let i=0;i<parsed.length;i++){
+      if(parsed[i].url) urlRows.push(parsed[i]);
+      if(performance.now()-stamp>=40){ await _gsyncBreath(); stamp=performance.now(); }
+    }
     const pending=[];
-    urlRows.forEach(row=>{
+    for(let i=0;i<urlRows.length;i++){
+      const row=urlRows[i];
       if(_gsyncRowFetched(row)){
         const hits=_gsyncCandidates(row);
-        if(hits.length===1 && String(hits[0].reviewUrl||'').trim()===row.url) return;
+        if(hits.length===1 && String(hits[0].reviewUrl||'').trim()===row.url) continue;
       }
       pending.push(row);
-    });
+      if(performance.now()-stamp>=40){ await _gsyncBreath(); stamp=performance.now(); }
+    }
     summary.targets=pending.length;
 
     fsBegin('리뷰동기화 읽기 1회');
@@ -8036,10 +8103,13 @@ async function doSync(silent=false){
       if(_gsyncCreatedCursor) await _gsyncFetchNewRecords();
       const projIds=[];
       const receivers=[];
-      pending.forEach(row=>{
+      let stamp=performance.now();
+      for(let i=0;i<pending.length;i++){
+        const row=pending[i];
         if(row.projectIds&&row.projectIds.length) row.projectIds.forEach(id=>projIds.push(id));
         else if(row.receiver) receivers.push(row.receiver);
-      });
+        if(performance.now()-stamp>=40){ await _gsyncBreath(); stamp=performance.now(); }
+      }
       await _gsyncFetchProjects(projIds);
       await _gsyncFetchReceivers(receivers);
       if(!_gsyncCreatedCursor) _gsyncCreatedCursor=new Date(Date.now()-90000).toISOString();
@@ -8050,26 +8120,27 @@ async function doSync(silent=false){
 
     const changed=[];
     const syncedAt=new Date().toISOString();
-    pending.forEach(row=>{
+    stamp=performance.now();
+    for(let i=0;i<pending.length;i++){
+      const row=pending[i];
       const hits=_gsyncCandidates(row);
       if(hits.length>1){
         summary.duplicates++;
         if(dups.length<100) dups.push(_gsyncPreviewRow(row, {count:hits.length}));
-        return;
-      }
-      if(hits.length===0){
+      } else if(hits.length===0){
         summary.unmatched++;
         if(miss.length<100) miss.push(_gsyncPreviewRow(row));
-        return;
+      } else {
+        summary.matched++;
+        const rec=hits[0];
+        const prev=String(rec.reviewUrl||'').trim();
+        if(row.url && prev!==row.url){
+          summary.updated++;
+          changed.push({id:rec.id, reviewUrl:row.url, reviewUrlSyncedAt:syncedAt, projectId:rec.projectId});
+        }
       }
-      summary.matched++;
-      const rec=hits[0];
-      const prev=String(rec.reviewUrl||'').trim();
-      if(row.url && prev!==row.url){
-        summary.updated++;
-        changed.push({id:rec.id, reviewUrl:row.url, reviewUrlSyncedAt:syncedAt, projectId:rec.projectId});
-      }
-    });
+      if(performance.now()-stamp>=40){ await _gsyncBreath(); stamp=performance.now(); }
+    }
     _gsyncMissRows=miss;
     _gsyncDupRows=dups;
     _gsyncMissTotal=summary.unmatched;
@@ -8123,6 +8194,7 @@ async function doSync(silent=false){
     return false;
   }finally{
     if(locked){ try{ await _gsyncReleaseLock(); }catch(e){} }
+    try{ _gsyncReleaseRosterCache(); }catch(e){}
     _gsyncRunning=false;
     _gsyncPaintStatus();
     _gsyncPaintLists();
