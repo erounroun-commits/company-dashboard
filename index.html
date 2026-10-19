@@ -59,6 +59,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 .page-header{margin-bottom:22px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;}
 .page-title{font-size:20px;font-weight:800;letter-spacing:-.03em;}
 .page-sub{font-size:12px;color:var(--text2);margin-top:4px;}
+.dup-col{flex:0 0 460px;width:460px;border:1px solid var(--border);border-radius:12px;background:var(--card);box-shadow:var(--sh);display:flex;flex-direction:column;max-height:calc(100vh - 210px);}
+.dup-col.hit{border:2px solid #dc2626;box-shadow:0 0 0 3px rgba(220,38,38,.16);}
+.dup-badge{display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:800;border-radius:99px;padding:2px 8px;margin-left:6px;}
+.dup-pick{position:relative;}
+.dup-pick-list{position:absolute;z-index:30;left:0;right:0;top:calc(100% + 4px);max-height:240px;overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:var(--sh2);}
+.dup-pick-item{padding:7px 10px;font-size:12px;cursor:pointer;}
+.dup-pick-item:hover{background:var(--bg2);}
+.dup-table-wrap{overflow:auto;min-height:140px;}
+.dup-row{cursor:pointer;}
+.dup-row:hover td{background:var(--bg2);}
 
 /* ── CARDS ── */
 .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:20px;box-shadow:var(--sh);}
@@ -407,6 +417,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
     <div class="sidebar-logo">⚡ WAY PROJECT<span>관리자 대시보드</span></div>
     <div class="nav-item active" onclick="showPage('overview')" data-page="overview"><span class="nav-icon">📊</span>전체 현황</div>
     <div class="nav-item" onclick="showPage('clients')" data-page="clients"><span class="nav-icon">🏢</span>거래처 관리</div>
+    <div class="nav-item nav-sub" onclick="showPage('dupcheck')" data-page="dupcheck"><span class="nav-icon" style="font-size:12px">🔎</span>스중체크</div>
     <div class="nav-item" onclick="showPage('crm')" data-page="crm"><span class="nav-icon">📇</span>CRM</div>
     <!-- 관리자 접이식 메뉴 -->
     <div class="nav-item" id="nav-admin-toggle" onclick="toggleAdminMenu()" data-page="__admin__" style="display:flex;align-items:center;justify-content:space-between">
@@ -547,6 +558,22 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- 스중체크: 여러 거래처의 수취인 참여 이력 -->
+    <div class="page" id="page-dupcheck">
+      <div class="page-header">
+        <div>
+          <div class="page-title">스중체크</div>
+          <div class="page-sub">여러 거래처의 수취인 참여 이력을 한 화면에서 확인합니다. 거래처를 선택한 뒤에만 명단을 불러옵니다.</div>
+        </div>
+        <button type="button" class="btn btn-gray btn-sm" id="dup-add-btn" onclick="dupAddColumn()">+ 칸 추가</button>
+      </div>
+      <div class="card" style="margin-bottom:14px;padding:14px 16px">
+        <label class="fl" for="dup-common-filter">공통 수취인명</label>
+        <input id="dup-common-filter" class="fi" style="max-width:360px" placeholder="모든 칸에 같은 이름으로 검색" autocomplete="off" oninput="dupOnCommonInput()" oncompositionstart="dupCommonCompose(true)" oncompositionend="dupCommonCompose(false)" />
+      </div>
+      <div id="dup-cols" style="display:flex;gap:12px;align-items:flex-start;overflow-x:auto;padding-bottom:8px"></div>
     </div>
 
     <!-- CRM -->
@@ -2500,19 +2527,23 @@ function _recordsAdminVisible(){
   const app=document.getElementById('app');
   return !!(app && !app.classList.contains('hidden'));
 }
+async function fetchClientRecordsOnce(clientId){
+  const projIds=_clientProjectIds(clientId);
+  const out=[];
+  for(let i=0;i<projIds.length;i+=30){
+    const chunk=projIds.slice(i,i+30);
+    const snap=await db.collection('records').where('projectId','in',chunk).get();
+    snap.docs.forEach(dd=>out.push({id:dd.id,...(dd.data()||{})}));
+  }
+  return out;
+}
 async function loadRecordsByClient(clientId, force){
   if(typeof db==='undefined') return;
   if(!force && RECORDS_CLIENT_ID===clientId && _svLoaded.rc) return;
   const token=++_recordsLoadToken;
   if(!clientId) return;
   try{
-    const projIds=_clientProjectIds(clientId);
-    const out=[];
-    for(let i=0;i<projIds.length;i+=30){
-      const chunk=projIds.slice(i,i+30);
-      const snap=await db.collection('records').where('projectId','in',chunk).get();
-      snap.docs.forEach(dd=>out.push({id:dd.id,...(dd.data()||{})}));
-    }
+    const out=await fetchClientRecordsOnce(clientId);
     if(token!==_recordsLoadToken) return;
     if(_recordsAdminVisible() && clientId!==CUR_CLIENT) return;
     RECORDS_CACHE=out;
@@ -8372,6 +8403,7 @@ function showPage(n){
     setTimeout(()=>document.getElementById('modal-login-id')?.focus(),100);
     return;
   }
+  if(n!=='dupcheck' && _dupReady) dupCheckOnLeave();
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));
   document.getElementById('page-'+n).classList.add('active');
@@ -8389,6 +8421,7 @@ function showPage(n){
   const needsPaint=!_pagePainted.has(n) || _dirtyPages.has(n);
   if(!needsPaint){
     if(n==='clients') flushDirtyClientDetail();
+    if(n==='dupcheck') dupResumeWaits();
     return;
   }
   _dirtyPages.delete(n);
@@ -8401,6 +8434,7 @@ function showPage(n){
   if(n==='deposit'){showDepTab('names');updateUnmatchedBadge();}
   if(n==='daily-settle')initDailySettle();
   if(n==='user-mgmt')renderUserMgmt();
+  if(n==='dupcheck') dupCheckOnEnter();
   }finally{
     const label='탭 전환 1회 ('+n+')';
     setTimeout(()=>fsEnd(label), 0);
@@ -10064,6 +10098,66 @@ function changeProjPlatform(projId, newPlatform){
   toast('플랫폼이 변경되었습니다');
 }
 
+const ALLDATA_HEADERS=['프로젝트','NO','일자','구매날짜','품명','옵션','리뷰종류','닉네임','수취인','아이디','주소','연락처','상품금액','송장번호(CJ대한통운)','계좌번호','리뷰URL'];
+function sortProjectsForAllData(projs){
+  return projs.slice().sort((a,b)=>{
+    const ao=(typeof a.order==='number'?a.order:999999);
+    const bo=(typeof b.order==='number'?b.order:999999);
+    if(ao!==bo)return ao-bo;
+    return new Date(b.createdAt||0)-new Date(a.createdAt||0);
+  });
+}
+function allDataProjectIndex(sortedProjs){
+  const projOrderIndex={};
+  const projMap={};
+  sortedProjs.forEach((p,i)=>{
+    projOrderIndex[p.id]=i;
+    projMap[p.id]=p;
+  });
+  return {projOrderIndex, projMap};
+}
+function sortRecordsForAllData(recs, projOrderIndex){
+  return recs.slice().sort((a,b)=>{
+    const pa=projOrderIndex[a.projectId]??999999;
+    const pb=projOrderIndex[b.projectId]??999999;
+    if(pa!==pb)return pa-pb;
+    const da=purchaseDateToYYYYMMDD(a.purchaseDate)||'';
+    const db=purchaseDateToYYYYMMDD(b.purchaseDate)||'';
+    if(da!==db)return da.localeCompare(db);
+    const na=Number(a.no)||0;
+    const nb=Number(b.no)||0;
+    return na-nb;
+  });
+}
+function allDataRecordCells(r, projMap){
+  const p=projMap[r.projectId];
+  return [
+    p?p.name:'',
+    r.no||'',
+    r.day||'',
+    purchaseDateToYYYYMMDD(r.purchaseDate)||r.purchaseDate||'',
+    r.product||'',
+    r.option||'',
+    r.reviewType||'',
+    r.nickname||'',
+    r.receiver||'',
+    r.email||'',
+    r.address||'',
+    r.phone||'',
+    r.amount?fmtN(r.amount):'',
+    r.tracking||'',
+    r.accountNo||'',
+    r.reviewUrl||''
+  ];
+}
+function allDataRowHtml(r, projMap){
+  const cells=allDataRecordCells(r, projMap);
+  return '<tr>'+cells.map((v,i)=>{
+    const align=(i===1||i===12)?'right':'left';
+    const extraAttr=(i===8)?' data-col="receiver"':'';
+    return '<td'+extraAttr+' style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;text-align:'+align+';white-space:nowrap">'+escHtml(String(v))+'</td>';
+  }).join('')+'</tr>';
+}
 function renderDetAllData(){
   const el=document.getElementById('dp-alldata-inner');
   if(!el)return;
@@ -10073,64 +10167,21 @@ function renderDetAllData(){
     el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">프로젝트가 없습니다</div>';
     return;
   }
-  // 프로젝트 정렬: order 우선, 같으면 최근 생성순(createdAt 내림차순)
-  const sortedProjs=projs.slice().sort((a,b)=>{
-    const ao=(typeof a.order==='number'?a.order:999999);
-    const bo=(typeof b.order==='number'?b.order:999999);
-    if(ao!==bo)return ao-bo;
-    return new Date(b.createdAt||0)-new Date(a.createdAt||0);
-  });
-  const projOrderIndex={};
-  sortedProjs.forEach((p,i)=>{projOrderIndex[p.id]=i;});
-  const projMap={};sortedProjs.forEach(p=>{projMap[p.id]=p;});
+  const sortedProjs=sortProjectsForAllData(projs);
+  const indexed=allDataProjectIndex(sortedProjs);
+  const projOrderIndex=indexed.projOrderIndex;
+  const projMap=indexed.projMap;
   const allRecs=d.records.filter(r=>projMap[r.projectId]);
   if(!allRecs.length){
     el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text3)">등록된 명단이 없습니다</div>';
     return;
   }
-  // 기존 검색어 유지
   const prevInput=document.getElementById('alldata-filter');
   const keyword=(prevInput?prevInput.value:'').trim().toLowerCase();
-  // 정렬: 프로젝트 순서 → 구매날짜 → NO
-  const sortedRecs=allRecs.slice().sort((a,b)=>{
-    const pa=projOrderIndex[a.projectId]??999999;
-    const pb=projOrderIndex[b.projectId]??999999;
-    if(pa!==pb)return pa-pb;
-    const da=purchaseDateToYYYYMMDD(a.purchaseDate)||''; 
-    const db=purchaseDateToYYYYMMDD(b.purchaseDate)||'';
-    if(da!==db)return da.localeCompare(db);
-    const na=Number(a.no)||0;
-    const nb=Number(b.no)||0;
-    return na-nb;
-  });
+  const sortedRecs=sortRecordsForAllData(allRecs, projOrderIndex);
   const filteredRecs=sortedRecs;
-  const headers=['프로젝트','NO','일자','구매날짜','품명','옵션','리뷰종류','닉네임','수취인','아이디','주소','연락처','상품금액','송장번호(CJ대한통운)','계좌번호','리뷰URL'];
-  const rowsHtml=filteredRecs.map(r=>{
-    const p=projMap[r.projectId];
-    const cells=[
-      p?p.name:'',
-      r.no||'',
-      r.day||'',
-      purchaseDateToYYYYMMDD(r.purchaseDate)||r.purchaseDate||'',
-      r.product||'',
-      r.option||'',
-      r.reviewType||'',
-      r.nickname||'',
-      r.receiver||'',
-      r.email||'',
-      r.address||'',
-      r.phone||'',
-      r.amount?fmtN(r.amount):'',
-      r.tracking||'',
-      r.accountNo||'',
-      r.reviewUrl||''
-    ];
-    return '<tr>'+cells.map((v,i)=>{
-      const align=(i===1||i===12)?'right':'left';
-      const extraAttr=(i===8)?' data-col="receiver"':'';
-      return '<td'+extraAttr+' style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;text-align:'+align+';white-space:nowrap">'+escHtml(String(v))+'</td>';
-    }).join('')+'</tr>';
-  }).join('');
+  const headers=ALLDATA_HEADERS;
+  const rowsHtml=filteredRecs.map(r=>allDataRowHtml(r, projMap)).join('');
   const totalTxt=keyword?`총 ${filteredRecs.length}건 (검색 결과)`:`총 ${sortedRecs.length}건`;
   el.innerHTML=
     '<div class="card" style="margin-bottom:12px">'+
@@ -12766,6 +12817,400 @@ function filterDetAllData(){
     const total=rows.length;
     totalSpan.textContent=kw?`총 ${visibleCount}건 (검색 결과)`:`총 ${total}건`;
   }
+}
+
+const DUP_MAX_COLS=6;
+const DUP_PAGE_SIZE=100;
+const DUP_DEBOUNCE_MS=250;
+const DUP_COMPACT_IDX=[0,3,4,8,7,9,11];
+const DUP_COMPACT_HEADERS=['프로젝트','구매날짜','품명','수취인','닉네임','아이디','연락처'];
+const DUP_DETAIL_FIELDS=[[1,'NO'],[2,'일자'],[5,'옵션'],[6,'리뷰종류'],[10,'주소'],[12,'상품금액'],[13,'송장번호'],[14,'계좌번호'],[15,'리뷰URL']];
+let _dupReady=false;
+let _dupSeq=0;
+let _dupCommonComposing=false;
+let _dupColComposing='';
+const _dupCols=[];
+const _dupCache=new Map();
+const _dupInflight=new Map();
+const _dupLoadGen=new Map();
+const _dupTimers=new Map();
+const _dupWaitTimers=new Map();
+function _dupCol(id){ return _dupCols.find(c=>c.id===id)||null; }
+function dupNormName(s){ return String(s==null?'':s).replace(/\s+/g,'').toLowerCase(); }
+function dupClock(ts){
+  const d=new Date(ts);
+  const p=n=>String(n).padStart(2,'0');
+  return p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
+}
+function dupShareLiveRecords(clientId){
+  if(RECORDS_CLIENT_ID!==clientId || !_svLoaded.rc || !Array.isArray(RECORDS_CACHE)) return null;
+  return RECORDS_CACHE.slice();
+}
+async function dupGetClientRecords(clientId, force){
+  if(!force && _dupCache.has(clientId)) return _dupCache.get(clientId);
+  if(!force){
+    const shared=dupShareLiveRecords(clientId);
+    if(shared){
+      const entry={rows:shared, fetchedAt:Date.now()};
+      _dupCache.set(clientId, entry);
+      return entry;
+    }
+    if(_dupInflight.has(clientId)) return _dupInflight.get(clientId);
+  }
+  const gen=(_dupLoadGen.get(clientId)||0)+1;
+  _dupLoadGen.set(clientId, gen);
+  const p=(async()=>{
+    const rows=await fetchClientRecordsOnce(clientId);
+    if(_dupLoadGen.get(clientId)!==gen) return _dupCache.get(clientId)||null;
+    const entry={rows, fetchedAt:Date.now()};
+    _dupCache.set(clientId, entry);
+    return entry;
+  })();
+  _dupInflight.set(clientId, p);
+  try{ return await p; }
+  finally{ if(_dupInflight.get(clientId)===p) _dupInflight.delete(clientId); }
+}
+function dupSyncAddButton(){
+  const btn=document.getElementById('dup-add-btn');
+  if(btn) btn.disabled=_dupCols.length>=DUP_MAX_COLS;
+}
+function dupColumnShell(col){
+  return '<div style="padding:10px 12px;border-bottom:1px solid var(--border)">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">'
+    +'<button type="button" class="btn btn-gray btn-sm" data-dup-act="refresh" data-dup-col="'+col.id+'">새로고침</button>'
+    +'<button type="button" class="btn btn-red btn-sm" data-dup-act="close" data-dup-col="'+col.id+'" title="칸 삭제">X</button>'
+    +'</div>'
+    +'<div class="dup-pick" id="dup-pick-'+col.id+'">'
+    +'<input id="dup-pick-q-'+col.id+'" class="fi" style="padding:7px 10px;font-size:12px" placeholder="거래처 검색 후 선택" autocomplete="off" oninput="dupOnPickInput(\''+col.id+'\')" onfocus="dupOnPickInput(\''+col.id+'\')" onclick="dupOnPickInput(\''+col.id+'\')">'
+    +'<div id="dup-pick-list-'+col.id+'" class="dup-pick-list" style="display:none"></div>'
+    +'</div>'
+    +'<input id="dup-kw-'+col.id+'" class="fi" style="margin-top:8px;padding:7px 10px;font-size:12px" placeholder="수취인명 검색" autocomplete="off" oninput="dupOnColInput(\''+col.id+'\')" oncompositionstart="dupColCompose(\''+col.id+'\',true)" oncompositionend="dupColCompose(\''+col.id+'\',false)">'
+    +'<div id="dup-meta-'+col.id+'" style="margin-top:8px;font-size:11px;color:var(--text2);line-height:1.5">거래처를 선택하세요</div>'
+    +'</div>'
+    +'<div class="dup-table-wrap" id="dup-body-'+col.id+'"><div style="padding:28px 12px;text-align:center;color:var(--text3);font-size:12px">거래처를 선택하면 명단을 불러옵니다</div></div>';
+}
+function dupAddColumn(){
+  if(_dupCols.length>=DUP_MAX_COLS){ toast('칸은 최대 '+DUP_MAX_COLS+'개까지입니다'); return; }
+  const col={id:'dup'+(_dupSeq++), clientId:'', keyword:'', limit:DUP_PAGE_SIZE, openKey:'', req:0, status:'', pending:false};
+  _dupCols.push(col);
+  const wrap=document.getElementById('dup-cols');
+  if(!wrap) return;
+  const node=document.createElement('div');
+  node.id='dup-col-'+col.id;
+  node.className='dup-col';
+  node.innerHTML=dupColumnShell(col);
+  wrap.appendChild(node);
+  dupSyncAddButton();
+}
+function dupClearWait(colId){
+  const timer=_dupWaitTimers.get(colId);
+  if(timer){ clearTimeout(timer); _dupWaitTimers.delete(colId); }
+}
+function dupShowLoading(colId){
+  const card=document.getElementById('dup-col-'+colId);
+  const meta=document.getElementById('dup-meta-'+colId);
+  const body=document.getElementById('dup-body-'+colId);
+  if(card) card.classList.remove('hit');
+  if(meta) meta.textContent='불러오는 중…';
+  if(body) body.innerHTML='<div style="padding:28px 12px;text-align:center;color:var(--text3);font-size:12px">불러오는 중…</div>';
+}
+function dupShowFetchError(colId){
+  const card=document.getElementById('dup-col-'+colId);
+  const meta=document.getElementById('dup-meta-'+colId);
+  const body=document.getElementById('dup-body-'+colId);
+  if(card) card.classList.remove('hit');
+  if(meta) meta.innerHTML='<span style="color:#dc2626;font-weight:700">조회 실패 - 새로고침</span>';
+  if(body) body.innerHTML='';
+}
+function dupArmProjectWait(colId, force){
+  dupClearWait(colId);
+  const started=Date.now();
+  const tick=()=>{
+    _dupWaitTimers.delete(colId);
+    const col=_dupCol(colId);
+    if(!col||!col.clientId||col.status!=='loading') return;
+    if(_svLoaded.pr){
+      dupLoadColumn(colId, force);
+      return;
+    }
+    if(Date.now()-started>20000){
+      col.status='error';
+      col.pending=false;
+      dupShowFetchError(colId);
+      return;
+    }
+    _dupWaitTimers.set(colId, setTimeout(tick, 300));
+  };
+  _dupWaitTimers.set(colId, setTimeout(tick, 300));
+}
+function dupRemoveColumn(colId){
+  const timer=_dupTimers.get(colId);
+  if(timer){ clearTimeout(timer); _dupTimers.delete(colId); }
+  dupClearWait(colId);
+  if(_dupColComposing===colId) _dupColComposing='';
+  const idx=_dupCols.findIndex(c=>c.id===colId);
+  if(idx>=0){
+    _dupCols[idx].req++;
+    _dupCols.splice(idx,1);
+  }
+  const node=document.getElementById('dup-col-'+colId);
+  if(node) node.remove();
+  dupSyncAddButton();
+}
+function dupRowKey(r){
+  if(r&&r.id) return String(r.id);
+  return [r&&r.projectId, r&&r.no, r&&r.receiver, r&&r.purchaseDate].join('|');
+}
+function dupClientView(clientId, rows){
+  const projs=(PROJECTS_CACHE||[]).filter(p=>p&&p.clientId===clientId);
+  const sortedProjs=sortProjectsForAllData(projs);
+  const indexed=allDataProjectIndex(sortedProjs);
+  const mine=(rows||[]).filter(r=>r&&indexed.projMap[r.projectId]);
+  return {projects:sortedProjs, projMap:indexed.projMap, sorted:sortRecordsForAllData(mine, indexed.projOrderIndex)};
+}
+function dupPaintRows(colId){
+  const col=_dupCol(colId);
+  const body=document.getElementById('dup-body-'+colId);
+  const meta=document.getElementById('dup-meta-'+colId);
+  const card=document.getElementById('dup-col-'+colId);
+  if(!col||!body||!card) return;
+  if(col.status==='loading'){ dupShowLoading(colId); return; }
+  if(col.status==='error'){ dupShowFetchError(colId); return; }
+  if(!col.clientId){
+    card.classList.remove('hit');
+    if(meta) meta.textContent='거래처를 선택하세요';
+    body.innerHTML='<div style="padding:28px 12px;text-align:center;color:var(--text3);font-size:12px">거래처를 선택하면 명단을 불러옵니다</div>';
+    return;
+  }
+  const entry=_dupCache.get(col.clientId);
+  if(!entry){
+    dupShowLoading(colId);
+    return;
+  }
+  const viewPack=dupClientView(col.clientId, entry.rows);
+  const timeHtml=' <span style="color:var(--text3)">마지막 조회 '+dupClock(entry.fetchedAt)+'</span>';
+  if(!viewPack.projects.length){
+    card.classList.remove('hit');
+    if(meta) meta.innerHTML='총 0건 / 검색결과 0건'+timeHtml;
+    body.innerHTML='<div style="padding:28px 12px;text-align:center;color:var(--text3);font-size:12px">프로젝트가 없습니다</div>';
+    return;
+  }
+  const sorted=viewPack.sorted;
+  const kwNorm=dupNormName(col.keyword);
+  let view, resultCount, more;
+  if(kwNorm){
+    view=sorted.filter(r=>dupNormName(r.receiver).includes(kwNorm));
+    resultCount=view.length;
+    more=false;
+  }else{
+    resultCount=sorted.length;
+    const start=Math.max(0, sorted.length-col.limit);
+    more=start>0;
+    view=sorted.slice(start).reverse();
+  }
+  const hit=!!kwNorm && resultCount>0;
+  card.classList.toggle('hit', hit);
+  const badge=hit?'<span class="dup-badge">참여 이력 있음 '+resultCount+'</span>':'';
+  if(meta) meta.innerHTML='총 '+sorted.length+'건 / 검색결과 '+(kwNorm?resultCount:sorted.length)+'건 '+badge+timeHtml;
+  const head='<tr>'+DUP_COMPACT_HEADERS.map(h=>'<th style="position:sticky;top:0;background:var(--bg2);border-bottom:1px solid var(--border);padding:6px 8px;font-size:11px;text-align:left;white-space:nowrap">'+h+'</th>').join('')+'</tr>';
+  const rowsHtml=view.map(r=>{
+    const key=dupRowKey(r);
+    const cells=allDataRecordCells(r, viewPack.projMap);
+    const compact=DUP_COMPACT_IDX.map(i=>cells[i]);
+    let html='<tr class="dup-row" data-dup-row="'+escHtml(key)+'" data-dup-col="'+col.id+'">'+compact.map(v=>'<td style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;white-space:nowrap">'+escHtml(String(v))+'</td>').join('')+'</tr>';
+    if(col.openKey===key){
+      const detail=DUP_DETAIL_FIELDS.map(pair=>'<div style="margin:2px 0"><b>'+pair[1]+'</b> '+escHtml(String(cells[pair[0]]||''))+'</div>').join('');
+      html+='<tr class="dup-detail"><td colspan="7" style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px;white-space:normal;background:#fff7ed">'+detail+'</td></tr>';
+    }
+    return html;
+  }).join('');
+  const empty='<tr><td colspan="7" style="padding:24px;text-align:center;color:var(--text3);font-size:12px">'+(kwNorm?'검색 결과가 없습니다':'등록된 명단이 없습니다')+'</td></tr>';
+  const moreBtn=more?'<div style="padding:8px"><button type="button" class="btn btn-gray btn-sm" data-dup-act="more" data-dup-col="'+col.id+'">더보기(+'+DUP_PAGE_SIZE+')</button></div>':'';
+  body.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:12px"><thead>'+head+'</thead><tbody>'+(rowsHtml||empty)+'</tbody></table>'+moreBtn;
+}
+function dupScheduleFilter(colId){
+  const prev=_dupTimers.get(colId);
+  if(prev) clearTimeout(prev);
+  const timer=setTimeout(()=>{
+    _dupTimers.delete(colId);
+    if(_dupColComposing===colId) return;
+    dupPaintRows(colId);
+  }, DUP_DEBOUNCE_MS);
+  _dupTimers.set(colId, timer);
+}
+function dupOnColInput(colId){
+  const col=_dupCol(colId);
+  const inp=document.getElementById('dup-kw-'+colId);
+  if(col&&inp) col.keyword=inp.value;
+  if(_dupColComposing===colId) return;
+  dupScheduleFilter(colId);
+}
+function dupColCompose(colId, on){
+  _dupColComposing=on?colId:'';
+  if(!on) dupOnColInput(colId);
+}
+function dupOnCommonInput(){
+  if(_dupCommonComposing) return;
+  const src=document.getElementById('dup-common-filter');
+  const value=src?src.value:'';
+  _dupCols.forEach(col=>{
+    col.keyword=value;
+    const inp=document.getElementById('dup-kw-'+col.id);
+    if(inp&&inp.value!==value) inp.value=value;
+    dupScheduleFilter(col.id);
+  });
+}
+function dupCommonCompose(on){
+  _dupCommonComposing=!!on;
+  if(!on) dupOnCommonInput();
+}
+function dupOnPickInput(colId){
+  const inp=document.getElementById('dup-pick-q-'+colId);
+  const list=document.getElementById('dup-pick-list-'+colId);
+  if(!inp||!list) return;
+  const q=String(inp.value||'').trim().toLowerCase();
+  const clients=(CLIENTS_CACHE||[]).slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ko'));
+  const matched=clients.filter(c=>!q || String(c.name||'').toLowerCase().includes(q));
+  const shown=matched.slice(0,40);
+  list.style.display='block';
+  list.innerHTML=shown.map(c=>'<div class="dup-pick-item" data-dup-act="pick" data-dup-col="'+colId+'" data-dup-cid="'+escHtml(c.id)+'">'+escHtml(c.name||'(이름 없음)')+'</div>').join('')
+    +(matched.length>40?'<div style="padding:6px 10px;font-size:11px;color:var(--text3)">'+matched.length+'건 중 40건 표시. 이름을 더 입력하세요</div>':'')
+    +(shown.length?'':'<div style="padding:8px 10px;font-size:12px;color:var(--text3)">해당하는 거래처가 없습니다</div>');
+}
+function dupSelectClient(colId, clientId){
+  const col=_dupCol(colId);
+  if(!col||!clientId) return;
+  col.clientId=clientId;
+  col.limit=DUP_PAGE_SIZE;
+  col.openKey='';
+  const client=(CLIENTS_CACHE||[]).find(c=>c.id===clientId);
+  const inp=document.getElementById('dup-pick-q-'+colId);
+  if(inp) inp.value=client?(client.name||''):'';
+  const list=document.getElementById('dup-pick-list-'+colId);
+  if(list) list.style.display='none';
+  dupLoadColumn(colId, false);
+}
+async function dupLoadColumn(colId, force){
+  const col=_dupCol(colId);
+  if(!col||!col.clientId) return;
+  if(!_svLoaded.pr){
+    col.status='loading';
+    col.pending=false;
+    dupShowLoading(colId);
+    dupArmProjectWait(colId, !!force);
+    return;
+  }
+  dupClearWait(colId);
+  if(col.pending && !force) return;
+  const clientId=col.clientId;
+  const req=++col.req;
+  const liveReady=RECORDS_CLIENT_ID===clientId && !!_svLoaded.rc && Array.isArray(RECORDS_CACHE);
+  const cached=!force && (_dupCache.has(clientId) || liveReady);
+  col.status=cached?'ready':'loading';
+  col.pending=!cached;
+  if(!cached) dupShowLoading(colId);
+  try{
+    const entry=await dupGetClientRecords(clientId, !!force);
+    if(!_dupCol(colId) || col.req!==req || col.clientId!==clientId) return;
+    if(!entry) return;
+    col.status='ready';
+    col.pending=false;
+    if(force){
+      _dupCols.forEach(other=>{
+        if(other.clientId!==clientId) return;
+        other.status='ready';
+        other.pending=false;
+        dupPaintRows(other.id);
+      });
+      return;
+    }
+    dupPaintRows(colId);
+  }catch(e){
+    console.error(e);
+    if(!_dupCol(colId) || col.req!==req || col.clientId!==clientId) return;
+    col.status='error';
+    col.pending=false;
+    dupShowFetchError(colId);
+  }finally{
+    if(_dupCol(colId) && col.req===req) col.pending=false;
+  }
+}
+function dupRefreshColumn(colId){
+  const col=_dupCol(colId);
+  if(!col||!col.clientId){ toast('거래처를 먼저 선택하세요'); return; }
+  dupLoadColumn(colId, true);
+}
+function dupResumeWaits(){
+  _dupCols.forEach(col=>{
+    if(col.status==='loading' && col.clientId && !col.pending) dupLoadColumn(col.id, false);
+  });
+}
+function dupMore(colId){
+  const col=_dupCol(colId);
+  if(!col) return;
+  col.limit+=DUP_PAGE_SIZE;
+  dupPaintRows(colId);
+}
+function dupToggleRow(colId, key){
+  const col=_dupCol(colId);
+  if(!col) return;
+  col.openKey=col.openKey===key?'':key;
+  dupPaintRows(colId);
+}
+function dupOnRootClick(e){
+  const actEl=e.target.closest('[data-dup-act]');
+  if(actEl){
+    const act=actEl.dataset.dupAct;
+    const colId=actEl.dataset.dupCol;
+    if(act==='pick'){
+      e.stopPropagation();
+      dupSelectClient(colId, actEl.dataset.dupCid);
+    }else if(act==='refresh'){
+      dupRefreshColumn(colId);
+    }else if(act==='close'){
+      dupRemoveColumn(colId);
+    }else if(act==='more'){
+      dupMore(colId);
+    }
+    return;
+  }
+  const row=e.target.closest('tr[data-dup-row]');
+  if(!row) return;
+  dupToggleRow(row.dataset.dupCol, row.dataset.dupRow);
+}
+function dupEnsureRoot(){
+  const root=document.getElementById('dup-cols');
+  if(root && root.dataset.bound!=='1'){
+    root.dataset.bound='1';
+    root.addEventListener('click', dupOnRootClick);
+  }
+  if(!window._dupDocClick){
+    window._dupDocClick=function(e){
+      const page=document.getElementById('page-dupcheck');
+      if(!page || !page.classList.contains('active')) return;
+      if(e.target.closest && e.target.closest('.dup-pick')) return;
+      document.querySelectorAll('.dup-pick-list').forEach(el=>{ el.style.display='none'; });
+    };
+    document.addEventListener('click', window._dupDocClick);
+  }
+}
+function dupCheckOnEnter(){
+  if(_dupReady) return;
+  _dupReady=true;
+  dupEnsureRoot();
+  dupAddColumn();
+  dupAddColumn();
+  dupAddColumn();
+}
+function dupCheckOnLeave(){
+  _dupTimers.forEach(timer=>clearTimeout(timer));
+  _dupTimers.clear();
+  _dupWaitTimers.forEach(timer=>clearTimeout(timer));
+  _dupWaitTimers.clear();
+  _dupColComposing='';
+  _dupCommonComposing=false;
+  if(!_dupReady) return;
+  _dupCols.forEach(col=>dupPaintRows(col.id));
 }
 function addSheetRow(){
   if(!SHEET_PROJ){toast('프로젝트를 선택하세요','error');return;}
