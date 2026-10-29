@@ -244,6 +244,13 @@ tr:last-child td{border-bottom:none;}
 .new-proj-bar{background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px 16px;margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
 .adot{width:6px;height:6px;border-radius:50%;background:var(--purple);display:inline-block;}
 .sep{height:1px;background:var(--border);margin:16px 0;}
+.bchk{background:#ffedd5;color:#c2410c;border:1px solid #fdba74;}
+.consult-suggest{position:absolute;z-index:40;left:0;right:0;top:calc(100% + 4px);max-height:240px;overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:var(--sh2);}
+.consult-suggest button{display:block;width:100%;text-align:left;background:none;border:none;padding:8px 12px;font-size:13px;font-family:var(--font);cursor:pointer;color:var(--text);}
+.consult-suggest button:hover{background:var(--bg2);}
+.consult-scope{display:flex;gap:14px;flex-wrap:wrap;align-items:center;}
+.consult-scope label{display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;}
+.consult-fail{background:none;border:none;padding:0;color:#dc2626;font-weight:800;font-size:12px;cursor:pointer;font-family:var(--font);}
 
 /* ── MOBILE (<= 768px) ───────────────────────────────── */
 @media (max-width: 768px){
@@ -418,6 +425,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
     <div class="nav-item active" onclick="showPage('overview')" data-page="overview"><span class="nav-icon">📊</span>전체 현황</div>
     <div class="nav-item" onclick="showPage('clients')" data-page="clients"><span class="nav-icon">🏢</span>거래처 관리</div>
     <div class="nav-item nav-sub" onclick="showPage('dupcheck')" data-page="dupcheck"><span class="nav-icon" style="font-size:12px">🔎</span>스중체크</div>
+    <div class="nav-item nav-sub" onclick="showPage('consult')" data-page="consult"><span class="nav-icon" style="font-size:12px">📒</span>상담일지</div>
     <div class="nav-item" onclick="showPage('crm')" data-page="crm"><span class="nav-icon">📇</span>CRM</div>
     <!-- 관리자 접이식 메뉴 -->
     <div class="nav-item" id="nav-admin-toggle" onclick="toggleAdminMenu()" data-page="__admin__" style="display:flex;align-items:center;justify-content:space-between">
@@ -558,6 +566,74 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
           </div>
         </div>
       </div>
+    </div>
+
+    <div class="page" id="page-consult">
+        <div class="page-header">
+          <div>
+            <div class="page-title">상담일지</div>
+            <div class="page-sub">변경사항에는 작업 실행 방식에 영향을 주는 내용만 남깁니다. 목록은 최근 50건씩 불러옵니다.</div>
+          </div>
+          <button type="button" class="btn btn-sm btn-gray" onclick="consultReload()">🔄 새로고침</button>
+        </div>
+        <div class="card" style="margin-bottom:16px">
+          <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+            <div style="flex:1;min-width:280px">
+              <div class="fg">
+                <label class="fl">거래처 검색</label>
+                <div style="position:relative" id="consult-client-wrap">
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <input class="fi" id="consult-client-q" placeholder="거래처명을 입력하세요" autocomplete="off" oninput="consultOnClientInput()" onkeydown="consultClientKey(event)" onblur="consultClientBlur()">
+                    <button type="button" class="btn btn-gray btn-sm hidden" id="consult-client-clear" onclick="consultClearClient()">선택 해제</button>
+                  </div>
+                  <div id="consult-client-chip" class="hidden" style="font-size:11px;color:var(--green);font-weight:700;margin-top:4px"></div>
+                  <div id="consult-suggest" class="consult-suggest hidden"></div>
+                </div>
+              </div>
+              <div class="fg" style="margin-bottom:10px">
+                <label class="fl">변경사항</label>
+                <textarea class="fta" id="consult-content" placeholder="작업 실행 방식에 영향을 주는 내용만 입력하세요"></textarea>
+              </div>
+              <div class="fg">
+                <label class="fl">적용범위 <span style="color:#ef4444">*</span></label>
+                <div class="consult-scope">
+                  <label><input type="radio" name="consult-scope" value="once"> 이번 프로젝트만</label>
+                  <label><input type="radio" name="consult-scope" value="always"> 계속</label>
+                  <label><input type="radio" name="consult-scope" value="check"> 확인필요</label>
+                </div>
+              </div>
+              <div id="consult-phone-box" class="hidden" style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;background:var(--bg2)">
+                <div style="font-size:12px;font-weight:800;margin-bottom:8px">유선상담</div>
+                <div class="fg"><label class="fl">진행 방식</label><textarea class="fta" id="consult-pf-progress" style="min-height:64px" placeholder="한 줄에 한 항목"></textarea></div>
+                <div class="fg"><label class="fl">업체 요청사항</label><textarea class="fta" id="consult-pf-request" style="min-height:64px" placeholder="한 줄에 한 항목"></textarea></div>
+                <div class="fg"><label class="fl">필수 진행 조건</label><textarea class="fta" id="consult-pf-required" style="min-height:64px" placeholder="한 줄에 한 항목"></textarea></div>
+                <div class="fg"><label class="fl">확인 및 회신 필요사항</label><textarea class="fta" id="consult-pf-reply" style="min-height:64px" placeholder="한 줄에 한 항목"></textarea></div>
+                <div class="fg"><label class="fl">비고</label><textarea class="fta" id="consult-pf-note" style="min-height:64px" placeholder="예: 회신 예정 시간 (한 줄에 한 항목)"></textarea></div>
+                <div class="fg" style="margin-bottom:0"><label class="fl">마무리 문구</label><textarea class="fta" id="consult-pf-closing" style="min-height:88px" placeholder="담당자 확인 필요사항 등"></textarea></div>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <button type="button" class="btn btn-blue" id="consult-save-btn" onclick="consultSave()">저장</button>
+                <button type="button" class="btn btn-gray hidden" id="consult-cancel-btn" onclick="consultCancelEdit()">취소</button>
+                <span style="font-size:11px;color:var(--text3)">Ctrl+Enter로 저장</span>
+              </div>
+            </div>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:700;white-space:nowrap;padding-top:26px;cursor:pointer">
+              <input type="checkbox" id="consult-phone" onchange="consultTogglePhone()"> 유선상담
+            </label>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title" id="consult-list-title" style="margin-bottom:10px">최근 상담일지</div>
+          <div class="tw"><table>
+            <thead><tr>
+              <th>날짜</th><th>거래처명</th><th>변경사항</th><th>적용범위</th><th>유선</th><th>작성자</th><th>관리</th>
+            </tr></thead>
+            <tbody id="consult-tbody"></tbody>
+          </table></div>
+          <div style="text-align:center;margin-top:12px">
+            <button type="button" class="btn btn-gray hidden" id="consult-more" onclick="consultLoadMore()">더보기</button>
+          </div>
+        </div>
     </div>
 
     <!-- 스중체크: 여러 거래처의 수취인 참여 이력 -->
@@ -1259,6 +1335,17 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
       <textarea class="fta" id="sms-tpl" style="min-height:130px;font-size:13px;line-height:1.7"></textarea>
     </div>
     <div class="mf"><button class="btn btn-gray" onclick="closeMd('sms')">닫기</button></div>
+  </div>
+</div>
+
+<div class="mo hidden" id="modal-consult-kakao">
+  <div class="md" style="max-width:640px">
+    <div class="mt">업체 카톡 전달 문구</div>
+    <textarea class="fta" id="consult-kakao-text" style="min-height:320px;font-size:13px;line-height:1.7" oninput="consultKakaoInput()"></textarea>
+    <div class="mf">
+      <button type="button" class="btn btn-gray" onclick="consultCloseKakao()">닫기</button>
+      <button type="button" class="btn btn-blue" onclick="consultCopyKakao()">복사하기</button>
+    </div>
   </div>
 </div>
 
@@ -2662,6 +2749,7 @@ function _gsyncDefaults(s){
   if(!out.colReceiver) out.colReceiver=4;
   if(!out.colUrl) out.colUrl=5;
   if(out.headerRows===undefined) out.headerRows=1;
+  if(typeof out.consultToken!=='string') out.consultToken='';
   // 요구사항: URL만 있으면 무조건 자동 동기화가 돌도록 강제 ON
   out.autoSync = true;
   // 자동 동기화 주기는 10분으로 고정 (저장값·백오프와 무관)
@@ -7252,10 +7340,113 @@ function doGet(e) {
       .createTextOutput(JSON.stringify({ error: err.message }))
       .setMimeType(ContentService.MimeType.JSON);
   }
+}
+
+// 상담일지 F열 반영. 리뷰 URL 동기화(doGet)와 분리되어 있다.
+function consultSheetAuthorized_(body) {
+  var expected = PropertiesService.getScriptProperties().getProperty('CONSULT_TOKEN') || '';
+  var got = body && body.token != null ? String(body.token) : '';
+  if (!expected || !got || expected.length !== got.length) return false;
+  var diff = 0;
+  for (var i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ got.charCodeAt(i);
+  return diff === 0;
+}
+
+function doPost(e) {
+  try {
+    var body = {};
+    if (e && e.postData && e.postData.contents) body = JSON.parse(e.postData.contents);
+    if (!body || body.action !== 'consultSheet') {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'unknown action' })).setMimeType(ContentService.MimeType.JSON);
+    }
+    if (!consultSheetAuthorized_(body)) {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'unauthorized' })).setMimeType(ContentService.MimeType.JSON);
+    }
+    return ContentService.createTextOutput(JSON.stringify(consultSheetWrite_(body))).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: String(err && err.message || err) })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function consultSheetNorm_(value) {
+  return String(value == null ? '' : value).replace(/\s+/g, '');
+}
+
+function consultSheetDateKey_(name) {
+  var m = String(name || '').trim().match(/^(\d{2})\.(\d{2})\.(\d{2})$/);
+  if (!m) return '';
+  return '20' + m[1] + m[2] + m[3];
+}
+
+function consultSheetRevKey_(norm) {
+  var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, norm);
+  var hex = '';
+  var chars = '0123456789abcdef';
+  for (var i = 0; i < bytes.length; i++) {
+    var v = bytes[i];
+    if (0 > v) v += 256;
+    hex += chars.charAt(Math.floor(v / 16)) + chars.charAt(v % 16);
+  }
+  return 'cRev_' + hex.substring(0, 32);
+}
+
+function consultSheetWrite_(body) {
+  var lock = LockService.getScriptLock();
+  var locked = false;
+  try {
+    lock.waitLock(30000);
+    locked = true;
+    var norm = consultSheetNorm_(body.clientName);
+    if (!norm) return { ok: false, error: '업체명이 없습니다' };
+    var syncAt = Number(body.syncAt) || 0;
+    var props = PropertiesService.getScriptProperties();
+    var revKey = consultSheetRevKey_(norm);
+    var prev = Number(props.getProperty(revKey) || 0);
+    if (syncAt && prev && prev > syncAt) return { ok: true, skipped: true, found: 0 };
+    var today = String(body.today || Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMdd'));
+    var ss = SpreadsheetApp.openById(SHEET_ID);
+    var sheets = ss.getSheets();
+    var found = 0;
+    var clear = !!body.clear || !body.text;
+    var text = clear ? '' : String(body.text || '');
+    var bg = body.hasCheck ? '#F4B183' : '#FFF2CC';
+    for (var s = 0; s < sheets.length; s++) {
+      var sh = sheets[s];
+      var key = consultSheetDateKey_(sh.getName());
+      if (!key || today > key) continue;
+      var last = sh.getLastRow();
+      if (!last) continue;
+      var vals = sh.getRange(1, 4, last, 1).getDisplayValues();
+      var hits = [];
+      for (var i = 0; i < vals.length; i++) {
+        if (consultSheetNorm_(vals[i][0]) === norm) hits.push(i + 1);
+      }
+      for (var h = 0; h < hits.length; h++) {
+        var cell = sh.getRange(hits[h], 6);
+        if (clear) {
+          cell.setValue('');
+          cell.clearFormat();
+        } else {
+          cell.setValue(text);
+          cell.setBackground(bg);
+          cell.setFontColor('#C00000');
+          cell.setFontWeight('bold');
+          cell.setWrap(true);
+        }
+        found++;
+      }
+    }
+    SpreadsheetApp.flush();
+    if (syncAt) props.setProperty(revKey, String(syncAt));
+    return { ok: true, found: found, skipped: false };
+  } finally {
+    if (locked) lock.releaseLock();
+  }
 }</pre>
           <button onclick="navigator.clipboard.writeText(document.getElementById('apps-script-code').textContent).then(()=>toast('코드 복사됨','success'))"
             style="position:absolute;top:8px;right:8px;background:#334155;color:#e2e8f0;border:none;border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer">📋 복사</button>
         </div>
+        <div style="font-size:11px;color:#065f46;margin-top:8px">상담일지 F열 반영은 doPost입니다. 배포는 배포 관리 → 기존 배포 편집 → 버전을 새 버전으로 올리세요. 웹앱 주소는 유지됩니다. 토큰은 코드에 넣지 말고 스크립트 속성 CONSULT_TOKEN에 저장합니다.</div>
       </div>
     </div>
 
@@ -7266,6 +7457,12 @@ function doGet(e) {
         placeholder="https://docs.google.com/spreadsheets/d/.../pub?gid=0&single=true&output=csv"
         value="${escHtml(s.url||'')}">
       <div style="font-size:11px;color:var(--text3);margin-top:6px">Apps Script 배포 후 생성된 웹 앱 URL (script.google.com/macros/s/...)</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">상담일지 시트 토큰</div>
+      <input id="gs-consult-token" class="inp" type="password" autocomplete="off" style="width:100%;font-family:monospace" value="${escHtml(s.consultToken||'')}">
+      <div style="font-size:11px;color:var(--text3);margin-top:6px">Apps Script 스크립트 속성 CONSULT_TOKEN과 같은 값을 저장합니다. 값이 다르면 F열 반영은 거부됩니다.</div>
     </div>
 
     <!-- 컬럼 번호 설정 -->
@@ -7356,7 +7553,8 @@ function saveGsyncSettings(){
   const headerRows=parseInt(document.getElementById('gs-header-rows')?.value)??1;
   const autoSync=document.getElementById('gs-auto')?.checked||false;
   const interval=10;
-  gsyncSave({url,colDate,colProduct,colReceiver,colUrl,colNickname,colPhone,colProject,colClient,headerRows,autoSync,interval});
+  const consultToken=(document.getElementById('gs-consult-token')?.value||'').trim();
+  gsyncSave({url,colDate,colProduct,colReceiver,colUrl,colNickname,colPhone,colProject,colClient,headerRows,autoSync,interval,consultToken});
   setupAutoSync();
   toast('시트 연동 설정 저장됨','success');
 }
@@ -8435,6 +8633,7 @@ function showPage(n){
   if(n==='daily-settle')initDailySettle();
   if(n==='user-mgmt')renderUserMgmt();
   if(n==='dupcheck') dupCheckOnEnter();
+  if(n==='consult' && !CONSULT_LOADED) consultReload();
   }finally{
     const label='탭 전환 1회 ('+n+')';
     setTimeout(()=>fsEnd(label), 0);
@@ -9639,23 +9838,7 @@ function renderDetDash(){
 
   const statsHtml=buildStatsDash(c,projs,allRecs);
 
-  const memoTag=c?.memoTag||'🙂';
-  const memoText=c?.memoText||'';
-  const memoHtml=`<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin:12px 0 14px;display:flex;gap:10px;align-items:flex-start">
-    <div style="font-size:22px;line-height:1.1" id="cl-memo-emoji">${memoTag}</div>
-    <div style="flex:1;min-width:0">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:8px">
-        <div style="font-size:11px;font-weight:700;color:var(--text2)">📝 거래처 메모</div>
-        <div style="display:flex;gap:4px;font-size:16px">
-          ${['😀','🙂','😐','😟','🚀','⚠️','✅'].map(em=>`<button class="btn btn-xs" style="padding:2px 4px;font-size:14px;min-width:0" onclick="setClientMemoEmoji('${em}')">${em}</button>`).join('')}
-        </div>
-      </div>
-      <textarea id="cl-memo-text" style="width:100%;min-height:44px;font-size:11px;padding:6px 8px;border-radius:8px;border:1px solid var(--border);background:var(--bg2);resize:vertical" placeholder="이 거래처에 대한 메모를 자유롭게 남겨주세요. (일반/관리자 공용)">`+memoText.replace(/</g,'&lt;').replace(/>/g,'&gt;')+`</textarea>
-      <div style="margin-top:6px;display:flex;justify-content:flex-end">
-        <button class="btn btn-xs btn-gray" onclick="saveClientMemo()">메모 저장</button>
-      </div>
-    </div>
-  </div>`;
+  const memoHtml=consultDashShell(c);
 
   let html=priceSec+statsHtml+memoHtml+`<div style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">프로젝트별 현황</div>`;
 
@@ -9689,6 +9872,7 @@ function renderDetDash(){
   });
   if(!projs.length)html+='<div style="text-align:center;padding:40px;color:var(--text3)">프로젝트 없음</div>';
   document.getElementById('dp-dash').innerHTML=html;
+  try{ if(c&&c.id) consultDashEnsure(c.id); }catch(e){ console.error(e); }
 }
 
 function openRequestUrl(btn){
@@ -15679,6 +15863,1042 @@ function installPerfProbes(){
   if(missed.length) console.warn('[PERF] 프로브를 못 찾은 함수: '+missed.join(', '));
   console.log('[PERF] 진단 켜짐. 끄려면 DEBUG_PERF=false 로 바꾸고 새로고침.');
 }
+// 상담일지 (consultLogs) — 거래처 실시간 구독과 분리. 최근 50건만 조회.
+const CONSULT_PAGE=50;
+let CONSULT_LOCAL=[];
+let CONSULT_SERVER=[];
+let CONSULT_FILTER=null;
+let CONSULT_CURSOR=null;
+let CONSULT_HAS_MORE=false;
+let CONSULT_LOADED=false;
+let CONSULT_LOADING=false;
+let CONSULT_REQ=0;
+let CONSULT_FLIGHT=0;
+let CONSULT_EDIT_ID=null;
+let CONSULT_WRITE_SEQ=0;
+let CONSULT_SUGGEST_ROWS=[];
+const CONSULT_TOMB=new Set();
+const CONSULT_PHONE_INPUTS=[['progress','consult-pf-progress',false],['request','consult-pf-request',false],['required','consult-pf-required',false],['reply','consult-pf-reply',false],['note','consult-pf-note',false],['closing','consult-pf-closing',true]];
+
+function consultEmptyPhone(){
+  return {progress:'',request:'',required:'',reply:'',note:'',closing:''};
+}
+function consultNormLines(s, paragraph){
+  s=String(s||'').replace(/\r\n/g,'\n').trim();
+  if(paragraph) return s;
+  return s.split('\n').map(function(x){return x.trim();}).filter(Boolean).join('\n');
+}
+function consultJsId(id){
+  return String(id).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+}
+function consultMakeSort(clientId, ms){
+  const inv=String(Math.max(0, 9999999999999-ms)).padStart(13,'0');
+  const rand=Math.random().toString(36).slice(2,6);
+  return clientId+'_'+inv+'_'+rand;
+}
+function consultMs(row){
+  if(row&&row._localMs) return row._localMs;
+  const c=row&&row.createdAt;
+  if(c&&typeof c.toMillis==='function') return c.toMillis();
+  if(c&&typeof c.toDate==='function') return c.toDate().getTime();
+  if(typeof c==='number') return c;
+  const t=Date.parse(row&&row.consultDate?row.consultDate+'T00:00:00+09:00':'');
+  return isNaN(t)?Date.now():t;
+}
+function consultEnsureSort(row){
+  const id=row.clientId||'';
+  if(row.clientSort&&row.clientSort.indexOf(id+'_')===0) return row.clientSort;
+  row.clientSort=consultMakeSort(id, row._localMs||consultMs(row));
+  return row.clientSort;
+}
+function consultKeepRow(row, seqAtStart){
+  if(!row) return false;
+  if(row._failed||row._saving||row._pendingAck) return true;
+  if(row._ackAt&&seqAtStart<row._ackAt) return true;
+  return false;
+}
+function consultFind(id){
+  return CONSULT_LOCAL.find(function(r){return r.id===id;})||CONSULT_SERVER.find(function(r){return r.id===id;});
+}
+function consultRemove(id){
+  CONSULT_LOCAL=CONSULT_LOCAL.filter(function(r){return r.id!==id;});
+  CONSULT_SERVER=CONSULT_SERVER.filter(function(r){return r.id!==id;});
+}
+function consultCanEdit(row){
+  if(!CUR_ADMIN||!row) return false;
+  if(CUR_ADMIN.role==='admin') return true;
+  const me=(CUR_ADMIN.username||'').trim();
+  return !!me&&me===(row.authorName||'').trim();
+}
+function consultMarkWrite(row){
+  row._pendingAck=true;
+  row._saving=true;
+  row._failed=false;
+  row._deleteFailed=false;
+  row._writeSeq=++CONSULT_WRITE_SEQ;
+}
+function consultConfirmClient(c){
+  if(!c||!c.id) return;
+  const same=!!(CONSULT_FILTER&&CONSULT_FILTER.id===c.id);
+  CONSULT_FILTER={id:c.id, name:c.name||''};
+  const input=document.getElementById('consult-client-q');
+  if(input) input.value=CONSULT_FILTER.name;
+  consultHideSuggest();
+  consultSyncClientUi();
+  if(!same||!CONSULT_LOADED) consultReload();
+}
+function consultClearClient(){
+  const input=document.getElementById('consult-client-q');
+  if(input) input.value='';
+  consultHideSuggest();
+  if(!CONSULT_FILTER){ consultSyncClientUi(); return; }
+  CONSULT_FILTER=null;
+  consultSyncClientUi();
+  consultReload();
+}
+function consultHideSuggest(){
+  const box=document.getElementById('consult-suggest');
+  if(box) box.classList.add('hidden');
+}
+function consultClientBlur(){
+  setTimeout(consultHideSuggest, 180);
+}
+function consultOnClientInput(){
+  const input=document.getElementById('consult-client-q');
+  const val=input?input.value:'';
+  if(CONSULT_FILTER&&val!==CONSULT_FILTER.name){
+    CONSULT_FILTER=null;
+    consultSyncClientUi();
+    consultReload();
+  }
+  consultRenderSuggest();
+}
+function consultRenderSuggest(){
+  const input=document.getElementById('consult-client-q');
+  const box=document.getElementById('consult-suggest');
+  if(!input||!box) return;
+  const q=input.value.trim().toLowerCase();
+  if(!q||(CONSULT_FILTER&&input.value===CONSULT_FILTER.name)){ consultHideSuggest(); return; }
+  const list=(CLIENTS_CACHE||[]).filter(function(c){return (c.name||'').toLowerCase().indexOf(q)>=0;})
+    .sort(function(a,b){return (a.name||'').localeCompare(b.name||'','ko');})
+    .slice(0,12);
+  CONSULT_SUGGEST_ROWS=list;
+  if(!list.length){
+    box.innerHTML='<div style="padding:8px 12px;font-size:12px;color:var(--text3)">일치하는 거래처 없음</div>';
+    box.classList.remove('hidden');
+    return;
+  }
+  box.innerHTML=list.map(function(c,i){
+    return '<button type="button" onmousedown="event.preventDefault()" onclick="consultPickSuggest('+i+')">'+escHtml(c.name||'')+'</button>';
+  }).join('');
+  box.classList.remove('hidden');
+}
+function consultPickSuggest(i){
+  const c=CONSULT_SUGGEST_ROWS[i];
+  if(c) consultConfirmClient({id:c.id, name:c.name||''});
+}
+function consultClientKey(e){
+  if(!e||e.isComposing||e.keyCode===229) return;
+  if(e.key==='Escape'){ consultHideSuggest(); return; }
+  if(e.key==='Enter'&&!(e.ctrlKey||e.metaKey)){
+    const box=document.getElementById('consult-suggest');
+    const btn=box&&!box.classList.contains('hidden')?box.querySelector('button'):null;
+    if(btn){ e.preventDefault(); btn.click(); }
+  }
+}
+function consultSyncClientUi(){
+  const clearBtn=document.getElementById('consult-client-clear');
+  const chip=document.getElementById('consult-client-chip');
+  const on=!!CONSULT_FILTER;
+  if(clearBtn) clearBtn.classList.toggle('hidden', !on);
+  if(chip){
+    chip.classList.toggle('hidden', !on);
+    chip.textContent=on?('확정: '+(CONSULT_FILTER.name||'')):'';
+  }
+}
+function consultTogglePhone(){
+  const on=!!document.getElementById('consult-phone')?.checked;
+  const box=document.getElementById('consult-phone-box');
+  if(box) box.classList.toggle('hidden', !on);
+}
+function consultSyncEditUi(){
+  const btn=document.getElementById('consult-save-btn');
+  const cancel=document.getElementById('consult-cancel-btn');
+  const editing=!!CONSULT_EDIT_ID;
+  if(btn) btn.textContent=editing?'수정 저장':'저장';
+  if(cancel) cancel.classList.toggle('hidden', !editing);
+}
+function consultSyncMore(){
+  const btn=document.getElementById('consult-more');
+  if(!btn) return;
+  btn.classList.toggle('hidden', !(CONSULT_HAS_MORE&&CONSULT_LOADED));
+  btn.disabled=!!CONSULT_LOADING;
+  btn.textContent=CONSULT_LOADING?'불러오는 중…':'더보기';
+}
+function consultResetForm(){
+  const had=!!CONSULT_FILTER;
+  CONSULT_EDIT_ID=null;
+  CONSULT_FILTER=null;
+  const q=document.getElementById('consult-client-q');
+  if(q) q.value='';
+  const content=document.getElementById('consult-content');
+  if(content) content.value='';
+  document.querySelectorAll('input[name="consult-scope"]').forEach(function(el){el.checked=false;});
+  const phone=document.getElementById('consult-phone');
+  if(phone) phone.checked=false;
+  CONSULT_PHONE_INPUTS.forEach(function(pair){
+    const el=document.getElementById(pair[1]);
+    if(el) el.value='';
+  });
+  consultHideSuggest();
+  consultTogglePhone();
+  consultSyncClientUi();
+  consultSyncEditUi();
+  if(had) consultReload();
+  else consultRender();
+}
+function consultCancelEdit(){ consultResetForm(); }
+function consultReadForm(){
+  if(!CUR_ADMIN){ toast('로그인 후 저장할 수 있습니다','error'); return null; }
+  if(!CONSULT_FILTER||!CONSULT_FILTER.id){ toast('거래처를 검색해서 선택하세요','error'); return null; }
+  const content=(document.getElementById('consult-content')?.value||'').trim();
+  if(!content){ toast('변경사항을 입력하세요','error'); return null; }
+  const scopeEl=document.querySelector('input[name="consult-scope"]:checked');
+  if(!scopeEl){ toast('적용범위를 선택하세요','error'); return null; }
+  const phoneOn=!!document.getElementById('consult-phone')?.checked;
+  const phoneFields=consultEmptyPhone();
+  if(phoneOn){
+    CONSULT_PHONE_INPUTS.forEach(function(pair){
+      phoneFields[pair[0]]=consultNormLines(document.getElementById(pair[1])?.value, pair[2]);
+    });
+  }
+  return {
+    clientId:CONSULT_FILTER.id,
+    clientName:CONSULT_FILTER.name||'',
+    content:content,
+    scope:scopeEl.value,
+    isPhone:phoneOn,
+    phoneFields:phoneFields,
+    authorName:(CUR_ADMIN.username||CUR_ADMIN.loginId||'').trim()
+  };
+}
+function consultFsPayload(row, withCreated){
+  const pf=row.phoneFields||consultEmptyPhone();
+  const data={
+    clientId:row.clientId||'',
+    clientName:row.clientName||'',
+    content:row.content||'',
+    scope:row.scope||'',
+    isPhone:!!row.isPhone,
+    phoneFields:{
+      progress:pf.progress||'',
+      request:pf.request||'',
+      required:pf.required||'',
+      reply:pf.reply||'',
+      note:pf.note||'',
+      closing:pf.closing||''
+    },
+    consultDate:row.consultDate||getKSTDate(),
+    authorName:row.authorName||'',
+    sheetSyncStatus:'pending',
+    sheetSyncNote:'',
+    clientSort:consultEnsureSort(row),
+    kakaoText:row.kakaoText||''
+  };
+  if(withCreated) data.createdAt=firebase.firestore.FieldValue.serverTimestamp();
+  return data;
+}
+function consultSetDoc(row, withCreated){
+  return db.collection('consultLogs').doc(row.id).set(consultFsPayload(row, withCreated));
+}
+function consultUpdateDoc(row){
+  const data=consultFsPayload(row, false);
+  delete data.consultDate;
+  delete data.authorName;
+  return db.collection('consultLogs').doc(row.id).update(data);
+}
+function consultFinishWrite(row, job){
+  job.then(function(){
+    row._saving=false;
+    row._pendingAck=false;
+    row._failed=false;
+    row._createdOnServer=true;
+    row._ackAt=++CONSULT_WRITE_SEQ;
+    consultRender();
+    consultDashTouch(row);
+    const prevSheetId=row._sheetPrevId||'';
+    const prevSheetName=row._sheetPrevName||'';
+    row._sheetPrevId='';
+    row._sheetPrevName='';
+    consultQueueSheetSync(row.clientId, row.clientName);
+    if(prevSheetId&&prevSheetId!==row.clientId) consultQueueSheetSync(prevSheetId, prevSheetName);
+    if(row._kakaoPending){
+      row._kakaoPending=false;
+      consultPersistKakao(row);
+    }
+  }).catch(function(err){
+    console.error('consultLogs save', err);
+    row._saving=false;
+    row._pendingAck=false;
+    row._failed=true;
+    consultRender();
+    consultDashTouch(row);
+  });
+}
+function consultSave(){
+  const fields=consultReadForm();
+  if(!fields) return;
+  if(typeof db==='undefined'||!firebase.firestore||!firebase.firestore.FieldValue){
+    toast('Firestore가 준비되지 않았습니다','error');
+    return;
+  }
+  if(CONSULT_EDIT_ID) consultSaveEdit(fields);
+  else consultCreate(fields);
+}
+function consultCreate(fields){
+  const ms=Date.now();
+  const row={
+    id:db.collection('consultLogs').doc().id,
+    clientId:fields.clientId,
+    clientName:fields.clientName,
+    content:fields.content,
+    scope:fields.scope,
+    isPhone:fields.isPhone,
+    phoneFields:fields.phoneFields,
+    consultDate:getKSTDate(),
+    createdAt:null,
+    authorName:fields.authorName,
+    sheetSyncStatus:'pending',
+    sheetSyncNote:'',
+    clientSort:consultMakeSort(fields.clientId, ms),
+    _localMs:ms,
+    _createdOnServer:false,
+    _failed:false,
+    _deleteFailed:false,
+    kakaoText:''
+  };
+  if(row.isPhone) row.kakaoText=consultBuildKakao(row);
+  consultMarkWrite(row);
+  CONSULT_LOCAL.unshift(row);
+  consultDashTouch(row);
+  consultResetForm();
+  consultFinishWrite(row, consultSetDoc(row, true));
+  if(row.isPhone) consultOpenKakao(row.id);
+}
+function consultSaveEdit(fields){
+  const row=consultFind(CONSULT_EDIT_ID);
+  if(!row){ toast('수정할 항목을 찾지 못했습니다','error'); consultResetForm(); return; }
+  if(!consultCanEdit(row)){ toast('작성자 본인 또는 관리자만 수정할 수 있습니다','error'); return; }
+  row._sheetPrevId=row.clientId;
+  row._sheetPrevName=row.clientName;
+  row.clientId=fields.clientId;
+  row.clientName=fields.clientName;
+  row.content=fields.content;
+  row.scope=fields.scope;
+  row.isPhone=fields.isPhone;
+  row.phoneFields=fields.phoneFields;
+  row.sheetSyncStatus='pending';
+  row.kakaoText=row.isPhone?consultBuildKakao(row):'';
+  if(!row.clientSort||row.clientSort.indexOf(row.clientId+'_')!==0){
+    row.clientSort=consultMakeSort(row.clientId, row._localMs||consultMs(row));
+  }
+  const created=!!row._createdOnServer;
+  consultMarkWrite(row);
+  consultDashTouch(row);
+  consultResetForm();
+  consultFinishWrite(row, created?consultUpdateDoc(row):consultSetDoc(row, true));
+  if(row.isPhone) consultOpenKakao(row.id);
+}
+function consultBeginEdit(id){
+  const row=consultFind(id);
+  if(!row) return;
+  if(row._saving){ toast('저장이 끝난 뒤 수정해 주세요','error'); return; }
+  if(!consultCanEdit(row)){ toast('작성자 본인 또는 관리자만 수정할 수 있습니다','error'); return; }
+  CONSULT_EDIT_ID=id;
+  if(row.clientId) consultConfirmClient({id:row.clientId, name:row.clientName||''});
+  const content=document.getElementById('consult-content');
+  if(content) content.value=row.content||'';
+  document.querySelectorAll('input[name="consult-scope"]').forEach(function(el){el.checked=el.value===row.scope;});
+  const phone=document.getElementById('consult-phone');
+  if(phone) phone.checked=!!row.isPhone;
+  const pf=row.phoneFields||consultEmptyPhone();
+  CONSULT_PHONE_INPUTS.forEach(function(pair){
+    const el=document.getElementById(pair[1]);
+    if(el) el.value=pf[pair[0]]||'';
+  });
+  consultTogglePhone();
+  consultSyncEditUi();
+  window.scrollTo(0,0);
+  if(content) content.focus();
+}
+function consultDelete(id){
+  const row=consultFind(id);
+  if(!row||!consultCanEdit(row)){ toast('작성자 본인 또는 관리자만 삭제할 수 있습니다','error'); return; }
+  if(row._saving){ toast('저장이 끝난 뒤 삭제해 주세요','error'); return; }
+  if(!confirm('이 상담일지를 삭제할까요?')) return;
+  if(CONSULT_EDIT_ID===id){ CONSULT_EDIT_ID=null; consultSyncEditUi(); }
+  consultRemove(id);
+  consultDashForget(id);
+  consultRender();
+  if(!row._createdOnServer) return;
+  CONSULT_TOMB.add(id);
+  db.collection('consultLogs').doc(id).delete().then(function(){
+    CONSULT_TOMB.delete(id);
+    consultQueueSheetSync(row.clientId, row.clientName);
+  }).catch(function(err){
+    console.error('consultLogs delete', err);
+    CONSULT_TOMB.delete(id);
+    row._failed=true;
+    row._deleteFailed=true;
+    CONSULT_LOCAL.unshift(row);
+    consultDashTouch(row);
+    consultRender();
+  });
+}
+function consultRetry(id){
+  const row=consultFind(id);
+  if(!row||row._saving) return;
+  if(typeof db==='undefined'){ toast('Firestore가 준비되지 않았습니다','error'); return; }
+  if(row._deleteFailed){
+    row._saving=true;
+    row._failed=false;
+    row._pendingAck=true;
+    CONSULT_TOMB.add(row.id);
+    consultRender();
+    db.collection('consultLogs').doc(row.id).delete().then(function(){
+      CONSULT_TOMB.delete(row.id);
+      consultRemove(row.id);
+      consultDashForget(row.id);
+      consultRender();
+      consultQueueSheetSync(row.clientId, row.clientName);
+    }).catch(function(err){
+      console.error('consultLogs delete', err);
+      CONSULT_TOMB.delete(row.id);
+      row._saving=false;
+      row._pendingAck=false;
+      row._failed=true;
+      row._deleteFailed=true;
+      consultRender();
+    });
+    return;
+  }
+  consultMarkWrite(row);
+  consultRender();
+  consultFinishWrite(row, row._createdOnServer?consultUpdateDoc(row):consultSetDoc(row, true));
+}
+function consultBuildQuery(append){
+  const col=db.collection('consultLogs');
+  if(CONSULT_FILTER&&CONSULT_FILTER.id){
+    const start=CONSULT_FILTER.id+'_';
+    let q=col.orderBy('clientSort');
+    if(append&&CONSULT_CURSOR) q=q.startAfter(CONSULT_CURSOR);
+    else q=q.startAt(start);
+    return q.endAt(start+'\uf8ff').limit(CONSULT_PAGE);
+  }
+  let q=col.orderBy('createdAt','desc');
+  if(append&&CONSULT_CURSOR) q=q.startAfter(CONSULT_CURSOR);
+  return q.limit(CONSULT_PAGE);
+}
+function consultRowFromDoc(doc){
+  const data=doc.data()||{};
+  const pf=data.phoneFields||{};
+  return {
+    id:doc.id,
+    clientId:data.clientId||'',
+    clientName:data.clientName||'',
+    content:data.content||'',
+    scope:data.scope||'',
+    isPhone:!!data.isPhone,
+    phoneFields:{
+      progress:pf.progress||'',
+      request:pf.request||'',
+      required:pf.required||'',
+      reply:pf.reply||'',
+      note:pf.note||'',
+      closing:pf.closing||''
+    },
+    consultDate:data.consultDate||'',
+    createdAt:data.createdAt||null,
+    authorName:data.authorName||'',
+    sheetSyncStatus:data.sheetSyncStatus||'pending',
+    sheetSyncNote:data.sheetSyncNote||'',
+    kakaoText:data.kakaoText||'',
+    clientSort:data.clientSort||'',
+    _createdOnServer:true,
+    _localMs:consultMs({createdAt:data.createdAt, consultDate:data.consultDate})
+  };
+}
+function consultApplyServer(rows, append, seqAtStart){
+  const kept=[];
+  const keptIds=new Set();
+  if(!append){
+    CONSULT_SERVER.forEach(function(r){
+      if(consultKeepRow(r, seqAtStart)&&!CONSULT_TOMB.has(r.id)){ kept.push(r); keptIds.add(r.id); }
+    });
+  }
+  const fresh=rows.filter(function(r){return !keptIds.has(r.id)&&!CONSULT_TOMB.has(r.id);});
+  if(append){
+    const ids=new Set(CONSULT_SERVER.map(function(r){return r.id;}));
+    fresh.forEach(function(r){ if(!ids.has(r.id)) CONSULT_SERVER.push(r); });
+  }else{
+    CONSULT_SERVER=kept.concat(fresh);
+  }
+  const seen=new Set(CONSULT_SERVER.map(function(r){return r.id;}));
+  CONSULT_LOCAL=CONSULT_LOCAL.filter(function(r){
+    if(CONSULT_TOMB.has(r.id)) return false;
+    if(consultKeepRow(r, seqAtStart)) return true;
+    return !seen.has(r.id);
+  });
+}
+function consultReload(){
+  const req=++CONSULT_REQ;
+  CONSULT_CURSOR=null;
+  CONSULT_HAS_MORE=false;
+  CONSULT_SERVER=CONSULT_SERVER.filter(function(r){return consultKeepRow(r, CONSULT_WRITE_SEQ)&&!CONSULT_TOMB.has(r.id);});
+  consultRender();
+  return consultFetch(req, false);
+}
+function consultLoadMore(){
+  if(!CONSULT_HAS_MORE||CONSULT_LOADING) return;
+  return consultFetch(CONSULT_REQ, true);
+}
+async function consultFetch(req, append){
+  const flight=++CONSULT_FLIGHT;
+  CONSULT_LOADING=true;
+  const seqAtStart=CONSULT_WRITE_SEQ;
+  consultSyncMore();
+  try{
+    if(typeof db==='undefined') throw new Error('firestore unavailable');
+    const snap=await consultBuildQuery(append).get();
+    if(req!==CONSULT_REQ||flight!==CONSULT_FLIGHT) return;
+    const rows=snap.docs.map(consultRowFromDoc);
+    consultApplyServer(rows, append, seqAtStart);
+    if(snap.docs.length) CONSULT_CURSOR=snap.docs[snap.docs.length-1];
+    else if(!append) CONSULT_CURSOR=null;
+    CONSULT_HAS_MORE=snap.size===CONSULT_PAGE;
+    CONSULT_LOADED=true;
+  }catch(err){
+    console.error('consultLogs load', err);
+    if(req===CONSULT_REQ) toast('상담일지를 불러오지 못했습니다','error');
+  }finally{
+    if(flight===CONSULT_FLIGHT){
+      CONSULT_LOADING=false;
+      if(req===CONSULT_REQ) consultRender();
+    }
+  }
+}
+const CONSULT_MARK_RE=/^(?:[-–—•]\s*|[\u2460-\u2473\u3251-\u325F\u32B1-\u32BF]\s*|※\s*)/;
+function consultStripMark(line){
+  let s=String(line||'').trim();
+  let prev='';
+  while(s&&s!==prev){
+    prev=s;
+    s=s.replace(CONSULT_MARK_RE,'').trim();
+  }
+  return s;
+}
+function consultTextLines(text){
+  return String(text||'').replace(/\r\n/g,'\n').split('\n').map(function(s){return consultStripMark(s);}).filter(Boolean);
+}
+function consultCircled(n){
+  if(n>=1&&n<=20) return String.fromCharCode(0x2460+n-1);
+  if(n>=21&&n<=35) return String.fromCharCode(0x3251+n-21);
+  if(n>=36&&n<=50) return String.fromCharCode(0x32B1+n-36);
+  return String(n)+'.';
+}
+function consultBuildKakao(row){
+  const pf=row&&row.phoneFields||{};
+  const blocks=[];
+  [['진행 방식',pf.progress],['업체 요청사항',pf.request],['필수 진행 조건',pf.required]].forEach(function(pair){
+    const lines=consultTextLines(pair[1]);
+    if(!lines.length) return;
+    blocks.push(pair[0]+'\n'+lines.map(function(l){return '- '+l;}).join('\n'));
+  });
+  const replies=consultTextLines(pf.reply);
+  if(replies.length){
+    blocks.push('확인 및 회신 필요사항\n'+replies.map(function(l,i){return consultCircled(i+1)+' '+l;}).join('\n'));
+  }
+  const numbered=blocks.map(function(block,i){return (i+1)+'. '+block;});
+  const notes=consultTextLines(pf.note);
+  const closing=String(pf.closing||'').replace(/\r\n/g,'\n').split('\n').map(function(s){return s.trim();}).filter(function(s){return s!=='';}).join('\n');
+  const parts=['['+((row&&row.clientName)||'')+' 업체 유선 상담 내용 공유]'];
+  if(numbered.length) parts.push(numbered.join('\n\n'));
+  if(notes.length) parts.push(notes.map(function(l){return '※ '+l;}).join('\n'));
+  if(closing) parts.push(closing);
+  return parts.join('\n\n');
+}
+let CONSULT_KAKAO_ID=null;
+let CONSULT_KAKAO_TIMER=null;
+function consultFindAnywhere(id){
+  return consultFind(id)||(CONSULT_DASH.rows||[]).find(function(r){return r.id===id;});
+}
+function consultOpenKakao(id){
+  const row=consultFindAnywhere(id);
+  if(!row) return;
+  if(!row.kakaoText) row.kakaoText=consultBuildKakao(row);
+  CONSULT_KAKAO_ID=row.id;
+  const el=document.getElementById('consult-kakao-text');
+  if(el) el.value=row.kakaoText||'';
+  openMd('consult-kakao');
+}
+function consultSyncKakaoFromModal(){
+  const el=document.getElementById('consult-kakao-text');
+  const text=el?el.value:'';
+  const row=consultFindAnywhere(CONSULT_KAKAO_ID);
+  if(!row||row.kakaoText===text) return text;
+  row.kakaoText=text;
+  consultPersistKakao(row);
+  return text;
+}
+function consultKakaoInput(){
+  clearTimeout(CONSULT_KAKAO_TIMER);
+  CONSULT_KAKAO_TIMER=setTimeout(consultSyncKakaoFromModal, 400);
+}
+function consultPersistKakao(row){
+  if(!row||typeof db==='undefined') return;
+  if(!row._createdOnServer||row._saving){ row._kakaoPending=true; return; }
+  row._kakaoPending=false;
+  db.collection('consultLogs').doc(row.id).update({kakaoText:row.kakaoText||''}).catch(function(err){
+    console.error('consultLogs kakaoText', err);
+  });
+}
+function consultCopyKakao(){
+  const text=consultSyncKakaoFromModal();
+  const done=function(){ toast('복사되었습니다'); };
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done).catch(function(){
+      try{
+        const el=document.getElementById('consult-kakao-text');
+        if(el){ el.focus(); el.select(); document.execCommand('copy'); }
+      }catch(e){}
+      done();
+    });
+    return;
+  }
+  try{
+    const el=document.getElementById('consult-kakao-text');
+    if(el){ el.focus(); el.select(); document.execCommand('copy'); }
+  }catch(e){}
+  done();
+}
+function consultCloseKakao(){
+  clearTimeout(CONSULT_KAKAO_TIMER);
+  consultSyncKakaoFromModal();
+  closeMd('consult-kakao');
+}
+const CONSULT_DASH_PAGE=10;
+let CONSULT_DASH={clientId:'', rows:[], cursor:null, hasMore:false, loaded:false, loading:false, req:0};
+function consultDashShell(c){
+  const memoText=String(c&&c.memoText||'');
+  const memoTag=String(c&&c.memoTag||'');
+  const hasMemo=!!(memoText.trim()||memoTag.trim());
+  const oldMemo=hasMemo
+    ? (memoTag?'<div style="font-size:18px;line-height:1.2">'+escHtml(memoTag)+'</div>':'')+'<div style="white-space:pre-wrap;font-size:12px;margin-top:4px">'+escHtml(memoText)+'</div>'
+    : '<div style="font-size:12px;color:var(--text3)">저장된 이전 메모가 없습니다</div>';
+  return '<div id="cl-consult-dash" style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin:12px 0 14px">'
+    +'<div style="font-size:12px;font-weight:800;margin-bottom:8px">상담일지 업데이트</div>'
+    +'<div id="cl-consult-dash-list"><div style="font-size:12px;color:var(--text3);padding:8px 0">불러오는 중…</div></div>'
+    +'<div style="text-align:center;margin-top:8px"><button type="button" class="btn btn-xs btn-gray hidden" id="cl-consult-dash-more" onclick="consultDashMore()">더보기</button></div>'
+    +'<details style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px"><summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--text2)">이전 메모 보기</summary><div style="margin-top:8px">'+oldMemo+'</div></details>'
+    +'</div>';
+}
+function consultDashEnsure(clientId){
+  if(!clientId) return;
+  if(CONSULT_DASH.clientId===clientId&&(CONSULT_DASH.loaded||CONSULT_DASH.loading)){
+    consultDashPaint();
+    return;
+  }
+  CONSULT_DASH={clientId:clientId, rows:[], cursor:null, hasMore:false, loaded:false, loading:true, req:CONSULT_DASH.req+1};
+  consultDashPaint();
+  consultDashFetch(CONSULT_DASH.req, false);
+}
+function consultDashMore(){
+  if(!CONSULT_DASH.hasMore||CONSULT_DASH.loading||!CONSULT_DASH.clientId) return;
+  CONSULT_DASH.loading=true;
+  CONSULT_DASH.req+=1;
+  consultDashPaint();
+  consultDashFetch(CONSULT_DASH.req, true);
+}
+function consultDashFetch(req, append){
+  if(typeof db==='undefined'){
+    CONSULT_DASH.loading=false;
+    CONSULT_DASH.loaded=true;
+    consultDashPaint();
+    return;
+  }
+  const clientId=CONSULT_DASH.clientId;
+  const start=clientId+'_';
+  let q=db.collection('consultLogs').orderBy('clientSort');
+  if(append&&CONSULT_DASH.cursor) q=q.startAfter(CONSULT_DASH.cursor);
+  else q=q.startAt(start);
+  q.endAt(start+'\uf8ff').limit(CONSULT_DASH_PAGE).get().then(function(snap){
+    if(req!==CONSULT_DASH.req||CONSULT_DASH.clientId!==clientId) return;
+    const fresh=snap.docs.map(consultRowFromDoc);
+    if(append){
+      const ids=new Set(CONSULT_DASH.rows.map(function(r){return r.id;}));
+      fresh.forEach(function(r){ if(!ids.has(r.id)) CONSULT_DASH.rows.push(r); });
+    }else{
+      const extras=CONSULT_LOCAL.filter(function(r){
+        return r.clientId===clientId&&!CONSULT_TOMB.has(r.id)&&(r._pendingAck||r._failed||r._saving||!r._createdOnServer);
+      });
+      const ids=new Set();
+      CONSULT_DASH.rows=[];
+      extras.concat(fresh).forEach(function(r){
+        if(ids.has(r.id)||CONSULT_TOMB.has(r.id)) return;
+        ids.add(r.id);
+        CONSULT_DASH.rows.push(r);
+      });
+    }
+    CONSULT_DASH.rows.sort(function(a,b){return consultMs(b)-consultMs(a);});
+    if(snap.docs.length) CONSULT_DASH.cursor=snap.docs[snap.docs.length-1];
+    CONSULT_DASH.hasMore=snap.size===CONSULT_DASH_PAGE;
+    CONSULT_DASH.loaded=true;
+    CONSULT_DASH.loading=false;
+    consultDashPaint();
+  }).catch(function(err){
+    console.error('consultLogs dash', err);
+    if(req!==CONSULT_DASH.req) return;
+    CONSULT_DASH.loading=false;
+    CONSULT_DASH.loaded=true;
+    consultDashPaint();
+  });
+}
+function consultDashTouch(row){
+  if(!row||!row.clientId||CONSULT_DASH.clientId!==row.clientId) return;
+  CONSULT_DASH.rows=CONSULT_DASH.rows.filter(function(r){return r.id!==row.id;});
+  if(!CONSULT_TOMB.has(row.id)) CONSULT_DASH.rows.unshift(row);
+  CONSULT_DASH.rows.sort(function(a,b){return consultMs(b)-consultMs(a);});
+  consultDashPaint();
+}
+function consultDashForget(id){
+  if(!CONSULT_DASH.rows) return;
+  CONSULT_DASH.rows=CONSULT_DASH.rows.filter(function(r){return r.id!==id;});
+  consultDashPaint();
+}
+function consultDashPaint(){
+  const list=document.getElementById('cl-consult-dash-list');
+  if(!list) return;
+  const rows=CONSULT_DASH.rows||[];
+  if(CONSULT_DASH.loading&&!rows.length){
+    list.innerHTML='<div style="font-size:12px;color:var(--text3);padding:8px 0">불러오는 중…</div>';
+  }else if(!rows.length){
+    list.innerHTML='<div style="font-size:12px;color:var(--text3);padding:8px 0">상담일지가 없습니다</div>';
+  }else{
+    list.innerHTML='<div class="tw"><table><thead><tr><th>날짜</th><th>변경사항</th><th>적용범위</th><th>유선</th><th>작성자</th></tr></thead><tbody>'
+      +rows.map(function(row){
+        const id=consultJsId(row.id);
+        const phone=row.isPhone?'<button type="button" title="카톡 문구" onclick="consultOpenKakao(\''+id+'\')" style="background:none;border:none;cursor:pointer;font-size:16px;padding:0">📞</button>':'';
+        return '<tr>'
+          +'<td style="white-space:nowrap">'+escHtml(row.consultDate||'-')+'</td>'
+          +'<td style="white-space:pre-wrap;word-break:break-word">'+escHtml(row.content||'')+'</td>'
+          +'<td>'+consultScopeBadge(row.scope)+'</td>'
+          +'<td style="text-align:center">'+phone+'</td>'
+          +'<td>'+escHtml(row.authorName||'-')+'</td>'
+          +'</tr>';
+      }).join('')
+      +'</tbody></table></div>';
+  }
+  const more=document.getElementById('cl-consult-dash-more');
+  if(more){
+    more.classList.toggle('hidden', !CONSULT_DASH.hasMore);
+    more.disabled=!!CONSULT_DASH.loading;
+    more.textContent=CONSULT_DASH.loading?'불러오는 중…':'더보기';
+  }
+}
+function consultScopeBadge(scope){
+  if(scope==='once') return '<span class="badge bb">이번 프로젝트만</span>';
+  if(scope==='always') return '<span class="badge bg">계속</span>';
+  if(scope==='check') return '<span class="badge bchk">확인필요</span>';
+  return '<span class="badge bgr">-</span>';
+}
+function consultPhoneBlock(pf){
+  const labels={progress:'진행 방식',request:'업체 요청사항',required:'필수 진행 조건',reply:'확인 및 회신 필요사항',note:'비고',closing:'마무리 문구'};
+  let body='';
+  Object.keys(labels).forEach(function(key){
+    const v=String((pf&&pf[key])||'').trim();
+    if(!v) return;
+    if(key==='closing'){
+      body+='<div style="margin-top:6px"><div style="font-size:10px;font-weight:700;color:var(--text3)">'+labels[key]+'</div><div style="white-space:pre-wrap">'+escHtml(v)+'</div></div>';
+      return;
+    }
+    const items=v.split('\n').map(function(s){return s.trim();}).filter(Boolean);
+    if(!items.length) return;
+    body+='<div style="margin-top:6px"><div style="font-size:10px;font-weight:700;color:var(--text3)">'+labels[key]+'</div><ul style="margin:2px 0 0 16px;padding:0">'+items.map(function(it){return '<li>'+escHtml(it)+'</li>';}).join('')+'</ul></div>';
+  });
+  return body;
+}
+const CONSULT_SHEET_JOBS={};
+function consultScopeSheetMark(scope){
+  if(scope==='once') return '(이번만)';
+  if(scope==='always') return '(계속)';
+  if(scope==='check') return '(확인필요)';
+  return '';
+}
+function consultSheetDateLabel(ymd, phone){
+  const m=String(ymd||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const core=m?(Number(m[2])+'/'+Number(m[3])):String(ymd||'');
+  return phone?('['+core+' 유선]'):('['+core+']');
+}
+function consultBuildSheetSummary(rows){
+  const groups=new Map();
+  (rows||[]).forEach(function(r){
+    const d=r&&r.consultDate||'';
+    if(!groups.has(d)) groups.set(d, []);
+    groups.get(d).push(r);
+  });
+  const dates=Array.from(groups.keys()).sort(function(a,b){
+    if(a===b) return 0;
+    return a<b?1:-1;
+  }).slice(0,5);
+  const included=[];
+  const lines=dates.map(function(d){
+    const items=groups.get(d).slice().sort(function(a,b){return consultMs(a)-consultMs(b);});
+    const parts=items.map(function(r){
+      const text=String(r.content||'').replace(/[\r\n]+/g,' ').trim();
+      if(!text) return '';
+      const mark=consultScopeSheetMark(r.scope);
+      return mark?(text+' '+mark):text;
+    }).filter(Boolean);
+    if(!parts.length) return '';
+    items.forEach(function(r){included.push(r);});
+    const phone=items.some(function(r){return !!r.isPhone;});
+    return consultSheetDateLabel(d, phone)+' '+parts.join(' / ');
+  }).filter(Boolean);
+  return {
+    text:lines.join('\n'),
+    hasCheck:included.some(function(r){return r.scope==='check';}),
+    clear:!lines.length
+  };
+}
+function consultSheetStatusHtml(row){
+  if(row&&row._sheetSyncing) return '<div style="font-size:11px;color:var(--text3);margin-top:4px">시트 반영 중</div>';
+  if(!row||row.sheetSyncStatus!=='failed') return '';
+  const note=row.sheetSyncNote||'시트 반영 실패';
+  return '<div style="margin-top:4px"><div style="font-size:11px;color:#b91c1c">'+escHtml(note)+'</div>'
+    +'<button type="button" class="btn btn-xs btn-gray" style="margin-top:4px" onclick="consultResendSheet(\''+consultJsId(row.id)+'\')">시트 재전송</button></div>';
+}
+function consultSetSheetSyncing(clientId, on){
+  function apply(r){ if(r&&r.clientId===clientId) r._sheetSyncing=!!on; }
+  CONSULT_LOCAL.forEach(apply);
+  CONSULT_SERVER.forEach(apply);
+  if(typeof CONSULT_DASH!=='undefined'&&CONSULT_DASH.rows) CONSULT_DASH.rows.forEach(apply);
+  consultRender();
+}
+function consultSheetStale(clientId, epoch){
+  const job=CONSULT_SHEET_JOBS[clientId];
+  return !job||job.epoch!==epoch;
+}
+async function consultLoadClientLogs(clientId){
+  const byId=new Map();
+  if(typeof db!=='undefined'&&clientId){
+    let cursor=null;
+    for(let page=0; page<20; page++){
+      let q=db.collection('consultLogs').orderBy('clientSort');
+      q=cursor?q.startAfter(cursor):q.startAt(clientId+'_');
+      const snap=await q.endAt(clientId+'_\uf8ff').limit(200).get();
+      snap.docs.forEach(function(doc){
+        if(!CONSULT_TOMB.has(doc.id)) byId.set(doc.id, consultRowFromDoc(doc));
+      });
+      if(snap.size<200||!snap.docs.length) break;
+      cursor=snap.docs[snap.docs.length-1];
+    }
+  }
+  function overlay(list){
+    (list||[]).forEach(function(r){
+      if(!r||r.clientId!==clientId||CONSULT_TOMB.has(r.id)) return;
+      if(r._failed&&!r._createdOnServer) return;
+      byId.set(r.id, r);
+    });
+  }
+  overlay(CONSULT_SERVER);
+  overlay(CONSULT_LOCAL);
+  if(typeof CONSULT_DASH!=='undefined') overlay(CONSULT_DASH.rows);
+  return Array.from(byId.values());
+}
+async function consultMarkSheetStatus(clientId, rows, status, note){
+  const noteText=note||'';
+  function apply(r){
+    if(!r||r.clientId!==clientId||CONSULT_TOMB.has(r.id)) return;
+    if(r._failed&&!r._createdOnServer) return;
+    r.sheetSyncStatus=status;
+    r.sheetSyncNote=noteText;
+  }
+  CONSULT_LOCAL.forEach(apply);
+  CONSULT_SERVER.forEach(apply);
+  if(typeof CONSULT_DASH!=='undefined'&&CONSULT_DASH.rows) CONSULT_DASH.rows.forEach(apply);
+  consultRender();
+  try{ consultDashPaint(); }catch(e){}
+  const ids=[];
+  const seen=new Set();
+  (rows||[]).forEach(function(r){
+    if(!r||!r.id||!r._createdOnServer||CONSULT_TOMB.has(r.id)||seen.has(r.id)) return;
+    seen.add(r.id);
+    ids.push(r.id);
+  });
+  if(typeof db==='undefined'||!ids.length) return;
+  for(let i=0;i<ids.length;i+=400){
+    const batch=db.batch();
+    ids.slice(i,i+400).forEach(function(id){
+      batch.update(db.collection('consultLogs').doc(id), {sheetSyncStatus:status, sheetSyncNote:noteText});
+    });
+    await batch.commit();
+  }
+}
+function consultSheetFailNote(err){
+  const msg=String(err&&err.message||'');
+  if(msg.indexOf('시트 토큰이 없습니다')>=0) return '시트 토큰이 없습니다';
+  if(msg.indexOf('unauthorized')>=0) return '시트 토큰이 맞지 않습니다';
+  return '시트 반영 실패';
+}
+async function consultPostSheet(payload){
+  const cfg=typeof gsyncLoad==='function'?gsyncLoad():{};
+  const url=String(cfg.url||'').trim();
+  const token=String(cfg.consultToken||'').trim();
+  if(!url) throw new Error('시트 URL이 없습니다');
+  if(!token) throw new Error('시트 토큰이 없습니다');
+  const body=Object.assign({}, payload, {token:token});
+  const ctrl=new AbortController();
+  const timer=setTimeout(function(){ ctrl.abort(); }, 90000);
+  try{
+    // text/plain POST는 CORS preflight 없이 응답 JSON을 읽을 수 있다.
+    const r=await fetch(url,{
+      method:'POST',
+      cache:'no-store',
+      redirect:'follow',
+      signal:ctrl.signal,
+      headers:{'Content-Type':'text/plain'},
+      body:JSON.stringify(body)
+    });
+    const text=await r.text();
+    if(!text||text.trim().charAt(0)==='<') throw new Error('시트 응답을 읽지 못했습니다');
+    const json=JSON.parse(text);
+    if(!json||json.ok!==true) throw new Error((json&&json.error)||'시트 반영 실패');
+    return json;
+  }catch(e){
+    if(e&&e.name==='AbortError') throw new Error('시트 반영 시간 초과');
+    throw e;
+  }finally{
+    clearTimeout(timer);
+  }
+}
+async function consultRunSheetSync(clientId, clientName, epoch){
+  const rows=await consultLoadClientLogs(clientId);
+  if(consultSheetStale(clientId, epoch)) return;
+  const newest=rows.slice().sort(function(a,b){return consultMs(b)-consultMs(a);})[0];
+  const name=(newest&&newest.clientName)||clientName||'';
+  const summary=consultBuildSheetSummary(rows);
+  const json=await consultPostSheet({
+    action:'consultSheet',
+    clientName:name,
+    text:summary.text,
+    hasCheck:!!summary.hasCheck,
+    clear:!!summary.clear,
+    today:getKSTDate().replace(/-/g,''),
+    syncAt:Date.now()
+  });
+  if(consultSheetStale(clientId, epoch)||(json&&json.skipped)) return;
+  if(!json.found){
+    await consultMarkSheetStatus(clientId, rows, 'failed', '시트에서 업체명을 찾지 못함');
+    toast('시트에서 업체명을 찾지 못함','error');
+    return;
+  }
+  await consultMarkSheetStatus(clientId, rows, 'done', '');
+}
+function consultQueueSheetSync(clientId, clientName){
+  if(!clientId) return;
+  let job=CONSULT_SHEET_JOBS[clientId];
+  if(!job) job=CONSULT_SHEET_JOBS[clientId]={busy:false, again:false, name:'', epoch:0};
+  job.epoch+=1;
+  if(clientName) job.name=clientName;
+  if(job.busy){ job.again=true; return; }
+  job.busy=true;
+  const run=function(){
+    const my=job.epoch;
+    consultSetSheetSyncing(clientId, true);
+    consultRunSheetSync(clientId, job.name, my).catch(function(err){
+      console.error('consult sheet', err);
+      if(consultSheetStale(clientId, my)) return;
+      return consultLoadClientLogs(clientId).then(function(rows){
+        if(consultSheetStale(clientId, my)) return;
+        const note=consultSheetFailNote(err);
+        return consultMarkSheetStatus(clientId, rows, 'failed', note);
+      }).then(function(){
+        if(!consultSheetStale(clientId, my)) toast(consultSheetFailNote(err),'error');
+      });
+    }).finally(function(){
+      if(job.again){
+        job.again=false;
+        run();
+        return;
+      }
+      job.busy=false;
+      consultSetSheetSyncing(clientId, false);
+    });
+  };
+  run();
+}
+function consultResendSheet(id){
+  const row=consultFindAnywhere(id);
+  if(!row||!row.clientId){ toast('다시 보낼 상담일지를 찾지 못했습니다','error'); return; }
+  consultQueueSheetSync(row.clientId, row.clientName);
+}
+function consultRender(){
+  const tbody=document.getElementById('consult-tbody');
+  if(!tbody) return;
+  const title=document.getElementById('consult-list-title');
+  if(title) title.textContent=CONSULT_FILTER?(CONSULT_FILTER.name+' 상담일지'):'최근 상담일지';
+  const localIds=new Set();
+  const rows=[];
+  CONSULT_LOCAL.forEach(function(r){
+    if(CONSULT_TOMB.has(r.id)) return;
+    if(CONSULT_FILTER&&r.clientId!==CONSULT_FILTER.id) return;
+    localIds.add(r.id);
+    rows.push(r);
+  });
+  CONSULT_SERVER.forEach(function(r){
+    if(localIds.has(r.id)||CONSULT_TOMB.has(r.id)) return;
+    if(CONSULT_FILTER&&r.clientId!==CONSULT_FILTER.id) return;
+    rows.push(r);
+  });
+  rows.sort(function(a,b){return consultMs(b)-consultMs(a);});
+  if(!rows.length){
+    const msg=CONSULT_LOADING?'불러오는 중…':'상담일지가 없습니다';
+    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:28px">'+msg+'</td></tr>';
+    consultSyncMore();
+    return;
+  }
+  tbody.innerHTML=rows.map(function(row){
+    const id=consultJsId(row.id);
+    const phoneBody=row.isPhone?consultPhoneBlock(row.phoneFields):'';
+    const can=consultCanEdit(row);
+    const actions=can
+      ? '<button type="button" class="btn btn-xs btn-gray" onclick="consultBeginEdit(\''+id+'\')">수정</button> <button type="button" class="btn btn-xs btn-red" onclick="consultDelete(\''+id+'\')">삭제</button>'
+      : '<span style="color:var(--text3);font-size:11px">-</span>';
+    const fail=row._failed?'<tr><td colspan="7" style="background:#fef2f2"><button type="button" class="consult-fail" onclick="consultRetry(\''+id+'\')">저장 실패 - 재시도</button></td></tr>':'';
+    const extra=phoneBody?'<tr><td colspan="7" style="background:var(--bg2);font-size:12px">'+phoneBody+'</td></tr>':'';
+    return '<tr'+(row._failed?' style="background:#fef2f2"':'')+'>'
+      +'<td style="white-space:nowrap">'+escHtml(row.consultDate||'-')+'</td>'
+      +'<td style="font-weight:700">'+escHtml(row.clientName||'-')+consultSheetStatusHtml(row)+'</td>'
+      +'<td style="white-space:pre-wrap;word-break:break-word;max-width:360px">'+escHtml(row.content||'')+'</td>'
+      +'<td>'+consultScopeBadge(row.scope)+'</td>'
+      +'<td style="text-align:center">'+(row.isPhone?'<button type="button" title="카톡 문구" onclick="consultOpenKakao(\''+id+'\')" style="background:none;border:none;cursor:pointer;font-size:16px;padding:0">📞</button>':'')+'</td>'
+      +'<td>'+escHtml(row.authorName||'-')+'</td>'
+      +'<td style="white-space:nowrap">'+actions+'</td>'
+      +'</tr>'+fail+extra;
+  }).join('');
+  consultSyncMore();
+}
+document.addEventListener('click', function(e){
+  if(e.target&&e.target.id==='modal-consult-kakao') consultSyncKakaoFromModal();
+});
+document.addEventListener('keydown', function(e){
+  if(e.key!=='Enter'||!(e.ctrlKey||e.metaKey)||e.isComposing) return;
+  const page=document.getElementById('page-consult');
+  if(!page||!page.classList.contains('active')) return;
+  e.preventDefault();
+  consultSave();
+});
+
 installPerfProbes();
 
 </script>
