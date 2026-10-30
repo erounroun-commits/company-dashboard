@@ -1,0 +1,68 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /testCollection/{docId} {
+      allow read, write: if true;
+    }
+
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    match /clients/{clientId} {
+      allow read, write: if true;
+    }
+
+    match /projects/{projectId} {
+      allow read, write: if true;
+    }
+
+    match /records/{recordId} {
+      allow read, write: if true;
+    }
+
+    match /quotes/{quoteId} {
+      allow read, write: if true;
+    }
+
+    match /settles/{id} {
+      allow read, write: if true;
+    }
+
+    match /depositHistory/{id} {
+      allow read, write: if true;
+    }
+
+    match /depositUnmatched/{id} {
+      allow read, write: if true;
+    }
+
+    match /depNames/{id} {
+      allow read, write: if true;
+    }
+
+    match /dailySettleRows/{id} {
+      allow read, write: if true;
+    }
+
+    match /bankTransactions/{id} {
+      allow read, write: if true;
+    }
+
+    match /companyExpenses/{id} {
+      allow read, write: if true;
+    }
+
+    match /settings/{docId} {
+      allow read, write: if docId in ['gsync', 'monthlyCnt', 'uiCols', 'gsyncLock'];
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+    match /blogProjects/{id} {
+      allow read, write: if true;
+    }
+  }
+}
