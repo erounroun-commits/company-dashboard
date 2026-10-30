@@ -250,6 +250,10 @@ tr:last-child td{border-bottom:none;}
 .consult-suggest button:hover{background:var(--bg2);}
 .consult-scope{display:flex;gap:14px;flex-wrap:wrap;align-items:center;}
 .consult-scope label{display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;}
+.consult-filters{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.consult-filters .fi,.consult-filters .fs{width:auto;min-width:0}
+.consult-day-card{display:block;width:100%;text-align:left;border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--bg2);cursor:pointer;font-family:var(--font);color:var(--text);margin-bottom:8px}
+.consult-day-card:hover{border-color:var(--accent)}
 .consult-fail{background:none;border:none;padding:0;color:#dc2626;font-weight:800;font-size:12px;cursor:pointer;font-family:var(--font);}
 
 /* ── MOBILE (<= 768px) ───────────────────────────────── */
@@ -622,8 +626,52 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
             </label>
           </div>
         </div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-title" style="margin-bottom:10px">일자별 상담일지</div>
+          <div class="consult-filters">
+            <button type="button" class="btn btn-gray btn-sm" onclick="consultDayShift(-1)">이전날</button>
+            <input type="date" class="fi" id="consult-day-date" aria-label="상담 날짜" onchange="consultDayLoad()">
+            <button type="button" class="btn btn-gray btn-sm" onclick="consultDayShift(1)">다음날</button>
+            <input class="fi" id="consult-day-q" placeholder="거래처 검색" autocomplete="off" oninput="consultDayRender()" style="width:160px">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;cursor:pointer"><input type="checkbox" id="consult-day-phone" onchange="consultDayRender()"> 유선만</label>
+            <select class="fs" id="consult-day-scope" aria-label="일자별 적용범위" onchange="consultDayRender()">
+              <option value="">적용범위 전체</option>
+              <option value="always">계속</option>
+              <option value="once">이번만</option>
+              <option value="check">확인필요</option>
+            </select>
+          </div>
+          <div id="consult-day-body"></div>
+        </div>
         <div class="card">
           <div class="card-title" id="consult-list-title" style="margin-bottom:10px">최근 상담일지</div>
+          <div class="consult-filters">
+            <input class="fi" id="consult-find-q" placeholder="변경사항·거래처명" autocomplete="off" oninput="consultRender()" style="width:180px">
+            <input type="date" class="fi" id="consult-find-from" aria-label="시작일" onchange="consultListQueryChanged()">
+            <span style="font-size:12px;color:var(--text3)">~</span>
+            <input type="date" class="fi" id="consult-find-to" aria-label="종료일" onchange="consultListQueryChanged()">
+            <div style="position:relative">
+              <input class="fi" id="consult-find-client" placeholder="거래처" autocomplete="off" style="width:160px" oninput="consultFindClientInput()" onkeydown="consultFindClientKey(event)" onblur="consultFindClientBlur()">
+              <div id="consult-find-suggest" class="consult-suggest hidden"></div>
+            </div>
+            <button type="button" class="btn btn-gray btn-sm hidden" id="consult-find-clear" onclick="consultFindClearClient()">선택 해제</button>
+            <select class="fs" id="consult-find-phone" aria-label="유선 필터" onchange="consultRender()">
+              <option value="">유선 전체</option>
+              <option value="phone">유선만</option>
+            </select>
+            <select class="fs" id="consult-find-scope" aria-label="적용범위 필터" onchange="consultRender()">
+              <option value="">적용범위 전체</option>
+              <option value="always">계속</option>
+              <option value="once">이번만</option>
+              <option value="check">확인필요</option>
+            </select>
+            <select class="fs" id="consult-find-done" aria-label="완료 여부" onchange="consultRender()">
+              <option value="">완료 전체</option>
+              <option value="open">이번만 미완료</option>
+              <option value="done">이번만 완료</option>
+            </select>
+          </div>
+          <div style="font-size:11px;color:var(--text3);margin:-4px 0 10px">기간·거래처를 바꾸면 50건을 다시 가져옵니다. 검색·유선·적용범위·완료는 이미 불러온 목록에서 거릅니다.</div>
           <div class="tw"><table>
             <thead><tr>
               <th>날짜</th><th>거래처명</th><th>변경사항</th><th>적용범위</th><th>유선</th><th>작성자</th><th>관리</th>
@@ -9248,7 +9296,10 @@ function showPage(n){
   if(n==='daily-settle')initDailySettle();
   if(n==='user-mgmt')renderUserMgmt();
   if(n==='dupcheck') dupCheckOnEnter();
-  if(n==='consult' && !CONSULT_LOADED) consultReload();
+  if(n==='consult'){
+    if(!CONSULT_LOADED) consultReload();
+    consultDayEnsure();
+  }
   }finally{
     const label='탭 전환 1회 ('+n+')';
     setTimeout(()=>fsEnd(label), 0);
@@ -16483,6 +16534,8 @@ const CONSULT_PAGE=50;
 let CONSULT_LOCAL=[];
 let CONSULT_SERVER=[];
 let CONSULT_FILTER=null;
+let CONSULT_FIND_CLIENT=null;
+let CONSULT_FIND_SUGGEST=[];
 let CONSULT_CURSOR=null;
 let CONSULT_HAS_MORE=false;
 let CONSULT_LOADED=false;
@@ -16917,14 +16970,33 @@ function consultRetry(id){
   consultRender();
   consultFinishWrite(row, row._createdOnServer?consultUpdateDoc(row):consultSetDoc(row, true));
 }
+function consultListDateBounds(){
+  const fromEl=document.getElementById('consult-find-from');
+  const toEl=document.getElementById('consult-find-to');
+  return {from:fromEl&&fromEl.value||'', to:toEl&&toEl.value||''};
+}
+function consultQueryClientId(){
+  if(CONSULT_FIND_CLIENT&&CONSULT_FIND_CLIENT.id) return CONSULT_FIND_CLIENT.id;
+  if(CONSULT_FILTER&&CONSULT_FILTER.id) return CONSULT_FILTER.id;
+  return '';
+}
 function consultBuildQuery(append){
   const col=db.collection('consultLogs');
-  if(CONSULT_FILTER&&CONSULT_FILTER.id){
-    const start=CONSULT_FILTER.id+'_';
+  const clientId=consultQueryClientId();
+  if(clientId){
+    const start=clientId+'_';
     let q=col.orderBy('clientSort');
     if(append&&CONSULT_CURSOR) q=q.startAfter(CONSULT_CURSOR);
     else q=q.startAt(start);
     return q.endAt(start+'\uf8ff').limit(CONSULT_PAGE);
+  }
+  const bounds=consultListDateBounds();
+  if(bounds.from||bounds.to){
+    let q=col.orderBy('consultDate','desc');
+    if(bounds.from) q=q.where('consultDate','>=', bounds.from);
+    if(bounds.to) q=q.where('consultDate','<=', bounds.to);
+    if(append&&CONSULT_CURSOR) q=q.startAfter(CONSULT_CURSOR);
+    return q.limit(CONSULT_PAGE);
   }
   let q=col.orderBy('createdAt','desc');
   if(append&&CONSULT_CURSOR) q=q.startAfter(CONSULT_CURSOR);
@@ -17004,6 +17076,9 @@ async function consultFetch(req, append){
   CONSULT_LOADING=true;
   const seqAtStart=CONSULT_WRITE_SEQ;
   consultSyncMore();
+  const fetchLabel=append?'상담일지 더보기 1회':'상담일지 목록 1회';
+  const fetchLogged=!(typeof FS_METER!=='undefined'&&FS_METER.bucket);
+  if(fetchLogged) fsBegin(fetchLabel);
   try{
     if(typeof db==='undefined') throw new Error('firestore unavailable');
     const snap=await consultBuildQuery(append).get();
@@ -17018,6 +17093,7 @@ async function consultFetch(req, append){
     console.error('consultLogs load', err);
     if(req===CONSULT_REQ) toast('상담일지를 불러오지 못했습니다','error');
   }finally{
+    if(fetchLogged) fsEnd(fetchLabel);
     if(flight===CONSULT_FLIGHT){
       CONSULT_LOADING=false;
       if(req===CONSULT_REQ){
@@ -17879,27 +17955,274 @@ function consultResendSheet(id){
   if(row._sheetSyncing) return;
   consultQueueSheetSync(row.clientId, row.clientName);
 }
+function consultListRowVisible(row){
+  const clientId=consultQueryClientId();
+  if(clientId&&row.clientId!==clientId) return false;
+  const bounds=consultListDateBounds();
+  const day=row.consultDate||'';
+  if(bounds.from&&day<bounds.from) return false;
+  if(bounds.to&&(!day||day>bounds.to)) return false;
+  const kw=(document.getElementById('consult-find-q')?.value||'').trim().toLowerCase();
+  if(kw){
+    const blob=((row.content||'')+' '+(row.clientName||'')).toLowerCase();
+    if(blob.indexOf(kw)<0) return false;
+  }
+  const phone=document.getElementById('consult-find-phone')?.value||'';
+  if(phone==='phone'&&!row.isPhone) return false;
+  const scope=document.getElementById('consult-find-scope')?.value||'';
+  if(scope&&row.scope!==scope) return false;
+  const done=document.getElementById('consult-find-done')?.value||'';
+  if(done==='done'&&!(row.scope==='once'&&row.done)) return false;
+  if(done==='open'&&!(row.scope==='once'&&!row.done)) return false;
+  return true;
+}
+function consultListQueryChanged(){
+  consultReload();
+}
+function consultFindHide(){
+  const box=document.getElementById('consult-find-suggest');
+  if(box) box.classList.add('hidden');
+}
+function consultFindSync(){
+  const btn=document.getElementById('consult-find-clear');
+  if(btn) btn.classList.toggle('hidden', !(CONSULT_FIND_CLIENT&&CONSULT_FIND_CLIENT.id));
+}
+function consultFindClientInput(){
+  const el=document.getElementById('consult-find-client');
+  const box=document.getElementById('consult-find-suggest');
+  if(!el||!box) return;
+  const val=el.value;
+  if(CONSULT_FIND_CLIENT&&val!==CONSULT_FIND_CLIENT.name){
+    CONSULT_FIND_CLIENT=null;
+    consultFindSync();
+    consultListQueryChanged();
+  }
+  const q=val.trim().toLowerCase();
+  if(!q||(CONSULT_FIND_CLIENT&&val===CONSULT_FIND_CLIENT.name)){ consultFindHide(); return; }
+  const list=(CLIENTS_CACHE||[]).filter(function(c){return (c.name||'').toLowerCase().indexOf(q)>=0;})
+    .sort(function(a,b){return (a.name||'').localeCompare(b.name||'','ko');})
+    .slice(0,12);
+  CONSULT_FIND_SUGGEST=list;
+  if(!list.length){
+    box.innerHTML='<div style="padding:8px 12px;font-size:12px;color:var(--text3)">일치하는 거래처 없음</div>';
+    box.classList.remove('hidden');
+    return;
+  }
+  box.innerHTML=list.map(function(c,i){
+    return '<button type="button" onmousedown="event.preventDefault()" onclick="consultFindPick('+i+')">'+escHtml(c.name||'')+'</button>';
+  }).join('');
+  box.classList.remove('hidden');
+}
+function consultFindPick(i){
+  const c=CONSULT_FIND_SUGGEST[i];
+  if(!c) return;
+  CONSULT_FIND_CLIENT={id:c.id, name:c.name||''};
+  const el=document.getElementById('consult-find-client');
+  if(el) el.value=c.name||'';
+  consultFindHide();
+  consultFindSync();
+  consultListQueryChanged();
+}
+function consultFindClearClient(){
+  CONSULT_FIND_CLIENT=null;
+  const el=document.getElementById('consult-find-client');
+  if(el) el.value='';
+  consultFindHide();
+  consultFindSync();
+  consultListQueryChanged();
+}
+function consultFindClientBlur(){
+  setTimeout(consultFindHide, 180);
+}
+function consultFindClientKey(e){
+  if(!e||e.isComposing||e.keyCode===229) return;
+  if(e.key==='Escape'){ consultFindHide(); return; }
+  if(e.key==='Enter'&&!(e.ctrlKey||e.metaKey)){
+    const box=document.getElementById('consult-find-suggest');
+    const btn=box&&!box.classList.contains('hidden')?box.querySelector('button'):null;
+    if(btn){ e.preventDefault(); btn.click(); }
+  }
+}
+let CONSULT_DAY='';
+let CONSULT_DAY_ROWS=[];
+let CONSULT_DAY_LOGS=null;
+let CONSULT_DAY_REQ=0;
+let CONSULT_DAY_OPEN='';
+let CONSULT_DAY_BUSY=false;
+let CONSULT_DAY_LOADED='';
+let CONSULT_DAY_FS=null;
+function consultDayAdd(ymd, delta){
+  const parts=String(ymd||getKSTDate()).split('-');
+  const dt=new Date(Date.UTC(Number(parts[0]), Number(parts[1])-1, Number(parts[2])+delta));
+  return dt.toISOString().slice(0,10);
+}
+function consultDayEnsure(){
+  const input=document.getElementById('consult-day-date');
+  if(!input) return;
+  if(!input.value) input.value=getKSTDate();
+  if(CONSULT_DAY_LOADED===input.value&&!CONSULT_DAY_BUSY) return;
+  consultDayLoad();
+}
+function consultDayShift(delta){
+  const input=document.getElementById('consult-day-date');
+  const ymd=consultDayAdd(input&&input.value, delta);
+  if(input) input.value=ymd;
+  consultDayLoad();
+}
+function consultDayLogsFor(clientId){
+  if(!CONSULT_DAY_LOGS||CONSULT_DAY_LOGS.date!==CONSULT_DAY) return [];
+  return CONSULT_DAY_LOGS.rows.filter(function(r){return r.clientId===clientId;});
+}
+function consultDayMatch(row){
+  const q=(document.getElementById('consult-day-q')?.value||'').trim().toLowerCase();
+  if(q&&(row.clientName||'').toLowerCase().indexOf(q)<0) return false;
+  const logs=consultDayLogsFor(row.clientId);
+  const phoneOn=!!row.hasPhone||logs.some(function(r){return !!r.isPhone;});
+  if(document.getElementById('consult-day-phone')?.checked&&!phoneOn) return false;
+  const scope=document.getElementById('consult-day-scope')?.value||'';
+  if(!scope) return true;
+  if((row.scopes||[]).indexOf(scope)>=0) return true;
+  return logs.some(function(r){return r.scope===scope;});
+}
+function consultDayOriginalHtml(logs){
+  if(!logs.length) return '<div style="margin-top:6px;font-size:12px;color:var(--text3)">이 날짜의 원문이 없습니다</div>';
+  return logs.slice().sort(function(a,b){return consultMs(b)-consultMs(a);}).map(function(r){
+    return '<div style="margin-top:8px;font-size:12px;white-space:pre-wrap;word-break:break-word">'
+      +consultScopeBadge(r.scope)+(r.isPhone?' <span title="유선">📞</span>':'')+(r.done&&r.scope==='once'?' <span style="color:var(--text3)">완료됨</span>':'')
+      +'<div style="margin-top:4px">'+escHtml(r.content||'')+'</div></div>';
+  }).join('');
+}
+function consultDayRender(){
+  const body=document.getElementById('consult-day-body');
+  if(!body) return;
+  if(CONSULT_DAY_BUSY&&!CONSULT_DAY_ROWS.length){
+    body.innerHTML='<div style="color:var(--text3);font-size:12px;padding:12px 0">불러오는 중…</div>';
+    return;
+  }
+  const rows=CONSULT_DAY_ROWS.filter(consultDayMatch).sort(function(a,b){
+    return (a.clientName||'').localeCompare(b.clientName||'','ko');
+  });
+  if(!rows.length){
+    body.innerHTML='<div style="color:var(--text3);font-size:12px;padding:12px 0">'+(CONSULT_DAY_ROWS.length?'조건에 맞는 상담이 없습니다':'이 날짜의 상담 요약이 없습니다')+'</div>';
+    return;
+  }
+  body.innerHTML=rows.map(function(row){
+    const logs=consultDayLogsFor(row.clientId);
+    const pending=!row.today||!row.today.length;
+    const open=CONSULT_DAY_OPEN===row.clientId;
+    const badges=(row.scopes||[]).map(consultScopeBadge).join(' ');
+    const todayHtml=pending
+      ? '<div style="margin-top:6px"><span class="badge bgr">요약 대기</span>'+consultDayOriginalHtml(logs)+'</div>'
+      : '<ul style="margin:6px 0 0 16px;padding:0;font-size:12px">'+row.today.map(function(line){return '<li>'+escHtml(line)+'</li>';}).join('')+'</ul>';
+    const extra=(!pending&&open)?consultDayOriginalHtml(logs):'';
+    return '<div class="consult-day-card" onclick="consultDayToggle(\''+consultJsId(row.clientId)+'\')">'
+      +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span style="font-weight:800">'+escHtml(row.clientName||'-')+'</span>'
+      +(row.hasPhone?'<span title="유선">📞</span>':'')
+      +badges+'</div>'
+      +todayHtml+extra+'</div>';
+  }).join('');
+}
+async function consultDayLoadLogs(req){
+  if(CONSULT_DAY_LOGS&&CONSULT_DAY_LOGS.date===CONSULT_DAY) return;
+  const ymd=CONSULT_DAY;
+  const snap=await db.collection('consultLogs').where('consultDate','==', ymd).get();
+  if(req!==CONSULT_DAY_REQ) return;
+  CONSULT_DAY_LOGS={date:ymd, rows:snap.docs.map(consultRowFromDoc)};
+}
+async function consultDayLoad(){
+  const input=document.getElementById('consult-day-date');
+  const ymd=(input&&input.value)||getKSTDate();
+  if(input&&!input.value) input.value=ymd;
+  const req=++CONSULT_DAY_REQ;
+  CONSULT_DAY=ymd;
+  CONSULT_DAY_ROWS=[];
+  CONSULT_DAY_LOGS=null;
+  CONSULT_DAY_OPEN='';
+  CONSULT_DAY_BUSY=true;
+  CONSULT_DAY_LOADED='';
+  consultDayRender();
+  const dayLabel='상담일지 일자 1회';
+  const dayOpened=!CONSULT_DAY_FS;
+  if(dayOpened){
+    fsBegin(dayLabel);
+    CONSULT_DAY_FS=FS_METER.bucket;
+  }
+  try{
+    if(typeof db==='undefined') throw new Error('firestore unavailable');
+    const snap=await db.collection('consultDaily').where('date','==', ymd).get();
+    if(req!==CONSULT_DAY_REQ) return;
+    CONSULT_DAY_ROWS=snap.docs.map(function(doc){
+      const data=doc.data()||{};
+      const prefix=ymd+'_';
+      const clientId=doc.id.indexOf(prefix)===0?doc.id.slice(prefix.length):(data.clientId||'');
+      return {
+        id:doc.id,
+        clientId:clientId,
+        clientName:data.clientName||'',
+        date:data.date||ymd,
+        today:Array.isArray(data.today)?data.today:[],
+        hasPhone:!!data.hasPhone,
+        scopes:Array.isArray(data.scopes)?data.scopes:[]
+      };
+    });
+    if(CONSULT_DAY_ROWS.some(function(row){return !row.today.length;})) await consultDayLoadLogs(req);
+    if(req===CONSULT_DAY_REQ) CONSULT_DAY_LOADED=ymd;
+  }catch(err){
+    console.error('consultDaily', err);
+    if(req===CONSULT_DAY_REQ) toast('일자별 상담일지를 불러오지 못했습니다','error');
+  }finally{
+    if(req===CONSULT_DAY_REQ&&CONSULT_DAY_FS&&FS_METER.bucket===CONSULT_DAY_FS){
+      fsEnd(dayLabel);
+      CONSULT_DAY_FS=null;
+    }
+    if(req===CONSULT_DAY_REQ){
+      CONSULT_DAY_BUSY=false;
+      consultDayRender();
+    }
+  }
+}
+async function consultDayToggle(clientId){
+  if(!clientId) return;
+  CONSULT_DAY_OPEN=CONSULT_DAY_OPEN===clientId?'':clientId;
+  if(CONSULT_DAY_OPEN&&(!CONSULT_DAY_LOGS||CONSULT_DAY_LOGS.date!==CONSULT_DAY)){
+    const req=CONSULT_DAY_REQ;
+    fsBegin('상담일지 일자 원문 1회');
+    try{
+      await consultDayLoadLogs(req);
+    }catch(err){
+      console.error('consult day logs', err);
+      toast('원문을 불러오지 못했습니다','error');
+    }finally{
+      fsEnd('상담일지 일자 원문 1회');
+    }
+  }
+  consultDayRender();
+}
 function consultRender(){
   const tbody=document.getElementById('consult-tbody');
   if(!tbody) return;
   const title=document.getElementById('consult-list-title');
-  if(title) title.textContent=CONSULT_FILTER?(CONSULT_FILTER.name+' 상담일지'):'최근 상담일지';
+  if(title){
+    if(CONSULT_FIND_CLIENT&&CONSULT_FIND_CLIENT.name) title.textContent=CONSULT_FIND_CLIENT.name+' 상담일지';
+    else title.textContent=CONSULT_FILTER?(CONSULT_FILTER.name+' 상담일지'):'최근 상담일지';
+  }
   const localIds=new Set();
   const rows=[];
   CONSULT_LOCAL.forEach(function(r){
     if(CONSULT_TOMB.has(r.id)) return;
-    if(CONSULT_FILTER&&r.clientId!==CONSULT_FILTER.id) return;
+    if(!consultListRowVisible(r)) return;
     localIds.add(r.id);
     rows.push(r);
   });
   CONSULT_SERVER.forEach(function(r){
     if(localIds.has(r.id)||CONSULT_TOMB.has(r.id)) return;
-    if(CONSULT_FILTER&&r.clientId!==CONSULT_FILTER.id) return;
+    if(!consultListRowVisible(r)) return;
     rows.push(r);
   });
   rows.sort(function(a,b){return consultMs(b)-consultMs(a);});
   if(!rows.length){
-    const msg=CONSULT_LOADING?'불러오는 중…':'상담일지가 없습니다';
+    const anyLoaded=CONSULT_LOCAL.length||CONSULT_SERVER.length;
+    const msg=CONSULT_LOADING?'불러오는 중…':(anyLoaded?'조건에 맞는 상담일지가 없습니다':'상담일지가 없습니다');
     tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:28px">'+msg+'</td></tr>';
     consultArmSheetTimer(rows);
     consultSyncMore();
