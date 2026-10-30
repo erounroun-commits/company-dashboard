@@ -7322,7 +7322,7 @@ function renderGsyncSettings(){
       <div style="margin-top:14px">
         <div style="font-size:12px;font-weight:700;margin-bottom:6px;color:#065f46">📋 Apps Script 코드 (복사해서 붙여넣으세요)</div>
         <div style="position:relative">
-          <pre id="apps-script-code" style="background:#1e293b;color:#e2e8f0;padding:14px;border-radius:8px;font-size:11px;line-height:1.7;overflow-x:auto;margin:0;white-space:pre">const CONSULT_VERSION = '2026-10-30-1510';
+          <pre id="apps-script-code" style="background:#1e293b;color:#e2e8f0;padding:14px;border-radius:8px;font-size:11px;line-height:1.7;overflow-x:auto;margin:0;white-space:pre">const CONSULT_VERSION = '2026-10-30-1545';
 const SHEET_ID = '136a4WUg1ol2sbbi-dupFdAZkR1gUn89wLyZaSuLUV2U';
 const SHEET_NAME = '통합결과'; // 시트 탭 이름
 
@@ -7365,12 +7365,13 @@ function doPost(e) {
   try {
     var body = {};
     if (e && e.postData && e.postData.contents) body = JSON.parse(e.postData.contents);
-    if (!body || body.action !== 'consultSheet') {
+    if (!body || (body.action !== 'consultSheet' && body.action !== 'consultCleanup')) {
       return reply({ ok: false, written: 0, sheetCount: 0, error: 'unknown', message: 'action이 consultSheet가 아닙니다' });
     }
     if (!consultSheetAuthorized_(body)) {
       return reply({ ok: false, written: 0, sheetCount: 0, error: 'unauthorized', message: 'CONSULT_TOKEN이 없거나 일치하지 않습니다' });
     }
+    if (body.action === 'consultCleanup') return reply(cleanupConsultCells(body.keep));
     return reply(consultSheetWrite_(body));
   } catch (err) {
     var msg = String(err && err.message || err || '');
@@ -7545,6 +7546,8 @@ function consultSheetPaint_(sh, rowNums, line, note, bg) {
   list.setBackground(bg || '#FFF2CC');
   list.setFontColor('#C00000');
   list.setFontWeight('bold');
+  list.setHorizontalAlignment('left');
+  list.setVerticalAlignment('middle');
   list.setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
   list.setNote(note || '');
   return rowNums.length;
@@ -7787,21 +7790,36 @@ function consultCacheMap_() {
 function consultCacheSave_(norm, clientName, line, note, bg, updatedAt, remove) {
   var got = consultCacheMap_();
   var found = got.map[norm];
-  if (remove) {
-    if (found) got.sh.deleteRow(found.row);
-    return;
-  }
   var values = [[norm, clientName || '', line || '', note || '', bg || '', updatedAt || '']];
-  if (found) got.sh.getRange(found.row, 1, 1, 6).setValues(values);
-  else got.sh.appendRow(values[0]);
+  var ok = consultSheetWithLock_(3000, function() {
+    if (remove) {
+      if (found) got.sh.deleteRow(found.row);
+      return;
+    }
+    if (found) got.sh.getRange(found.row, 1, 1, 6).setValues(values);
+    else got.sh.appendRow(values[0]);
+  });
+  if (!ok) throw new Error('잠금을 얻지 못했습니다');
 }
 
 function consultSheetTryLock_(waitMs) {
   var lock = LockService.getScriptLock();
   var locked = false;
-  var wait = waitMs === 0 ? 0 : (waitMs || 20000);
+  var wait = waitMs === 0 ? 0 : (waitMs || 3000);
   try { locked = lock.tryLock(wait); } catch (err) { locked = false; }
   return { lock: lock, locked: locked };
+}
+
+function consultSheetWithLock_(waitMs, fn) {
+  var held = consultSheetTryLock_(waitMs);
+  try {
+    if (!held.locked) return false;
+    fn();
+    SpreadsheetApp.flush();
+    return true;
+  } finally {
+    if (held.locked) held.lock.releaseLock();
+  }
 }
 
 function consultSheetWrite_(body) {
@@ -7825,121 +7843,246 @@ function consultSheetWrite_(body) {
   var win = consultSheetWindow_();
   var picked = consultSheetHeaders_(opened.ss, win.today, win.end);
   var sheetCount = picked.length;
-  var held = consultSheetTryLock_();
-  try {
-    if (!held.locked) return consultSheetFinish_(false, 0, sheetCount, 'busy', '잠금을 얻지 못했습니다');
-    var matched = 0;
-    var blocked = false;
-    var plans = [];
-    for (var p = 0; picked.length > p; p++) {
-      var item = picked[p];
-      var mine = [];
-      for (var h = 0; item.rows.length > h; h++) {
-        if (item.rows[h].name === norm) mine.push(item.rows[h].row);
-      }
-      if (!mine.length) continue;
-      var pack = consultSheetReadE_(item.sh, mine);
-      var writeRows = [];
-      for (var k = 0; mine.length > k; k++) {
-        var row = mine[k];
-        matched++;
-        var cell = consultSheetCell_(pack, row);
-        var ours = consultSheetOurs_(cell.note);
-        var empty = consultSheetEmptyE_(cell);
-        if (!ours && !empty) { blocked = true; continue; }
-        if (clear && !ours) continue;
-        writeRows.push(row);
-      }
-      if (writeRows.length) plans.push({ sh: item.sh, rows: writeRows });
+  var matched = 0;
+  var blocked = false;
+  var plans = [];
+  for (var p = 0; picked.length > p; p++) {
+    var item = picked[p];
+    var mine = [];
+    for (var h = 0; item.rows.length > h; h++) {
+      if (item.rows[h].name === norm) mine.push(item.rows[h].row);
     }
-    if (blocked) return consultSheetFinish_(false, 0, sheetCount, 'e_cell_occupied', 'E열에 상담일지가 아닌 값이 있습니다');
-    if (!matched && !clear) return consultSheetFinish_(false, 0, sheetCount, 'not_found', '오늘부터 지정 기간의 날짜 탭에서 업체 헤더를 찾지 못했습니다');
-    var written = 0;
-    for (var n = 0; plans.length > n; n++) written += consultSheetPaint_(plans[n].sh, plans[n].rows, clear ? '' : line, clear ? '' : memo, bg);
-    var cacheMsg = '';
-    try { consultCacheSave_(norm, body.clientName, clear ? '' : line, clear ? '' : memo, clear ? '' : bg, syncAt || '', clear); }
-    catch (cacheErr) { cacheMsg = String(cacheErr && cacheErr.message || ''); }
-    SpreadsheetApp.flush();
-    if (syncAt) props.setProperty(revKey, String(syncAt));
-    var message = summed.message || '';
-    if (cacheMsg) message = message ? (message + ' / ' + cacheMsg) : cacheMsg;
-    return consultSheetFinish_(true, written, sheetCount, '', message, summary, summed.aiFailed, focus);
-  } finally {
-    if (held.locked) held.lock.releaseLock();
+    if (!mine.length) continue;
+    var pack = consultSheetReadE_(item.sh, mine);
+    var writeRows = [];
+    for (var k = 0; mine.length > k; k++) {
+      var row = mine[k];
+      matched++;
+      var cell = consultSheetCell_(pack, row);
+      var ours = consultSheetOurs_(cell.note);
+      var empty = consultSheetEmptyE_(cell);
+      if (!ours && !empty) { blocked = true; continue; }
+      if (clear && !ours) continue;
+      writeRows.push(row);
+    }
+    if (writeRows.length) plans.push({ sh: item.sh, rows: writeRows });
   }
+  if (blocked) return consultSheetFinish_(false, 0, sheetCount, 'e_cell_occupied', 'E열에 상담일지가 아닌 값이 있습니다');
+  if (!matched && !clear) return consultSheetFinish_(false, 0, sheetCount, 'not_found', '오늘부터 지정 기간의 날짜 탭에서 업체 헤더를 찾지 못했습니다');
+  var written = 0;
+  for (var n = 0; plans.length > n; n++) {
+    var painted = plans[n].rows.length;
+    var wrote = (function(plan) {
+      return consultSheetWithLock_(3000, function() {
+        consultSheetPaint_(plan.sh, plan.rows, clear ? '' : line, clear ? '' : memo, bg);
+      });
+    })(plans[n]);
+    if (!wrote) return consultSheetFinish_(false, written, sheetCount, 'busy', '잠금을 얻지 못했습니다');
+    written += painted;
+  }
+  var cacheMsg = '';
+  try { consultCacheSave_(norm, body.clientName, clear ? '' : line, clear ? '' : memo, clear ? '' : bg, syncAt || '', clear); }
+  catch (cacheErr) { cacheMsg = String(cacheErr && cacheErr.message || ''); }
+  if (cacheMsg.indexOf('잠금') >= 0) return consultSheetFinish_(false, written, sheetCount, 'busy', '잠금을 얻지 못했습니다');
+  if (syncAt) props.setProperty(revKey, String(syncAt));
+  var message = summed.message || '';
+  if (cacheMsg) message = message ? (message + ' / ' + cacheMsg) : cacheMsg;
+  return consultSheetFinish_(true, written, sheetCount, '', message, summary, summed.aiFailed, focus);
 }
 
-function consultRefreshFromCache_() {
+function consultRefreshPlans_(item, cache) {
+  var named = {};
+  if (!item.rows.length) return named;
+  var pack = consultSheetReadE_(item.sh, item.rows);
+  for (var h = 0; item.rows.length > h; h++) {
+    var info = item.rows[h];
+    var cell = consultSheetCell_(pack, info.row);
+    var ours = consultSheetOurs_(cell.note);
+    var empty = consultSheetEmptyE_(cell);
+    var entry = cache.map[info.name];
+    var action = null;
+    if (ours && entry && entry.line) action = entry;
+    else if (ours) action = { line: '', note: '', bg: '' };
+    else if (empty && entry && entry.line) action = entry;
+    if (!action) continue;
+    if (!named[info.name]) named[info.name] = { rows: [], line: action.line || '', note: action.note || '', bg: action.bg || '' };
+    named[info.name].rows.push(info.row);
+  }
+  return named;
+}
+
+function consultRefreshFromCache_(onlyNames) {
   var opened = consultSheetOpenWork_();
   if (opened.error) return;
+  var allow = null;
+  if (onlyNames && onlyNames.length) {
+    allow = {};
+    for (var a = 0; onlyNames.length > a; a++) allow[onlyNames[a]] = true;
+  }
   var win = consultSheetWindow_();
   var picked = consultSheetHeaders_(opened.ss, win.today, win.end);
   var cache = consultCacheMap_();
   for (var p = 0; picked.length > p; p++) {
     var item = picked[p];
-    if (!item.rows.length) continue;
-    var pack = consultSheetReadE_(item.sh, item.rows);
-    var named = {};
-    for (var h = 0; item.rows.length > h; h++) {
-      var info = item.rows[h];
-      var cell = consultSheetCell_(pack, info.row);
-      var ours = consultSheetOurs_(cell.note);
-      var empty = consultSheetEmptyE_(cell);
-      var entry = cache.map[info.name];
-      var action = null;
-      if (ours && entry && entry.line) action = entry;
-      else if (ours) action = { line: '', note: '', bg: '' };
-      else if (empty && entry && entry.line) action = entry;
-      if (!action) continue;
-      if (!named[info.name]) named[info.name] = { rows: [], line: action.line || '', note: action.note || '', bg: action.bg || '' };
-      named[info.name].rows.push(info.row);
-    }
+    if (allow && !allow[item.sh.getName()]) continue;
+    var named = consultRefreshPlans_(item, cache);
     var names = Object.keys(named);
     if (!names.length) continue;
-    var held = consultSheetTryLock_(0);
-    try {
-      if (!held.locked) continue;
-      for (var n = 0; names.length > n; n++) {
-        var slot = named[names[n]];
-        consultSheetPaint_(item.sh, slot.rows, slot.line, slot.note, slot.bg);
-      }
-      SpreadsheetApp.flush();
-    } finally {
-      if (held.locked) held.lock.releaseLock();
-    }
+    (function(tab, slots, slotNames) {
+      consultSheetWithLock_(0, function() {
+        for (var n = 0; slotNames.length > n; n++) {
+          var slot = slots[slotNames[n]];
+          consultSheetPaint_(tab.sh, slot.rows, slot.line, slot.note, slot.bg);
+        }
+      });
+    })(item, named, names);
   }
+}
+
+function consultSheetChangedDateTabs_(ss, change) {
+  var win = consultSheetWindow_();
+  var from = consultSheetShiftDay_(win.today, -1);
+  var all = ss.getSheets();
+  var names = [];
+  for (var i = 0; all.length > i; i++) {
+    var name = all[i].getName();
+    var key = consultSheetDateKey_(name);
+    if (!key || from > key || key > win.end) continue;
+    names.push(name);
+  }
+  var props = PropertiesService.getScriptProperties();
+  var prevRaw = String(props.getProperty('CONSULT_TAB_NAMES') || '');
+  props.setProperty('CONSULT_TAB_NAMES', names.join('\\n'));
+  if (!prevRaw) return change === 'INSERT_GRID' ? names : [];
+  var seen = {};
+  var prev = prevRaw.split('\\n');
+  for (var p = 0; prev.length > p; p++) seen[prev[p]] = true;
+  var changed = [];
+  for (var n = 0; names.length > n; n++) {
+    if (seen[names[n]]) continue;
+    changed.push(names[n]);
+  }
+  return changed;
 }
 
 function installConsultTrigger() {
   var props = PropertiesService.getScriptProperties();
   var workId = String(props.getProperty('WORK_SHEET_ID') || '').replace(/^\\s+|\\s+$/g, '');
   if (!workId) throw new Error('WORK_SHEET_ID 스크립트 속성이 없습니다');
+  var removed = 0;
   var triggers = ScriptApp.getProjectTriggers();
   for (var i = 0; triggers.length > i; i++) {
     var fn = triggers[i].getHandlerFunction();
-    if (fn === 'consultOnSpreadsheetChange_' || fn === 'consultHourlyRefresh_') ScriptApp.deleteTrigger(triggers[i]);
+    if (fn === 'consultOnSpreadsheetChange_' || fn === 'consultHourlyRefresh_' || fn === 'consultRefreshFromCache_') {
+      ScriptApp.deleteTrigger(triggers[i]);
+      removed++;
+    }
   }
   ScriptApp.newTrigger('consultOnSpreadsheetChange_').forSpreadsheet(workId).onChange().create();
   ScriptApp.newTrigger('consultHourlyRefresh_').timeBased().everyHours(1).create();
+  console.log('consult triggers removed ' + removed + ' now onChange 1 hourly 1');
+}
+
+function listConsultTriggers() {
+  var triggers = ScriptApp.getProjectTriggers();
+  console.log('consult trigger count ' + triggers.length);
+  for (var i = 0; triggers.length > i; i++) {
+    var kind = '';
+    try { kind = String(triggers[i].getEventType()); } catch (err) { kind = ''; }
+    console.log(kind + ' ' + triggers[i].getHandlerFunction());
+  }
+  return triggers.length;
 }
 
 function consultOnSpreadsheetChange_(e) {
   var change = e && e.changeType ? String(e.changeType) : '';
-  if (change !== 'INSERT_GRID' && change !== 'REMOVE_GRID' && change !== 'OTHER') return;
-  var gate = CacheService.getScriptCache();
-  if (gate.get('consultSheetRefresh')) return;
-  gate.put('consultSheetRefresh', '1', 60);
-  consultRefreshFromCache_();
+  if (change !== 'INSERT_GRID' && change !== 'OTHER') return;
+  var opened = consultSheetOpenWork_();
+  if (opened.error) return;
+  var changed = consultSheetChangedDateTabs_(opened.ss, change);
+  if (!changed.length) return;
+  consultRefreshFromCache_(changed);
 }
 
 function consultHourlyRefresh_() {
   consultRefreshFromCache_();
 }
+
+function cleanupConsultCells(keepNames) {
+  var opened = consultSheetOpenWork_();
+  if (opened.error) return opened.error;
+  var keep = null;
+  if (keepNames && typeof keepNames.length === 'number') {
+    keep = {};
+    for (var i = 0; keepNames.length > i; i++) {
+      var kept = consultSheetNorm_(keepNames[i]);
+      if (kept) keep[kept] = true;
+    }
+  }
+  var win = consultSheetWindow_();
+  var picked = consultSheetHeaders_(opened.ss, win.today, win.end);
+  var cache = consultCacheMap_();
+  var drop = {};
+  var cacheKeys = Object.keys(cache.map);
+  for (var c = 0; cacheKeys.length > c; c++) {
+    var key = cacheKeys[c];
+    var entry = cache.map[key];
+    if (!entry || !entry.line || (keep && !keep[key])) drop[key] = entry;
+  }
+  var cleared = 0;
+  for (var p = 0; picked.length > p; p++) {
+    var item = picked[p];
+    if (!item.rows.length) continue;
+    var pack = consultSheetReadE_(item.sh, item.rows);
+    var rows = [];
+    for (var h = 0; item.rows.length > h; h++) {
+      var info = item.rows[h];
+      var cell = consultSheetCell_(pack, info.row);
+      if (!consultSheetOurs_(cell.note)) continue;
+      var cached = cache.map[info.name];
+      var missing = !cached || !cached.line || !!drop[info.name];
+      var noLogs = !!(keep && !keep[info.name]);
+      if (missing || noLogs) rows.push(info.row);
+    }
+    if (!rows.length) continue;
+    var ok = (function(tab, doomed) {
+      return consultSheetWithLock_(3000, function() {
+        consultSheetPaint_(tab.sh, doomed, '', '', '');
+      });
+    })(item, rows);
+    if (!ok) {
+      var busy = consultSheetResult_(false, 0, picked.length, 'busy', '잠금을 얻지 못했습니다');
+      busy.cleared = cleared;
+      return busy;
+    }
+    cleared += rows.length;
+  }
+  var dropKeys = Object.keys(drop);
+  if (dropKeys.length) {
+    var cacheRows = [];
+    for (var d = 0; dropKeys.length > d; d++) {
+      if (drop[dropKeys[d]] && drop[dropKeys[d]].row) cacheRows.push(drop[dropKeys[d]].row);
+    }
+    cacheRows.sort(function(a, b) { return b - a; });
+    var cacheSheet = cache.sh;
+    var wiped = consultSheetWithLock_(3000, function() {
+      for (var r = 0; cacheRows.length > r; r++) cacheSheet.deleteRow(cacheRows[r]);
+    });
+    if (!wiped) {
+      var busyCache = consultSheetResult_(false, 0, picked.length, 'busy', '잠금을 얻지 못했습니다');
+      busyCache.cleared = cleared;
+      return busyCache;
+    }
+  }
+  var done = consultSheetResult_(true, 0, picked.length, '', '');
+  done.cleared = cleared;
+  return done;
+}
 </pre>
           <button onclick="navigator.clipboard.writeText(document.getElementById('apps-script-code').textContent).then(()=>toast('코드 복사됨','success'))"
             style="position:absolute;top:8px;right:8px;background:#334155;color:#e2e8f0;border:none;border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer">📋 복사</button>
         </div>
-        <div style="font-size:11px;color:#065f46;margin-top:8px">상담일지 E열 반영은 doPost입니다. 코드를 붙인 뒤 배포 관리 → 기존 배포 편집 → 새 버전으로 배포하세요. 웹앱 주소는 유지됩니다. 콘솔에 consultSheet version 2026-10-30-1510이 보이면 새 배포가 반영된 것입니다. 스크립트 속성: CONSULT_TOKEN, WORK_SHEET_ID, GEMINI_API_KEY, GEMINI_MODEL(비우면 gemini-3.1-flash-lite). 저장 후 함수 installConsultTrigger를 선택해 실행하세요.</div>
+        <div style="font-size:11px;color:#065f46;margin-top:8px">상담일지 E열 반영은 doPost입니다. 코드를 붙인 뒤 배포 관리 → 기존 배포 편집 → 새 버전으로 배포하세요. 웹앱 주소는 유지됩니다. 콘솔에 consultSheet version 2026-10-30-1545가 보이면 새 배포가 반영된 것입니다. 그다음 편집기에서 installConsultTrigger를 한 번만 실행하세요. 같은 이름의 기존 트리거를 지우고 onChange 1개, 1시간 트리거 1개만 남깁니다. listConsultTriggers를 실행하면 실행 로그에 종류와 함수가 찍힙니다. 스크립트 속성: CONSULT_TOKEN, WORK_SHEET_ID, GEMINI_API_KEY, GEMINI_MODEL(비우면 gemini-3.1-flash-lite).</div>
       </div>
     </div>
 
@@ -7956,6 +8099,12 @@ function consultHourlyRefresh_() {
       <div class="card-title">상담일지 시트 토큰</div>
       <input id="gs-consult-token" class="inp" type="password" autocomplete="off" style="width:100%;font-family:monospace" value="${escHtml(s.consultToken||'')}">
       <div style="font-size:11px;color:var(--text3);margin-top:6px">Apps Script 스크립트 속성 CONSULT_TOKEN과 같은 값을 저장합니다. 값이 다르면 E열 반영은 거부됩니다.</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">상담일지 시트 전체 재정리</div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px">상담일지가 있는 거래처를 한 곳씩 다시 보내고, 캐시에 없거나 상담일지가 없는 업체의 E열 요약을 지웁니다.</div>
+      <button type="button" class="btn btn-blue btn-sm" id="consult-rebuild-btn" onclick="consultRebuildAllSheets()">상담일지 시트 전체 재정리</button>
     </div>
 
     <!-- 컬럼 번호 설정 -->
@@ -17466,6 +17615,71 @@ async function consultPostSheet(payload){
   }catch(err){
     if(!(err&&err.sheetLogged)) consultLogSheetFail(err);
     throw err;
+  }
+}
+async function consultPostCleanup(keep){
+  const cfg=typeof gsyncLoad==='function'?gsyncLoad():{};
+  const url=String(cfg.url||'').trim();
+  const token=String(cfg.consultToken||'').trim();
+  if(!url||!token) throw new Error(!url?'시트 URL이 없습니다':'시트 토큰이 없습니다');
+  const names=Array.isArray(keep)?keep:[];
+  const body={action:'consultCleanup', token:token, keep:names};
+  console.log('consultSheet 정리 요청', names.length);
+  let json=await consultPostSheetOnce(body);
+  console.log('consultSheet 응답 수신', {
+    version:json&&json.version||'',
+    ms:json&&json.ms,
+    ok:!!(json&&json.ok),
+    written:json&&json.written||0,
+    aiFailed:!!(json&&json.aiFailed),
+    error:json&&json.error||'',
+    message:json&&json.message||'',
+    cleared:json&&json.cleared||0
+  });
+  if(json&&json.error==='busy'){
+    await new Promise(function(resolve){ setTimeout(resolve, 5000); });
+    console.log('consultSheet 정리 요청', '재시도');
+    json=await consultPostSheetOnce(body);
+    console.log('consultSheet 응답 수신', {
+      version:json&&json.version||'',
+      ms:json&&json.ms,
+      ok:!!(json&&json.ok),
+      written:json&&json.written||0,
+      aiFailed:!!(json&&json.aiFailed),
+      error:json&&json.error||'',
+      message:json&&json.message||'',
+      cleared:json&&json.cleared||0
+    });
+  }
+  if(!json||json.ok!==true) throw new Error((json&&json.message)||'시트 정리에 실패했습니다');
+  return json;
+}
+async function consultRebuildAllSheets(){
+  if(typeof confirm==='function'&&!confirm('상담일지가 있는 거래처를 한 곳씩 다시 보내고, 상담일지가 없거나 캐시에 없는 E열 요약을 지웁니다. 계속할까요?')) return;
+  const btn=document.getElementById('consult-rebuild-btn');
+  if(btn) btn.disabled=true;
+  try{
+    if(typeof db==='undefined'||!db) throw new Error('Firestore에 연결되지 않았습니다');
+    const snap=await db.collection('consultLogs').get();
+    const byId={};
+    snap.forEach(function(doc){
+      const d=doc.data()||{};
+      const id=String(d.clientId||'').trim();
+      if(!id) return;
+      const name=String(d.clientName||'').trim();
+      if(!byId[id]||name) byId[id]=name||byId[id]||'';
+    });
+    const ids=Object.keys(byId);
+    const keep=[];
+    ids.forEach(function(id){ if(byId[id]) keep.push(byId[id]); });
+    await consultPostCleanup(keep);
+    ids.forEach(function(id){ consultQueueSheetSync(id, byId[id]); });
+    toast('상담일지 시트를 정리했습니다. 거래처 '+ids.length+'곳을 순서대로 전송합니다','success');
+  }catch(err){
+    console.error('consult rebuild', err);
+    toast((err&&err.message)||'상담일지 시트 재정리에 실패했습니다','error');
+  }finally{
+    if(btn) btn.disabled=false;
   }
 }
 function consultSheetActiveLogs(rows){
