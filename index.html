@@ -7322,7 +7322,8 @@ function renderGsyncSettings(){
       <div style="margin-top:14px">
         <div style="font-size:12px;font-weight:700;margin-bottom:6px;color:#065f46">📋 Apps Script 코드 (복사해서 붙여넣으세요)</div>
         <div style="position:relative">
-          <pre id="apps-script-code" style="background:#1e293b;color:#e2e8f0;padding:14px;border-radius:8px;font-size:11px;line-height:1.7;overflow-x:auto;margin:0;white-space:pre">const SHEET_ID = '136a4WUg1ol2sbbi-dupFdAZkR1gUn89wLyZaSuLUV2U';
+          <pre id="apps-script-code" style="background:#1e293b;color:#e2e8f0;padding:14px;border-radius:8px;font-size:11px;line-height:1.7;overflow-x:auto;margin:0;white-space:pre">const CONSULT_VERSION = '2026-10-30-0405';
+const SHEET_ID = '136a4WUg1ol2sbbi-dupFdAZkR1gUn89wLyZaSuLUV2U';
 const SHEET_NAME = '통합결과'; // 시트 탭 이름
 
 function doGet(e) {
@@ -7355,26 +7356,28 @@ function consultSheetAuthorized_(body) {
 function doPost(e) {
   var started = Date.now();
   function reply(obj) {
+    obj.version = CONSULT_VERSION;
     obj.ms = Date.now() - started;
-    console.log('consultSheet ms ' + obj.ms);
+    obj.message = obj.message || '';
+    console.log('consultSheet ' + obj.version + ' ms ' + obj.ms + ' ' + (obj.error || 'ok') + ' ' + obj.message);
     return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
   }
   try {
     var body = {};
     if (e && e.postData && e.postData.contents) body = JSON.parse(e.postData.contents);
     if (!body || body.action !== 'consultSheet') {
-      return reply({ ok: false, written: 0, sheetCount: 0, error: 'unknown action' });
+      return reply({ ok: false, written: 0, sheetCount: 0, error: 'unknown', message: 'action이 consultSheet가 아닙니다' });
     }
     if (!consultSheetAuthorized_(body)) {
-      return reply({ ok: false, written: 0, sheetCount: 0, error: 'unauthorized' });
+      return reply({ ok: false, written: 0, sheetCount: 0, error: 'unauthorized', message: 'CONSULT_TOKEN이 없거나 일치하지 않습니다' });
     }
     return reply(consultSheetWrite_(body));
   } catch (err) {
-    var msg = String(err && err.message || '');
-    var reason = '시트 반영 실패';
-    if (msg.indexOf('permission') >= 0 || msg.indexOf('Permission') >= 0 || msg.indexOf('권한') >= 0) reason = '권한 없음';
-    else if (msg.indexOf('잠금') >= 0 || msg.indexOf('Lock') >= 0 || msg.indexOf('lock') >= 0) reason = 'busy';
-    return reply({ ok: false, written: 0, sheetCount: 0, error: reason });
+    var msg = String(err && err.message || err || '');
+    var code = 'unknown';
+    if (msg.indexOf('permission') >= 0 || msg.indexOf('Permission') >= 0 || msg.indexOf('권한') >= 0) code = 'work_sheet_open_failed';
+    else if (msg.indexOf('잠금') >= 0 || msg.indexOf('Lock') >= 0 || msg.indexOf('lock') >= 0) code = 'busy';
+    return reply({ ok: false, written: 0, sheetCount: 0, error: code, message: msg });
   }
 }
 
@@ -7412,8 +7415,8 @@ function consultSheetRevKey_(norm) {
   return 'cRev_' + hex.substring(0, 32);
 }
 
-function consultSheetResult_(ok, written, sheetCount, error) {
-  return { ok: !!ok, written: written || 0, sheetCount: sheetCount || 0, error: error || '' };
+function consultSheetResult_(ok, written, sheetCount, error, message) {
+  return { ok: !!ok, written: written || 0, sheetCount: sheetCount || 0, error: error || '', message: message || '' };
 }
 
 function consultSheetIsCheckbox_(rule) {
@@ -7443,24 +7446,21 @@ function consultSheetShiftDay_(ymd, days) {
 
 function consultSheetWrite_(body) {
   var norm = consultSheetNorm_(body.clientName);
-  if (!norm) return consultSheetResult_(false, 0, 0, '시트 반영 실패');
+  if (!norm) return consultSheetResult_(false, 0, 0, 'unknown', '업체명이 비어 있습니다');
   var syncAt = Number(body.syncAt) || 0;
   var props = PropertiesService.getScriptProperties();
   var revKey = consultSheetRevKey_(norm);
   var prev = Number(props.getProperty(revKey) || 0);
   if (syncAt && prev && prev > syncAt) return consultSheetResult_(true, 0, 0, '');
   var workId = String(props.getProperty('WORK_SHEET_ID') || '').replace(/^\\s+|\\s+$/g, '');
-  if (!workId) return consultSheetResult_(false, 0, 0, '시트 반영 실패');
+  if (!workId) return consultSheetResult_(false, 0, 0, 'no_work_sheet_id', 'WORK_SHEET_ID 스크립트 속성이 없습니다');
   var ahead = consultSheetDaysAhead_(props);
   var ss;
   try {
     ss = SpreadsheetApp.openById(workId);
   } catch (err) {
     var openMsg = String(err && err.message || '');
-    if (openMsg.indexOf('permission') >= 0 || openMsg.indexOf('Permission') >= 0 || openMsg.indexOf('권한') >= 0) {
-      return consultSheetResult_(false, 0, 0, '권한 없음');
-    }
-    return consultSheetResult_(false, 0, 0, '시트 반영 실패');
+    return consultSheetResult_(false, 0, 0, 'work_sheet_open_failed', openMsg || 'openById failed');
   }
   var today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
   var end = consultSheetShiftDay_(today, ahead);
@@ -7496,7 +7496,7 @@ function consultSheetWrite_(body) {
     } catch (err) {
       locked = false;
     }
-    if (!locked) return consultSheetResult_(false, 0, sheetCount, 'busy');
+    if (!locked) return consultSheetResult_(false, 0, sheetCount, 'busy', '잠금을 얻지 못했습니다');
     var matched = 0;
     var blocked = false;
     var plans = [];
@@ -7530,8 +7530,8 @@ function consultSheetWrite_(body) {
       }
       if (writeRows.length) plans.push({ sh: item.sh, rows: writeRows });
     }
-    if (blocked) return consultSheetResult_(false, 0, sheetCount, 'E열에 기존 값 있음');
-    if (!matched) return consultSheetResult_(false, 0, sheetCount, '업체명 못 찾음');
+    if (blocked) return consultSheetResult_(false, 0, sheetCount, 'e_cell_occupied', 'E열에 상담일지가 아닌 값이 있습니다');
+    if (!matched) return consultSheetResult_(false, 0, sheetCount, 'not_found', '오늘부터 지정 기간의 날짜 탭에서 업체 헤더를 찾지 못했습니다');
     var written = 0;
     for (var n = 0; n < plans.length; n++) {
       var a1 = [];
@@ -7561,7 +7561,7 @@ function consultSheetWrite_(body) {
           <button onclick="navigator.clipboard.writeText(document.getElementById('apps-script-code').textContent).then(()=>toast('코드 복사됨','success'))"
             style="position:absolute;top:8px;right:8px;background:#334155;color:#e2e8f0;border:none;border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer">📋 복사</button>
         </div>
-        <div style="font-size:11px;color:#065f46;margin-top:8px">상담일지 E열 반영은 doPost입니다. 배포는 배포 관리 → 기존 배포 편집 → 버전을 새 버전으로 올리세요. 웹앱 주소는 유지됩니다. 토큰은 스크립트 속성 CONSULT_TOKEN, 업무 시트는 WORK_SHEET_ID에 저장합니다. 코드에는 넣지 않습니다.</div>
+        <div style="font-size:11px;color:#065f46;margin-top:8px">상담일지 E열 반영은 doPost입니다. 코드를 붙인 뒤 배포 관리 → 기존 배포 편집 → 새 버전으로 배포하세요. 웹앱 주소는 유지됩니다. 콘솔에 consultSheet version 2026-10-30-0405가 보이면 새 배포가 반영된 것입니다. 토큰은 스크립트 속성 CONSULT_TOKEN, 업무 시트는 WORK_SHEET_ID에 저장합니다.</div>
       </div>
     </div>
 
@@ -16791,8 +16791,9 @@ function consultSheetStatusHtml(row){
   if(row&&row._sheetSyncing) return '<div style="font-size:11px;color:var(--text3);margin-top:4px">시트 반영 중</div>';
   if(!row||row.sheetSyncStatus!=='failed') return '';
   const note=row.sheetSyncNote||'시트 반영 실패';
+  const tip=row.sheetSyncDetail?(' title="'+escHtml(row.sheetSyncDetail)+'"'):'';
   const dis=row._sheetSyncing?' disabled':'';
-  return '<div style="margin-top:4px"><div style="font-size:11px;color:#b91c1c">'+escHtml(note)+'</div>'
+  return '<div style="margin-top:4px"><div style="font-size:11px;color:#b91c1c;cursor:help"'+tip+'>'+escHtml(note)+'</div>'
     +'<button type="button" class="btn btn-xs btn-gray" style="margin-top:4px"'+dis+' onclick="consultResendSheet(\''+consultJsId(row.id)+'\')">시트 재전송</button></div>';
 }
 function consultSetSheetSyncing(clientId, on){
@@ -16865,14 +16866,47 @@ async function consultMarkSheetStatus(clientId, rows, status, note, detail){
   }
 }
 function consultSheetFailNote(err){
-  const msg=String(err&&err.message||'');
+  const code=String(err&&err.sheetCode||'');
+  const raw=String((err&&err.sheetMessage)||(err&&err.message)||'');
+  if(code==='bad_response') return 'Apps Script 응답 형식 오류 - 재배포 확인';
+  if(code==='no_work_sheet_id') return '업무 시트 ID 없음';
+  if(code==='work_sheet_open_failed'){
+    if(raw.indexOf('권한')>=0||raw.indexOf('permission')>=0||raw.indexOf('Permission')>=0) return '권한 없음';
+    return '업무 시트를 열지 못함';
+  }
+  if(code==='unauthorized') return '시트 토큰이 맞지 않습니다';
+  if(code==='busy') return '시트 처리 중(잠시 후 재시도)';
+  if(code==='not_found') return '업체명 못 찾음';
+  if(code==='e_cell_occupied') return 'E열에 기존 값 있음';
+  if(code==='unknown') return '시트 반영 실패';
+  const msg=raw;
   if(msg.indexOf('시트 토큰이 없습니다')>=0) return '시트 토큰이 없습니다';
+  if(msg.indexOf('시트 URL이 없습니다')>=0) return '시트 URL이 없습니다';
   if(msg.indexOf('unauthorized')>=0||msg.indexOf('시트 토큰이 맞지')>=0) return '시트 토큰이 맞지 않습니다';
   if(msg==='busy'||msg.indexOf('시트 처리 중')>=0||msg.indexOf('잠금')>=0) return '시트 처리 중(잠시 후 재시도)';
   if(msg.indexOf('업체명 못 찾음')>=0||msg.indexOf('시트에서 업체명을 찾지 못함')>=0) return '업체명 못 찾음';
   if(msg.indexOf('E열에 기존 값 있음')>=0) return 'E열에 기존 값 있음';
   if(msg.indexOf('권한 없음')>=0||msg.indexOf('업무 시트 접근 권한 없음')>=0||msg.indexOf('permission')>=0) return '권한 없음';
+  if(msg.indexOf('시트 반영 시간 초과')>=0) return '시트 반영 시간 초과';
   return '시트 반영 실패';
+}
+function consultSheetFailDetail(err){
+  const msg=String((err&&err.sheetMessage)||'');
+  if(msg) return msg;
+  return String((err&&err.sheetCode)||(err&&err.message)||'');
+}
+function consultSheetError(code, message, version){
+  const err=new Error(code||'unknown');
+  err.sheetCode=code||'unknown';
+  err.sheetMessage=message||'';
+  err.sheetVersion=version||'';
+  return err;
+}
+function consultLogSheet(json){
+  if(!json) return;
+  if(json.version) console.log('consultSheet version', json.version);
+  if(json.ms!=null) console.log('consultSheet ms', json.ms);
+  if(json.message) console.log('consultSheet message', json.message);
 }
 async function consultPostSheetOnce(body){
   const ctrl=new AbortController();
@@ -16889,8 +16923,15 @@ async function consultPostSheetOnce(body){
       body:JSON.stringify(body)
     });
     const text=await r.text();
-    if(!text||text.trim().charAt(0)==='<') throw new Error('시트 응답을 읽지 못했습니다');
-    return JSON.parse(text);
+    const trimmed=String(text||'').trim();
+    if(!trimmed||trimmed.charAt(0)!=='{'){
+      throw consultSheetError('bad_response', trimmed.slice(0, 400));
+    }
+    try{
+      return JSON.parse(trimmed);
+    }catch(parseErr){
+      throw consultSheetError('bad_response', trimmed.slice(0, 400));
+    }
   }catch(e){
     if(e&&e.name==='AbortError') throw new Error('시트 반영 시간 초과');
     throw e;
@@ -16906,13 +16947,14 @@ async function consultPostSheet(payload){
   if(!token) throw new Error('시트 토큰이 없습니다');
   const body=Object.assign({}, payload, {token:token});
   let json=await consultPostSheetOnce(body);
+  consultLogSheet(json);
   if(json&&json.error==='busy'){
     await new Promise(function(resolve){ setTimeout(resolve, 5000); });
     json=await consultPostSheetOnce(body);
+    consultLogSheet(json);
   }
-  if(json&&json.ms!=null) console.log('consultSheet ms', json.ms);
-  if(json&&json.error==='busy') throw new Error('시트 처리 중(잠시 후 재시도)');
-  if(!json||json.ok!==true) throw new Error((json&&json.error)||'시트 반영 실패');
+  if(json&&json.error==='busy') throw consultSheetError('busy', (json&&json.message)||'잠금을 얻지 못했습니다', json&&json.version);
+  if(!json||json.ok!==true) throw consultSheetError((json&&json.error)||'unknown', (json&&json.message)||'', json&&json.version);
   return json;
 }
 async function consultRunSheetSync(clientId, clientName, epoch){
@@ -16944,14 +16986,16 @@ function consultQueueSheetSync(clientId, clientName){
     const my=job.epoch;
     consultSetSheetSyncing(clientId, true);
     consultRunSheetSync(clientId, job.name, my).catch(function(err){
-      console.error('consult sheet', err);
+      const note=consultSheetFailNote(err);
+      const detail=consultSheetFailDetail(err);
+      console.error('consult sheet', note);
+      if(detail) console.error('consultSheet message', detail);
       if(consultSheetStale(clientId, my)) return;
       return consultLoadClientLogs(clientId).then(function(rows){
         if(consultSheetStale(clientId, my)) return;
-        const note=consultSheetFailNote(err);
-        return consultMarkSheetStatus(clientId, rows, 'failed', note);
+        return consultMarkSheetStatus(clientId, rows, 'failed', note, detail);
       }).then(function(){
-        if(!consultSheetStale(clientId, my)) toast(consultSheetFailNote(err),'error');
+        if(!consultSheetStale(clientId, my)) toast(note,'error');
       });
     }).finally(function(){
       if(job.again){
