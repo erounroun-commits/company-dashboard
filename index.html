@@ -7322,7 +7322,7 @@ function renderGsyncSettings(){
       <div style="margin-top:14px">
         <div style="font-size:12px;font-weight:700;margin-bottom:6px;color:#065f46">📋 Apps Script 코드 (복사해서 붙여넣으세요)</div>
         <div style="position:relative">
-          <pre id="apps-script-code" style="background:#1e293b;color:#e2e8f0;padding:14px;border-radius:8px;font-size:11px;line-height:1.7;overflow-x:auto;margin:0;white-space:pre">const CONSULT_VERSION = '2026-10-30-1415';
+          <pre id="apps-script-code" style="background:#1e293b;color:#e2e8f0;padding:14px;border-radius:8px;font-size:11px;line-height:1.7;overflow-x:auto;margin:0;white-space:pre">const CONSULT_VERSION = '2026-10-30-1510';
 const SHEET_ID = '136a4WUg1ol2sbbi-dupFdAZkR1gUn89wLyZaSuLUV2U';
 const SHEET_NAME = '통합결과'; // 시트 탭 이름
 
@@ -7796,10 +7796,11 @@ function consultCacheSave_(norm, clientName, line, note, bg, updatedAt, remove) 
   else got.sh.appendRow(values[0]);
 }
 
-function consultSheetTryLock_() {
+function consultSheetTryLock_(waitMs) {
   var lock = LockService.getScriptLock();
   var locked = false;
-  try { locked = lock.tryLock(20000); } catch (err) { locked = false; }
+  var wait = waitMs === 0 ? 0 : (waitMs || 20000);
+  try { locked = lock.tryLock(wait); } catch (err) { locked = false; }
   return { lock: lock, locked: locked };
 }
 
@@ -7874,37 +7875,38 @@ function consultRefreshFromCache_() {
   var win = consultSheetWindow_();
   var picked = consultSheetHeaders_(opened.ss, win.today, win.end);
   var cache = consultCacheMap_();
-  var held = consultSheetTryLock_();
-  try {
-    if (!held.locked) return;
-    for (var p = 0; picked.length > p; p++) {
-      var item = picked[p];
-      if (!item.rows.length) continue;
-      var pack = consultSheetReadE_(item.sh, item.rows);
-      var named = {};
-      for (var h = 0; item.rows.length > h; h++) {
-        var info = item.rows[h];
-        var cell = consultSheetCell_(pack, info.row);
-        var ours = consultSheetOurs_(cell.note);
-        var empty = consultSheetEmptyE_(cell);
-        var entry = cache.map[info.name];
-        var action = null;
-        if (ours && entry && entry.line) action = entry;
-        else if (ours) action = { line: '', note: '', bg: '' };
-        else if (empty && entry && entry.line) action = entry;
-        if (!action) continue;
-        if (!named[info.name]) named[info.name] = { rows: [], line: action.line || '', note: action.note || '', bg: action.bg || '' };
-        named[info.name].rows.push(info.row);
-      }
-      var names = Object.keys(named);
+  for (var p = 0; picked.length > p; p++) {
+    var item = picked[p];
+    if (!item.rows.length) continue;
+    var pack = consultSheetReadE_(item.sh, item.rows);
+    var named = {};
+    for (var h = 0; item.rows.length > h; h++) {
+      var info = item.rows[h];
+      var cell = consultSheetCell_(pack, info.row);
+      var ours = consultSheetOurs_(cell.note);
+      var empty = consultSheetEmptyE_(cell);
+      var entry = cache.map[info.name];
+      var action = null;
+      if (ours && entry && entry.line) action = entry;
+      else if (ours) action = { line: '', note: '', bg: '' };
+      else if (empty && entry && entry.line) action = entry;
+      if (!action) continue;
+      if (!named[info.name]) named[info.name] = { rows: [], line: action.line || '', note: action.note || '', bg: action.bg || '' };
+      named[info.name].rows.push(info.row);
+    }
+    var names = Object.keys(named);
+    if (!names.length) continue;
+    var held = consultSheetTryLock_(0);
+    try {
+      if (!held.locked) continue;
       for (var n = 0; names.length > n; n++) {
         var slot = named[names[n]];
         consultSheetPaint_(item.sh, slot.rows, slot.line, slot.note, slot.bg);
       }
+      SpreadsheetApp.flush();
+    } finally {
+      if (held.locked) held.lock.releaseLock();
     }
-    SpreadsheetApp.flush();
-  } finally {
-    if (held.locked) held.lock.releaseLock();
   }
 }
 
@@ -7937,7 +7939,7 @@ function consultHourlyRefresh_() {
           <button onclick="navigator.clipboard.writeText(document.getElementById('apps-script-code').textContent).then(()=>toast('코드 복사됨','success'))"
             style="position:absolute;top:8px;right:8px;background:#334155;color:#e2e8f0;border:none;border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer">📋 복사</button>
         </div>
-        <div style="font-size:11px;color:#065f46;margin-top:8px">상담일지 E열 반영은 doPost입니다. 코드를 붙인 뒤 배포 관리 → 기존 배포 편집 → 새 버전으로 배포하세요. 웹앱 주소는 유지됩니다. 콘솔에 consultSheet version 2026-10-30-1415가 보이면 새 배포가 반영된 것입니다. 스크립트 속성: CONSULT_TOKEN, WORK_SHEET_ID, GEMINI_API_KEY, GEMINI_MODEL(비우면 gemini-3.1-flash-lite). 저장 후 함수 installConsultTrigger를 선택해 실행하세요.</div>
+        <div style="font-size:11px;color:#065f46;margin-top:8px">상담일지 E열 반영은 doPost입니다. 코드를 붙인 뒤 배포 관리 → 기존 배포 편집 → 새 버전으로 배포하세요. 웹앱 주소는 유지됩니다. 콘솔에 consultSheet version 2026-10-30-1510이 보이면 새 배포가 반영된 것입니다. 스크립트 속성: CONSULT_TOKEN, WORK_SHEET_ID, GEMINI_API_KEY, GEMINI_MODEL(비우면 gemini-3.1-flash-lite). 저장 후 함수 installConsultTrigger를 선택해 실행하세요.</div>
       </div>
     </div>
 
@@ -17300,32 +17302,41 @@ async function consultLoadClientLogs(clientId){
 async function consultMarkSheetStatus(clientId, rows, status, note, detail){
   const noteText=note||'';
   const detailText=detail||'';
-  function apply(r){
-    if(!r||r.clientId!==clientId||CONSULT_TOMB.has(r.id)) return;
+  const syncedAt=status==='done'?Date.now():0;
+  const ids=[];
+  const seen=new Set();
+  function take(r){
+    if(!r||r.clientId!==clientId||!r.id||CONSULT_TOMB.has(r.id)||seen.has(r.id)) return;
     if(r._failed&&!r._createdOnServer) return;
+    if(status==='done'){
+      const st=r.sheetSyncStatus||'pending';
+      if(st!=='pending'&&st!=='failed') return;
+    }
+    seen.add(r.id);
+    if(r._createdOnServer) ids.push(r.id);
+  }
+  CONSULT_LOCAL.forEach(take);
+  CONSULT_SERVER.forEach(take);
+  if(typeof CONSULT_DASH!=='undefined'&&CONSULT_DASH.rows) CONSULT_DASH.rows.forEach(take);
+  (rows||[]).forEach(take);
+  function apply(r){
+    if(!r||!seen.has(r.id)) return;
     r.sheetSyncStatus=status;
     r.sheetSyncNote=noteText;
     r.sheetSyncDetail=detailText;
-    if(status==='done') r.sheetSyncedAt=Date.now();
+    if(status==='done') r.sheetSyncedAt=syncedAt;
   }
   CONSULT_LOCAL.forEach(apply);
   CONSULT_SERVER.forEach(apply);
   if(typeof CONSULT_DASH!=='undefined'&&CONSULT_DASH.rows) CONSULT_DASH.rows.forEach(apply);
   consultRender();
   try{ consultDashPaint(); }catch(e){}
-  const ids=[];
-  const seen=new Set();
-  (rows||[]).forEach(function(r){
-    if(!r||!r.id||!r._createdOnServer||CONSULT_TOMB.has(r.id)||seen.has(r.id)) return;
-    seen.add(r.id);
-    ids.push(r.id);
-  });
   if(typeof db==='undefined'||!ids.length) return;
   for(let i=0;i<ids.length;i+=400){
     const batch=db.batch();
     ids.slice(i,i+400).forEach(function(id){
       const patch={sheetSyncStatus:status, sheetSyncNote:noteText, sheetSyncDetail:detailText};
-      if(status==='done') patch.sheetSyncedAt=Date.now();
+      if(status==='done') patch.sheetSyncedAt=syncedAt;
       batch.update(db.collection('consultLogs').doc(id), patch);
     });
     await batch.commit();
@@ -17510,10 +17521,14 @@ async function consultRunSheetSync(clientId, clientName, epoch){
     rows=consultMemoryLogs(clientId);
   }
   if(consultSheetStale(clientId, epoch)){
-    console.log('consultSheet 전송 시작', '이전 요청 취소');
+    console.log('consultSheet 전송 시작', '같은 거래처 요청을 하나로 합침');
     return;
   }
-  console.log('consultSheet 목록 조회', rows.length);
+  const pendingCount=rows.filter(function(r){
+    const st=r&&(r.sheetSyncStatus||'pending');
+    return st==='pending'||st==='failed';
+  }).length;
+  console.log('consultSheet 목록 조회', clientName||clientId, '상담일지', rows.length, '대기', pendingCount);
   const newest=rows.slice().sort(function(a,b){return consultMs(b)-consultMs(a);})[0];
   const name=(newest&&newest.clientName)||clientName||'';
   const active=consultSheetActiveLogs(rows);
@@ -17553,44 +17568,64 @@ function consultKickPending(){
   scan(CONSULT_LOCAL);
   scan(CONSULT_SERVER);
 }
+const CONSULT_SHEET_QUEUE=[];
+let CONSULT_SHEET_ACTIVE='';
 function consultQueueSheetSync(clientId, clientName){
   if(!clientId){
     console.log('consultSheet 전송 시작', '거래처 없음');
     return;
   }
   let job=CONSULT_SHEET_JOBS[clientId];
-  if(!job) job=CONSULT_SHEET_JOBS[clientId]={busy:false, again:false, name:'', epoch:0};
+  if(!job) job=CONSULT_SHEET_JOBS[clientId]={again:false, name:'', epoch:0, queued:false};
   job.epoch+=1;
   if(clientName) job.name=clientName;
   console.log('consultSheet 전송 시작', clientName||clientId);
-  if(job.busy){ job.again=true; return; }
-  job.busy=true;
-  const run=function(){
-    const my=job.epoch;
-    consultSetSheetSyncing(clientId, true);
-    consultRunSheetSync(clientId, job.name, my).catch(function(err){
-      const note=consultSheetFailNote(err);
-      const detail=consultSheetFailDetail(err);
-      console.error('consult sheet', note);
-      if(detail) console.error('consultSheet message', detail);
+  if(job.queued||CONSULT_SHEET_ACTIVE===clientId){
+    job.again=true;
+    return;
+  }
+  job.queued=true;
+  CONSULT_SHEET_QUEUE.push(clientId);
+  consultPumpSheetQueue();
+}
+function consultPumpSheetQueue(){
+  if(CONSULT_SHEET_ACTIVE) return;
+  const clientId=CONSULT_SHEET_QUEUE.shift();
+  if(!clientId) return;
+  const job=CONSULT_SHEET_JOBS[clientId];
+  if(!job){
+    consultPumpSheetQueue();
+    return;
+  }
+  job.queued=false;
+  CONSULT_SHEET_ACTIVE=clientId;
+  const my=job.epoch;
+  consultSetSheetSyncing(clientId, true);
+  consultRunSheetSync(clientId, job.name, my).catch(function(err){
+    const note=consultSheetFailNote(err);
+    const detail=consultSheetFailDetail(err);
+    console.error('consult sheet', note);
+    if(detail) console.error('consultSheet message', detail);
+    if(consultSheetStale(clientId, my)) return;
+    return consultLoadClientLogs(clientId).then(function(rows){
       if(consultSheetStale(clientId, my)) return;
-      return consultLoadClientLogs(clientId).then(function(rows){
-        if(consultSheetStale(clientId, my)) return;
-        return consultMarkSheetStatus(clientId, rows, 'failed', note, detail);
-      }).then(function(){
-        if(!consultSheetStale(clientId, my)) toast(note,'error');
-      });
-    }).finally(function(){
-      if(job.again){
-        job.again=false;
-        run();
-        return;
-      }
-      job.busy=false;
-      consultSetSheetSyncing(clientId, false);
+      return consultMarkSheetStatus(clientId, rows, 'failed', note, detail);
+    }).then(function(){
+      if(!consultSheetStale(clientId, my)) toast(note,'error');
     });
-  };
-  run();
+  }).finally(function(){
+    if(job.again){
+      job.again=false;
+      job.queued=true;
+      CONSULT_SHEET_ACTIVE='';
+      CONSULT_SHEET_QUEUE.unshift(clientId);
+      consultPumpSheetQueue();
+      return;
+    }
+    consultSetSheetSyncing(clientId, false);
+    CONSULT_SHEET_ACTIVE='';
+    consultPumpSheetQueue();
+  });
 }
 function consultDoneBtn(row){
   if(!row||row.scope!=='once') return '';
