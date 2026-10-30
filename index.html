@@ -7322,7 +7322,7 @@ function renderGsyncSettings(){
       <div style="margin-top:14px">
         <div style="font-size:12px;font-weight:700;margin-bottom:6px;color:#065f46">📋 Apps Script 코드 (복사해서 붙여넣으세요)</div>
         <div style="position:relative">
-          <pre id="apps-script-code" style="background:#1e293b;color:#e2e8f0;padding:14px;border-radius:8px;font-size:11px;line-height:1.7;overflow-x:auto;margin:0;white-space:pre">const CONSULT_VERSION = '2026-10-30-1545';
+          <pre id="apps-script-code" style="background:#1e293b;color:#e2e8f0;padding:14px;border-radius:8px;font-size:11px;line-height:1.7;overflow-x:auto;margin:0;white-space:pre">const CONSULT_VERSION = '2026-10-30-1558';
 const SHEET_ID = '136a4WUg1ol2sbbi-dupFdAZkR1gUn89wLyZaSuLUV2U';
 const SHEET_NAME = '통합결과'; // 시트 탭 이름
 
@@ -7790,36 +7790,24 @@ function consultCacheMap_() {
 function consultCacheSave_(norm, clientName, line, note, bg, updatedAt, remove) {
   var got = consultCacheMap_();
   var found = got.map[norm];
-  var values = [[norm, clientName || '', line || '', note || '', bg || '', updatedAt || '']];
-  var ok = consultSheetWithLock_(3000, function() {
-    if (remove) {
-      if (found) got.sh.deleteRow(found.row);
-      return;
-    }
-    if (found) got.sh.getRange(found.row, 1, 1, 6).setValues(values);
-    else got.sh.appendRow(values[0]);
-  });
-  if (!ok) throw new Error('잠금을 얻지 못했습니다');
-}
-
-function consultSheetTryLock_(waitMs) {
-  var lock = LockService.getScriptLock();
-  var locked = false;
-  var wait = waitMs === 0 ? 0 : (waitMs || 3000);
-  try { locked = lock.tryLock(wait); } catch (err) { locked = false; }
-  return { lock: lock, locked: locked };
-}
-
-function consultSheetWithLock_(waitMs, fn) {
-  var held = consultSheetTryLock_(waitMs);
-  try {
-    if (!held.locked) return false;
-    fn();
-    SpreadsheetApp.flush();
-    return true;
-  } finally {
-    if (held.locked) held.lock.releaseLock();
+  if (remove) {
+    if (found) got.sh.deleteRow(found.row);
+    return;
   }
+  var values = [[norm, clientName || '', line || '', note || '', bg || '', updatedAt || '']];
+  if (found) got.sh.getRange(found.row, 1, 1, 6).setValues(values);
+  else got.sh.appendRow(values[0]);
+}
+
+function consultSheetRevAhead_(props, norm, updatedAt) {
+  var rev = Number(props.getProperty(consultSheetRevKey_(norm)) || 0);
+  var seen = Number(updatedAt || 0);
+  if (!rev || !seen) return false;
+  return rev > seen;
+}
+
+function consultSheetSame_(cell, line, note) {
+  return String(cell.note || '') === String(note || '') && String(cell.disp || '') === String(line || '');
 }
 
 function consultSheetWrite_(body) {
@@ -7869,28 +7857,22 @@ function consultSheetWrite_(body) {
   }
   if (blocked) return consultSheetFinish_(false, 0, sheetCount, 'e_cell_occupied', 'E열에 상담일지가 아닌 값이 있습니다');
   if (!matched && !clear) return consultSheetFinish_(false, 0, sheetCount, 'not_found', '오늘부터 지정 기간의 날짜 탭에서 업체 헤더를 찾지 못했습니다');
+  if (syncAt) props.setProperty(revKey, String(syncAt));
   var written = 0;
   for (var n = 0; plans.length > n; n++) {
-    var painted = plans[n].rows.length;
-    var wrote = (function(plan) {
-      return consultSheetWithLock_(3000, function() {
-        consultSheetPaint_(plan.sh, plan.rows, clear ? '' : line, clear ? '' : memo, bg);
-      });
-    })(plans[n]);
-    if (!wrote) return consultSheetFinish_(false, written, sheetCount, 'busy', '잠금을 얻지 못했습니다');
-    written += painted;
+    consultSheetPaint_(plans[n].sh, plans[n].rows, clear ? '' : line, clear ? '' : memo, bg);
+    written += plans[n].rows.length;
   }
   var cacheMsg = '';
   try { consultCacheSave_(norm, body.clientName, clear ? '' : line, clear ? '' : memo, clear ? '' : bg, syncAt || '', clear); }
   catch (cacheErr) { cacheMsg = String(cacheErr && cacheErr.message || ''); }
-  if (cacheMsg.indexOf('잠금') >= 0) return consultSheetFinish_(false, written, sheetCount, 'busy', '잠금을 얻지 못했습니다');
-  if (syncAt) props.setProperty(revKey, String(syncAt));
+  SpreadsheetApp.flush();
   var message = summed.message || '';
   if (cacheMsg) message = message ? (message + ' / ' + cacheMsg) : cacheMsg;
   return consultSheetFinish_(true, written, sheetCount, '', message, summary, summed.aiFailed, focus);
 }
 
-function consultRefreshPlans_(item, cache) {
+function consultRefreshPlans_(item, cache, props) {
   var named = {};
   if (!item.rows.length) return named;
   var pack = consultSheetReadE_(item.sh, item.rows);
@@ -7901,9 +7883,17 @@ function consultRefreshPlans_(item, cache) {
     var empty = consultSheetEmptyE_(cell);
     var entry = cache.map[info.name];
     var action = null;
-    if (ours && entry && entry.line) action = entry;
-    else if (ours) action = { line: '', note: '', bg: '' };
-    else if (empty && entry && entry.line) action = entry;
+    if (ours && entry && entry.line) {
+      if (consultSheetSame_(cell, entry.line, entry.note)) continue;
+      if (consultSheetRevAhead_(props, info.name, entry.updatedAt)) continue;
+      action = entry;
+    } else if (ours) {
+      if (empty && !String(cell.note || '')) continue;
+      action = { line: '', note: '', bg: '' };
+    } else if (empty && entry && entry.line) {
+      if (consultSheetRevAhead_(props, info.name, entry.updatedAt)) continue;
+      action = entry;
+    }
     if (!action) continue;
     if (!named[info.name]) named[info.name] = { rows: [], line: action.line || '', note: action.note || '', bg: action.bg || '' };
     named[info.name].rows.push(info.row);
@@ -7922,21 +7912,20 @@ function consultRefreshFromCache_(onlyNames) {
   var win = consultSheetWindow_();
   var picked = consultSheetHeaders_(opened.ss, win.today, win.end);
   var cache = consultCacheMap_();
+  var dirty = false;
   for (var p = 0; picked.length > p; p++) {
     var item = picked[p];
     if (allow && !allow[item.sh.getName()]) continue;
-    var named = consultRefreshPlans_(item, cache);
+    var named = consultRefreshPlans_(item, cache, opened.props);
     var names = Object.keys(named);
     if (!names.length) continue;
-    (function(tab, slots, slotNames) {
-      consultSheetWithLock_(0, function() {
-        for (var n = 0; slotNames.length > n; n++) {
-          var slot = slots[slotNames[n]];
-          consultSheetPaint_(tab.sh, slot.rows, slot.line, slot.note, slot.bg);
-        }
-      });
-    })(item, named, names);
+    for (var n = 0; names.length > n; n++) {
+      var slot = named[names[n]];
+      consultSheetPaint_(item.sh, slot.rows, slot.line, slot.note, slot.bg);
+    }
+    dirty = true;
   }
+  if (dirty) SpreadsheetApp.flush();
 }
 
 function consultSheetChangedDateTabs_(ss, change) {
@@ -8045,16 +8034,7 @@ function cleanupConsultCells(keepNames) {
       if (missing || noLogs) rows.push(info.row);
     }
     if (!rows.length) continue;
-    var ok = (function(tab, doomed) {
-      return consultSheetWithLock_(3000, function() {
-        consultSheetPaint_(tab.sh, doomed, '', '', '');
-      });
-    })(item, rows);
-    if (!ok) {
-      var busy = consultSheetResult_(false, 0, picked.length, 'busy', '잠금을 얻지 못했습니다');
-      busy.cleared = cleared;
-      return busy;
-    }
+    consultSheetPaint_(item.sh, rows, '', '', '');
     cleared += rows.length;
   }
   var dropKeys = Object.keys(drop);
@@ -8064,16 +8044,9 @@ function cleanupConsultCells(keepNames) {
       if (drop[dropKeys[d]] && drop[dropKeys[d]].row) cacheRows.push(drop[dropKeys[d]].row);
     }
     cacheRows.sort(function(a, b) { return b - a; });
-    var cacheSheet = cache.sh;
-    var wiped = consultSheetWithLock_(3000, function() {
-      for (var r = 0; cacheRows.length > r; r++) cacheSheet.deleteRow(cacheRows[r]);
-    });
-    if (!wiped) {
-      var busyCache = consultSheetResult_(false, 0, picked.length, 'busy', '잠금을 얻지 못했습니다');
-      busyCache.cleared = cleared;
-      return busyCache;
-    }
+    for (var r = 0; cacheRows.length > r; r++) cache.sh.deleteRow(cacheRows[r]);
   }
+  if (cleared || dropKeys.length) SpreadsheetApp.flush();
   var done = consultSheetResult_(true, 0, picked.length, '', '');
   done.cleared = cleared;
   return done;
@@ -8082,7 +8055,7 @@ function cleanupConsultCells(keepNames) {
           <button onclick="navigator.clipboard.writeText(document.getElementById('apps-script-code').textContent).then(()=>toast('코드 복사됨','success'))"
             style="position:absolute;top:8px;right:8px;background:#334155;color:#e2e8f0;border:none;border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer">📋 복사</button>
         </div>
-        <div style="font-size:11px;color:#065f46;margin-top:8px">상담일지 E열 반영은 doPost입니다. 코드를 붙인 뒤 배포 관리 → 기존 배포 편집 → 새 버전으로 배포하세요. 웹앱 주소는 유지됩니다. 콘솔에 consultSheet version 2026-10-30-1545가 보이면 새 배포가 반영된 것입니다. 그다음 편집기에서 installConsultTrigger를 한 번만 실행하세요. 같은 이름의 기존 트리거를 지우고 onChange 1개, 1시간 트리거 1개만 남깁니다. listConsultTriggers를 실행하면 실행 로그에 종류와 함수가 찍힙니다. 스크립트 속성: CONSULT_TOKEN, WORK_SHEET_ID, GEMINI_API_KEY, GEMINI_MODEL(비우면 gemini-3.1-flash-lite).</div>
+        <div style="font-size:11px;color:#065f46;margin-top:8px">상담일지 E열 반영은 doPost입니다. 코드를 붙인 뒤 배포 관리 → 기존 배포 편집 → 새 버전으로 배포하세요. 웹앱 주소는 유지됩니다. 콘솔에 consultSheet version 2026-10-30-1558이 보이면 새 배포가 반영된 것입니다. 이 버전은 상담일지 전송이 스크립트 잠금을 기다리지 않습니다. installConsultTrigger는 방금 한 번으로 충분해서 다시 실행하지 않아도 됩니다. 스크립트 속성: CONSULT_TOKEN, WORK_SHEET_ID, GEMINI_API_KEY, GEMINI_MODEL(비우면 gemini-3.1-flash-lite).</div>
       </div>
     </div>
 
