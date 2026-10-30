@@ -16594,6 +16594,7 @@ function consultFsPayload(row, withCreated){
     sheetSyncStatus:'pending',
     sheetSyncNote:'',
     sheetSyncDetail:'',
+    sheetQueuedAt:Date.now(),
     clientSort:consultEnsureSort(row),
     kakaoText:row.kakaoText||'',
     done:!!row.done,
@@ -16625,8 +16626,12 @@ function consultFinishWrite(row, job){
     const prevSheetName=row._sheetPrevName||'';
     row._sheetPrevId='';
     row._sheetPrevName='';
-    consultQueueSheetSync(row.clientId, row.clientName);
-    if(prevSheetId&&prevSheetId!==row.clientId) consultQueueSheetSync(prevSheetId, prevSheetName);
+    try{
+      consultQueueSheetSync(row.clientId, row.clientName);
+      if(prevSheetId&&prevSheetId!==row.clientId) consultQueueSheetSync(prevSheetId, prevSheetName);
+    }catch(syncErr){
+      console.log('consultSheet 전송 시작', '호출 실패', syncErr&&syncErr.message||syncErr);
+    }
     if(row._kakaoPending){
       row._kakaoPending=false;
       consultPersistKakao(row);
@@ -16665,6 +16670,7 @@ function consultCreate(fields){
     authorName:fields.authorName,
     sheetSyncStatus:'pending',
     sheetSyncNote:'',
+    sheetQueuedAt:ms,
     clientSort:consultMakeSort(fields.clientId, ms),
     _localMs:ms,
     _createdOnServer:false,
@@ -16696,6 +16702,7 @@ function consultSaveEdit(fields){
   row.isPhone=fields.isPhone;
   row.phoneFields=fields.phoneFields;
   row.sheetSyncStatus='pending';
+  row.sheetQueuedAt=Date.now();
   row.kakaoText=row.isPhone?consultBuildKakao(row):'';
   if(!row.clientSort||row.clientSort.indexOf(row.clientId+'_')!==0){
     row.clientSort=consultMakeSort(row.clientId, row._localMs||consultMs(row));
@@ -16742,7 +16749,8 @@ function consultDelete(id){
   CONSULT_TOMB.add(id);
   db.collection('consultLogs').doc(id).delete().then(function(){
     CONSULT_TOMB.delete(id);
-    consultQueueSheetSync(row.clientId, row.clientName);
+    try{ consultQueueSheetSync(row.clientId, row.clientName); }
+    catch(syncErr){ console.log('consultSheet 전송 시작', '호출 실패', syncErr&&syncErr.message||syncErr); }
   }).catch(function(err){
     console.error('consultLogs delete', err);
     CONSULT_TOMB.delete(id);
@@ -16768,7 +16776,8 @@ function consultRetry(id){
       consultRemove(row.id);
       consultDashForget(row.id);
       consultRender();
-      consultQueueSheetSync(row.clientId, row.clientName);
+      try{ consultQueueSheetSync(row.clientId, row.clientName); }
+      catch(syncErr){ console.log('consultSheet 전송 시작', '호출 실패', syncErr&&syncErr.message||syncErr); }
     }).catch(function(err){
       console.error('consultLogs delete', err);
       CONSULT_TOMB.delete(row.id);
@@ -16821,6 +16830,8 @@ function consultRowFromDoc(doc){
     sheetSyncStatus:data.sheetSyncStatus||'pending',
     sheetSyncNote:data.sheetSyncNote||'',
     sheetSyncDetail:data.sheetSyncDetail||'',
+    sheetQueuedAt:typeof data.sheetQueuedAt==='number'?data.sheetQueuedAt:0,
+    sheetSyncedAt:typeof data.sheetSyncedAt==='number'?data.sheetSyncedAt:0,
     kakaoText:data.kakaoText||'',
     done:!!data.done,
     doneAt:data.doneAt||null,
@@ -16885,7 +16896,10 @@ async function consultFetch(req, append){
   }finally{
     if(flight===CONSULT_FLIGHT){
       CONSULT_LOADING=false;
-      if(req===CONSULT_REQ) consultRender();
+      if(req===CONSULT_REQ){
+        consultRender();
+        if(!append) consultKickPending();
+      }
     }
   }
 }
@@ -17173,14 +17187,72 @@ function consultBuildSheetSummary(rows){
     clear:!lines.length
   };
 }
+let CONSULT_SHEET_TIMER=null;
+let CONSULT_PENDING_KICKED=false;
+function consultSheetQueuedAt(row){
+  const n=Number(row&&row.sheetQueuedAt||0);
+  if(n) return n;
+  if(row&&row._localMs) return row._localMs;
+  const c=row&&row.createdAt;
+  if(c&&typeof c.toMillis==='function') return c.toMillis();
+  if(c&&typeof c.toDate==='function') return c.toDate().getTime();
+  if(typeof c==='number') return c;
+  return 0;
+}
+function consultSheetPendingStuck(row){
+  if(!row||row._sheetSyncing) return false;
+  const status=row.sheetSyncStatus||'pending';
+  if(status==='done'||status==='failed') return false;
+  const t=consultSheetQueuedAt(row);
+  if(!t) return false;
+  return Date.now()-t>=60000;
+}
+function consultSheetTimeLabel(ms){
+  const n=Number(ms)||0;
+  if(!n) return '';
+  try{
+    return new Intl.DateTimeFormat('ko-KR',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(n));
+  }catch(e){
+    const d=new Date(n);
+    const h=String(d.getHours()).padStart(2,'0');
+    const m=String(d.getMinutes()).padStart(2,'0');
+    return h+':'+m;
+  }
+}
+function consultArmSheetTimer(rows){
+  if(CONSULT_SHEET_TIMER){ clearTimeout(CONSULT_SHEET_TIMER); CONSULT_SHEET_TIMER=null; }
+  let wait=0;
+  (rows||[]).forEach(function(r){
+    if(!r||r._sheetSyncing||r.sheetSyncStatus==='done'||r.sheetSyncStatus==='failed') return;
+    const t=consultSheetQueuedAt(r);
+    if(!t) return;
+    const left=60000-(Date.now()-t);
+    if(left>0&&(!wait||left<wait)) wait=left;
+  });
+  if(!wait) return;
+  CONSULT_SHEET_TIMER=setTimeout(function(){
+    CONSULT_SHEET_TIMER=null;
+    consultRender();
+  }, wait+200);
+}
 function consultSheetStatusHtml(row){
-  if(row&&row._sheetSyncing) return '<div style="font-size:11px;color:var(--text3);margin-top:4px">시트 반영 중</div>';
-  if(!row||row.sheetSyncStatus!=='failed') return '';
-  const note=row.sheetSyncNote||'시트 반영 실패';
-  const tip=row.sheetSyncDetail?(' title="'+escHtml(row.sheetSyncDetail)+'"'):'';
-  const dis=row._sheetSyncing?' disabled':'';
-  return '<div style="margin-top:4px"><div style="font-size:11px;color:#b91c1c;cursor:help"'+tip+'>'+escHtml(note)+'</div>'
-    +'<button type="button" class="btn btn-xs btn-gray" style="margin-top:4px"'+dis+' onclick="consultResendSheet(\''+consultJsId(row.id)+'\')">시트 재전송</button></div>';
+  if(!row) return '';
+  const id=consultJsId(row.id);
+  if(row._sheetSyncing) return '<div style="font-size:11px;color:var(--text3);margin-top:4px">전송 중</div>';
+  if(row.sheetSyncStatus==='failed'){
+    const note=row.sheetSyncNote||'시트 반영 실패';
+    const tip=row.sheetSyncDetail?(' title="'+escHtml(row.sheetSyncDetail)+'"'):'';
+    return '<div style="margin-top:4px"><div style="font-size:11px;color:#b91c1c;cursor:help"'+tip+'>실패('+escHtml(note)+')</div>'
+      +'<button type="button" class="btn btn-xs btn-gray" style="margin-top:4px" onclick="consultResendSheet(\''+id+'\')">시트 재전송</button></div>';
+  }
+  if(row.sheetSyncStatus==='done'){
+    const time=consultSheetTimeLabel(row.sheetSyncedAt);
+    return '<div style="font-size:11px;color:#047857;margin-top:4px">반영됨'+(time?'('+escHtml(time)+')':'')+'</div>';
+  }
+  if(consultSheetPendingStuck(row)){
+    return '<div style="margin-top:4px"><button type="button" class="btn btn-xs btn-gray" onclick="consultResendSheet(\''+id+'\')">전송 안 됨 - 재전송</button></div>';
+  }
+  return '<div style="font-size:11px;color:var(--text3);margin-top:4px">전송 중</div>';
 }
 function consultSetSheetSyncing(clientId, on){
   function apply(r){ if(r&&r.clientId===clientId) r._sheetSyncing=!!on; }
@@ -17192,6 +17264,20 @@ function consultSetSheetSyncing(clientId, on){
 function consultSheetStale(clientId, epoch){
   const job=CONSULT_SHEET_JOBS[clientId];
   return !job||job.epoch!==epoch;
+}
+function consultMemoryLogs(clientId){
+  const byId=new Map();
+  function overlay(list){
+    (list||[]).forEach(function(r){
+      if(!r||r.clientId!==clientId||CONSULT_TOMB.has(r.id)) return;
+      if(r._failed&&!r._createdOnServer) return;
+      byId.set(r.id, r);
+    });
+  }
+  overlay(CONSULT_SERVER);
+  overlay(CONSULT_LOCAL);
+  if(typeof CONSULT_DASH!=='undefined') overlay(CONSULT_DASH.rows);
+  return Array.from(byId.values());
 }
 async function consultLoadClientLogs(clientId){
   const byId=new Map();
@@ -17208,16 +17294,7 @@ async function consultLoadClientLogs(clientId){
       cursor=snap.docs[snap.docs.length-1];
     }
   }
-  function overlay(list){
-    (list||[]).forEach(function(r){
-      if(!r||r.clientId!==clientId||CONSULT_TOMB.has(r.id)) return;
-      if(r._failed&&!r._createdOnServer) return;
-      byId.set(r.id, r);
-    });
-  }
-  overlay(CONSULT_SERVER);
-  overlay(CONSULT_LOCAL);
-  if(typeof CONSULT_DASH!=='undefined') overlay(CONSULT_DASH.rows);
+  consultMemoryLogs(clientId).forEach(function(r){ byId.set(r.id, r); });
   return Array.from(byId.values());
 }
 async function consultMarkSheetStatus(clientId, rows, status, note, detail){
@@ -17229,6 +17306,7 @@ async function consultMarkSheetStatus(clientId, rows, status, note, detail){
     r.sheetSyncStatus=status;
     r.sheetSyncNote=noteText;
     r.sheetSyncDetail=detailText;
+    if(status==='done') r.sheetSyncedAt=Date.now();
   }
   CONSULT_LOCAL.forEach(apply);
   CONSULT_SERVER.forEach(apply);
@@ -17246,7 +17324,9 @@ async function consultMarkSheetStatus(clientId, rows, status, note, detail){
   for(let i=0;i<ids.length;i+=400){
     const batch=db.batch();
     ids.slice(i,i+400).forEach(function(id){
-      batch.update(db.collection('consultLogs').doc(id), {sheetSyncStatus:status, sheetSyncNote:noteText, sheetSyncDetail:detailText});
+      const patch={sheetSyncStatus:status, sheetSyncNote:noteText, sheetSyncDetail:detailText};
+      if(status==='done') patch.sheetSyncedAt=Date.now();
+      batch.update(db.collection('consultLogs').doc(id), patch);
     });
     await batch.commit();
   }
@@ -17289,11 +17369,26 @@ function consultSheetError(code, message, version){
   return err;
 }
 function consultLogSheet(json){
-  if(!json) return;
-  if(json.version) console.log('consultSheet version', json.version);
-  if(json.ms!=null) console.log('consultSheet ms', json.ms);
-  if(json.message) console.log('consultSheet message', json.message);
-  if(json.aiFailed) console.log('consultSheet aiFailed', json.message||true);
+  console.log('consultSheet 응답 수신', {
+    version:json&&json.version||'',
+    ms:json&&json.ms!=null?json.ms:null,
+    ok:!!(json&&json.ok),
+    written:json&&json.written||0,
+    aiFailed:!!(json&&json.aiFailed),
+    error:(json&&json.error)||'',
+    message:(json&&json.message)||''
+  });
+}
+function consultLogSheetFail(err){
+  console.log('consultSheet 응답 수신', {
+    version:err&&err.sheetVersion||'',
+    ms:null,
+    ok:false,
+    written:0,
+    aiFailed:false,
+    error:err&&(err.sheetCode||err.message)||'',
+    message:err&&(err.sheetMessage||err.message)||''
+  });
 }
 async function consultPostSheetOnce(body){
   const ctrl=new AbortController();
@@ -17330,19 +17425,37 @@ async function consultPostSheet(payload){
   const cfg=typeof gsyncLoad==='function'?gsyncLoad():{};
   const url=String(cfg.url||'').trim();
   const token=String(cfg.consultToken||'').trim();
-  if(!url) throw new Error('시트 URL이 없습니다');
-  if(!token) throw new Error('시트 토큰이 없습니다');
-  const body=Object.assign({}, payload, {token:token});
-  let json=await consultPostSheetOnce(body);
-  consultLogSheet(json);
-  if(json&&json.error==='busy'){
-    await new Promise(function(resolve){ setTimeout(resolve, 5000); });
-    json=await consultPostSheetOnce(body);
-    consultLogSheet(json);
+  if(!url||!token){
+    const early=new Error(!url?'시트 URL이 없습니다':'시트 토큰이 없습니다');
+    consultLogSheetFail(early);
+    throw early;
   }
-  if(json&&json.error==='busy') throw consultSheetError('busy', (json&&json.message)||'잠금을 얻지 못했습니다', json&&json.version);
-  if(!json||json.ok!==true) throw consultSheetError((json&&json.error)||'unknown', (json&&json.message)||'', json&&json.version);
-  return json;
+  const body=Object.assign({}, payload, {token:token});
+  console.log('consultSheet 요청 보냄', payload.clientName||'', Array.isArray(payload.logs)?payload.logs.length:0);
+  try{
+    let json=await consultPostSheetOnce(body);
+    consultLogSheet(json);
+    if(json&&json.error==='busy'){
+      await new Promise(function(resolve){ setTimeout(resolve, 5000); });
+      console.log('consultSheet 요청 보냄', payload.clientName||'', '재시도');
+      json=await consultPostSheetOnce(body);
+      consultLogSheet(json);
+    }
+    if(json&&json.error==='busy'){
+      const busyErr=consultSheetError('busy', (json&&json.message)||'잠금을 얻지 못했습니다', json&&json.version);
+      busyErr.sheetLogged=true;
+      throw busyErr;
+    }
+    if(!json||json.ok!==true){
+      const failErr=consultSheetError((json&&json.error)||'unknown', (json&&json.message)||'', json&&json.version);
+      failErr.sheetLogged=true;
+      throw failErr;
+    }
+    return json;
+  }catch(err){
+    if(!(err&&err.sheetLogged)) consultLogSheetFail(err);
+    throw err;
+  }
 }
 function consultSheetActiveLogs(rows){
   return (rows||[]).filter(function(r){
@@ -17389,8 +17502,18 @@ async function consultSaveSummary(clientId, clientName, json, rows){
   }, {merge:true});
 }
 async function consultRunSheetSync(clientId, clientName, epoch){
-  const rows=await consultLoadClientLogs(clientId);
-  if(consultSheetStale(clientId, epoch)) return;
+  let rows=[];
+  try{
+    rows=await consultLoadClientLogs(clientId);
+  }catch(err){
+    console.log('consultSheet 목록 조회 실패', err&&err.message||err);
+    rows=consultMemoryLogs(clientId);
+  }
+  if(consultSheetStale(clientId, epoch)){
+    console.log('consultSheet 전송 시작', '이전 요청 취소');
+    return;
+  }
+  console.log('consultSheet 목록 조회', rows.length);
   const newest=rows.slice().sort(function(a,b){return consultMs(b)-consultMs(a);})[0];
   const name=(newest&&newest.clientName)||clientName||'';
   const active=consultSheetActiveLogs(rows);
@@ -17413,12 +17536,33 @@ async function consultRunSheetSync(clientId, clientName, epoch){
   if(consultSheetStale(clientId, epoch)) return;
   await consultMarkSheetStatus(clientId, rows, 'done', '', '');
 }
+function consultKickPending(){
+  if(CONSULT_PENDING_KICKED) return;
+  CONSULT_PENDING_KICKED=true;
+  const seen=new Set();
+  function scan(list){
+    (list||[]).forEach(function(r){
+      if(!r||!r.clientId||seen.has(r.clientId)) return;
+      if(r.sheetSyncStatus!=='pending') return;
+      if(r._failed&&!r._createdOnServer) return;
+      if(r._sheetSyncing) return;
+      seen.add(r.clientId);
+      consultQueueSheetSync(r.clientId, r.clientName);
+    });
+  }
+  scan(CONSULT_LOCAL);
+  scan(CONSULT_SERVER);
+}
 function consultQueueSheetSync(clientId, clientName){
-  if(!clientId) return;
+  if(!clientId){
+    console.log('consultSheet 전송 시작', '거래처 없음');
+    return;
+  }
   let job=CONSULT_SHEET_JOBS[clientId];
   if(!job) job=CONSULT_SHEET_JOBS[clientId]={busy:false, again:false, name:'', epoch:0};
   job.epoch+=1;
   if(clientName) job.name=clientName;
+  console.log('consultSheet 전송 시작', clientName||clientId);
   if(job.busy){ job.again=true; return; }
   job.busy=true;
   const run=function(){
@@ -17490,7 +17634,8 @@ function consultMarkDone(id){
     try{ consultDashPaint(); }catch(e){}
   };
   if(!row._createdOnServer||typeof db==='undefined'||!firebase.firestore||!firebase.firestore.FieldValue){
-    consultQueueSheetSync(row.clientId, row.clientName);
+    try{ consultQueueSheetSync(row.clientId, row.clientName); }
+    catch(syncErr){ console.log('consultSheet 전송 시작', '호출 실패', syncErr&&syncErr.message||syncErr); }
     return;
   }
   db.collection('consultLogs').doc(row.id).update({
@@ -17498,7 +17643,8 @@ function consultMarkDone(id){
     doneAt:firebase.firestore.FieldValue.serverTimestamp(),
     doneBy:by
   }).then(function(){
-    consultQueueSheetSync(row.clientId, row.clientName);
+    try{ consultQueueSheetSync(row.clientId, row.clientName); }
+    catch(syncErr){ console.log('consultSheet 전송 시작', '호출 실패', syncErr&&syncErr.message||syncErr); }
   }).catch(function(err){
     console.error('consultLogs done', err);
     revert();
@@ -17533,6 +17679,7 @@ function consultRender(){
   if(!rows.length){
     const msg=CONSULT_LOADING?'불러오는 중…':'상담일지가 없습니다';
     tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:28px">'+msg+'</td></tr>';
+    consultArmSheetTimer(rows);
     consultSyncMore();
     return;
   }
@@ -17557,6 +17704,7 @@ function consultRender(){
       +'<td style="white-space:nowrap">'+actions+'</td>'
       +'</tr>'+fail+extra;
   }).join('');
+  consultArmSheetTimer(rows);
   consultSyncMore();
 }
 document.addEventListener('click', function(e){
