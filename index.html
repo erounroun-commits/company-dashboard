@@ -7322,7 +7322,7 @@ function renderGsyncSettings(){
       <div style="margin-top:14px">
         <div style="font-size:12px;font-weight:700;margin-bottom:6px;color:#065f46">📋 Apps Script 코드 (복사해서 붙여넣으세요)</div>
         <div style="position:relative">
-          <pre id="apps-script-code" style="background:#1e293b;color:#e2e8f0;padding:14px;border-radius:8px;font-size:11px;line-height:1.7;overflow-x:auto;margin:0;white-space:pre">const CONSULT_VERSION = '2026-10-30-0405';
+          <pre id="apps-script-code" style="background:#1e293b;color:#e2e8f0;padding:14px;border-radius:8px;font-size:11px;line-height:1.7;overflow-x:auto;margin:0;white-space:pre">const CONSULT_VERSION = '2026-10-30-1415';
 const SHEET_ID = '136a4WUg1ol2sbbi-dupFdAZkR1gUn89wLyZaSuLUV2U';
 const SHEET_NAME = '통합결과'; // 시트 탭 이름
 
@@ -7359,7 +7359,7 @@ function doPost(e) {
     obj.version = CONSULT_VERSION;
     obj.ms = Date.now() - started;
     obj.message = obj.message || '';
-    console.log('consultSheet ' + obj.version + ' ms ' + obj.ms + ' ' + (obj.error || 'ok') + ' ' + obj.message);
+    console.log('consultSheet ' + obj.version + ' ms ' + obj.ms + ' ' + (obj.error || 'ok') + (obj.aiFailed ? ' aiFailed' : '') + ' ' + obj.message);
     return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
   }
   try {
@@ -7444,32 +7444,43 @@ function consultSheetShiftDay_(ymd, days) {
   return Utilities.formatDate(dt, 'UTC', 'yyyy-MM-dd');
 }
 
-function consultSheetWrite_(body) {
-  var norm = consultSheetNorm_(body.clientName);
-  if (!norm) return consultSheetResult_(false, 0, 0, 'unknown', '업체명이 비어 있습니다');
-  var syncAt = Number(body.syncAt) || 0;
+function consultSheetFinish_(ok, written, sheetCount, error, message, summary, aiFailed, focus) {
+  var obj = consultSheetResult_(ok, written, sheetCount, error, message);
+  obj.aiFailed = !!aiFailed;
+  if (summary) {
+    obj.summary = {
+      always: summary.always || [],
+      once: summary.once || [],
+      check: summary.check || [],
+      today: summary.today || [],
+      focusDate: focus || ''
+    };
+  }
+  return obj;
+}
+
+function consultSheetOpenWork_() {
   var props = PropertiesService.getScriptProperties();
-  var revKey = consultSheetRevKey_(norm);
-  var prev = Number(props.getProperty(revKey) || 0);
-  if (syncAt && prev && prev > syncAt) return consultSheetResult_(true, 0, 0, '');
   var workId = String(props.getProperty('WORK_SHEET_ID') || '').replace(/^\\s+|\\s+$/g, '');
-  if (!workId) return consultSheetResult_(false, 0, 0, 'no_work_sheet_id', 'WORK_SHEET_ID 스크립트 속성이 없습니다');
-  var ahead = consultSheetDaysAhead_(props);
-  var ss;
+  if (!workId) return { error: consultSheetResult_(false, 0, 0, 'no_work_sheet_id', 'WORK_SHEET_ID 스크립트 속성이 없습니다') };
   try {
-    ss = SpreadsheetApp.openById(workId);
+    return { ss: SpreadsheetApp.openById(workId), props: props };
   } catch (err) {
     var openMsg = String(err && err.message || '');
-    return consultSheetResult_(false, 0, 0, 'work_sheet_open_failed', openMsg || 'openById failed');
+    return { error: consultSheetResult_(false, 0, 0, 'work_sheet_open_failed', openMsg || 'openById failed') };
   }
+}
+
+function consultSheetWindow_() {
+  var props = PropertiesService.getScriptProperties();
   var today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
-  var end = consultSheetShiftDay_(today, ahead);
-  var clear = !!body.clear || !body.text;
-  var text = clear ? '' : String(body.text || '');
-  var bg = body.hasCheck ? '#F4B183' : '#FFF2CC';
+  return { today: today, end: consultSheetShiftDay_(today, consultSheetDaysAhead_(props)) };
+}
+
+function consultSheetHeaders_(ss, today, end) {
   var all = ss.getSheets();
   var picked = [];
-  for (var s = 0; s < all.length; s++) {
+  for (var s = 0; all.length > s; s++) {
     var sh = all[s];
     var key = consultSheetDateKey_(sh.getName());
     if (!key || today > key || key > end) continue;
@@ -7479,89 +7490,454 @@ function consultSheetWrite_(body) {
       var block = sh.getRange(1, 3, last, 2);
       var disp = block.getDisplayValues();
       var rules = block.getDataValidations();
-      for (var i = 0; i < disp.length; i++) {
-        if (consultSheetNorm_(disp[i][1]) !== norm) continue;
+      for (var i = 0; disp.length > i; i++) {
         if (!consultSheetIsCheckbox_(rules[i][0])) continue;
-        rows.push(i + 1);
+        var name = consultSheetNorm_(disp[i][1]);
+        if (!name) continue;
+        rows.push({ row: i + 1, name: name });
       }
     }
     picked.push({ sh: sh, rows: rows });
   }
-  var sheetCount = picked.length;
+  return picked;
+}
+
+function consultSheetReadE_(sh, rows) {
+  var nums = [];
+  for (var i = 0; rows.length > i; i++) nums.push(typeof rows[i] === 'number' ? rows[i] : rows[i].row);
+  var minRow = nums[0];
+  var maxRow = nums[0];
+  for (var r = 1; nums.length > r; r++) {
+    if (minRow > nums[r]) minRow = nums[r];
+    if (nums[r] > maxRow) maxRow = nums[r];
+  }
+  var range = sh.getRange(minRow, 5, maxRow - minRow + 1, 1);
+  return { min: minRow, vals: range.getValues(), disp: range.getDisplayValues(), notes: range.getNotes() };
+}
+
+function consultSheetCell_(pack, row) {
+  var idx = row - pack.min;
+  return { note: String(pack.notes[idx][0] || ''), value: pack.vals[idx][0], disp: pack.disp[idx][0] };
+}
+
+function consultSheetOurs_(note) {
+  var text = String(note || '');
+  if (text === 'consultLog') return true;
+  return text.indexOf('[상담일지 요약]') === 0;
+}
+
+function consultSheetEmptyE_(cell) {
+  return !consultSheetIsDate_(cell.value) && consultSheetNorm_(cell.disp) === '';
+}
+
+function consultSheetPaint_(sh, rowNums, line, note, bg) {
+  if (!rowNums.length) return 0;
+  var a1 = [];
+  for (var i = 0; rowNums.length > i; i++) a1.push('E' + rowNums[i]);
+  var list = sh.getRangeList(a1);
+  if (!line) {
+    list.setValue('');
+    list.clearFormat();
+    list.clearNote();
+    return rowNums.length;
+  }
+  list.setValue(line);
+  list.setBackground(bg || '#FFF2CC');
+  list.setFontColor('#C00000');
+  list.setFontWeight('bold');
+  list.setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
+  list.setNote(note || '');
+  return rowNums.length;
+}
+
+function consultSheetList_(value) {
+  var out = [];
+  if (!value || !value.length) return out;
+  for (var i = 0; value.length > i; i++) {
+    var text = String(value[i] == null ? '' : value[i]).replace(/[\\r\\n]+/g, ' ').replace(/^\\s+|\\s+$/g, '');
+    if (text) out.push(text);
+  }
+  return out;
+}
+
+function consultSheetLogs_(body) {
+  var raw = body && body.logs;
+  var out = [];
+  if (!raw || !raw.length) return out;
+  for (var i = 0; raw.length > i; i++) {
+    var row = raw[i] || {};
+    var scope = String(row.scope || '');
+    if (scope !== 'always' && scope !== 'once' && scope !== 'check') continue;
+    if (scope === 'once' && row.done) continue;
+    var content = String(row.content || '').replace(/[\\r\\n]+/g, ' ').replace(/^\\s+|\\s+$/g, '');
+    if (!content) continue;
+    if (content.length > 1000) content = content.substring(0, 1000);
+    out.push({ date: String(row.date || ''), scope: scope, content: content, done: !!row.done });
+  }
+  if (out.length > 80) out = out.slice(out.length - 80);
+  return out;
+}
+
+function consultSheetFocus_(logs, body) {
+  var focus = String(body && body.focusDate || '');
+  if (focus) return focus;
+  var best = '';
+  for (var i = 0; logs.length > i; i++) {
+    if (logs[i].date > best) best = logs[i].date;
+  }
+  return best;
+}
+
+function consultSheetFallback_(logs, focus) {
+  function pick(scope, dateOnly) {
+    var out = [];
+    for (var i = 0; logs.length > i; i++) {
+      var row = logs[i];
+      if (scope && row.scope !== scope) continue;
+      if (dateOnly && row.date !== focus) continue;
+      if (row.content) out.push(row.content);
+    }
+    return out;
+  }
+  return { always: pick('always', false), once: pick('once', false), check: pick('check', false), today: pick('', true) };
+}
+
+function consultSheetLine_(summary) {
+  var parts = [];
+  function add(label, arr) {
+    var bits = consultSheetList_(arr);
+    if (bits.length) parts.push(label + ': ' + bits.join(', '));
+  }
+  add('계속', summary.always);
+  add('이번만', summary.once);
+  add('확인필요', summary.check);
+  return parts.join(' │ ');
+}
+
+function consultSheetMemo_(summary) {
+  var lines = ['[상담일지 요약]'];
+  function add(label, arr) {
+    var bits = consultSheetList_(arr);
+    if (!bits.length) return;
+    lines.push(label);
+    for (var i = 0; bits.length > i; i++) lines.push(bits[i]);
+  }
+  return lines.join('\\n');
+}
+
+function consultSheetSafe_(text, key) {
+  var s = String(text || '');
+  if (key && s.indexOf(key) >= 0) s = s.split(key).join('***');
+  if (s.length > 300) s = s.substring(0, 300);
+  return s;
+}
+
+function consultSheetModel_(props) {
+  var model = String(props.getProperty('GEMINI_MODEL') || '').replace(/^\\s+|\\s+$/g, '');
+  if (!model) model = 'gemini-3.1-flash-lite';
+  return model;
+}
+
+function consultSheetAiPayload_(prompt, modern, withThinking) {
+  var gen = { temperature: 0.2, responseMimeType: 'application/json' };
+  if (modern) {
+    gen.responseJsonSchema = {
+      type: 'object',
+      properties: {
+        always: { type: 'array', items: { type: 'string' } },
+        once: { type: 'array', items: { type: 'string' } },
+        check: { type: 'array', items: { type: 'string' } },
+        today: { type: 'array', items: { type: 'string' } }
+      },
+      required: ['always', 'once', 'check', 'today']
+    };
+  } else {
+    gen.responseSchema = {
+      type: 'OBJECT',
+      properties: {
+        always: { type: 'ARRAY', items: { type: 'STRING' } },
+        once: { type: 'ARRAY', items: { type: 'STRING' } },
+        check: { type: 'ARRAY', items: { type: 'STRING' } },
+        today: { type: 'ARRAY', items: { type: 'STRING' } }
+      },
+      required: ['always', 'once', 'check', 'today']
+    };
+  }
+  if (withThinking) gen.thinkingConfig = { thinkingLevel: 'low' };
+  return { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: gen };
+}
+
+function consultSheetAiParse_(bodyText, key) {
+  var json = JSON.parse(bodyText);
+  var parts = json && json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts;
+  var text = '';
+  if (parts) {
+    for (var p = 0; parts.length > p; p++) {
+      if (parts[p] && parts[p].text && !parts[p].thought) text = parts[p].text;
+    }
+  }
+  var parsed = JSON.parse(text);
+  return {
+    ok: true,
+    message: '',
+    summary: {
+      always: consultSheetList_(parsed.always),
+      once: consultSheetList_(parsed.once),
+      check: consultSheetList_(parsed.check),
+      today: consultSheetList_(parsed.today)
+    }
+  };
+}
+
+function consultSheetAi_(logs, focus, props) {
+  var key = String(props.getProperty('GEMINI_API_KEY') || '').replace(/^\\s+|\\s+$/g, '');
+  if (!key) return { ok: false, message: 'GEMINI_API_KEY 스크립트 속성이 없습니다' };
+  var model = consultSheetModel_(props);
+  var packed = [];
+  for (var i = 0; logs.length > i; i++) {
+    packed.push({ date: logs[i].date, scope: logs[i].scope, content: logs[i].content, done: !!logs[i].done });
+  }
+  var prompt = [
+    '상담일지를 요약한다. 응답은 JSON 하나만 반환한다.',
+    'logs는 오래된 순이다. date가 focusDate와 같은 상담만 today에 요약한다.',
+    'always는 scope가 always인 계속, once는 이번만, check는 확인필요로 묶는다.',
+    '같은 범위에서 나중 상담이 앞의 내용을 바꾸면 최신 내용만 남긴다. 예: 테스트 다음 테스트1로 변경이면 테스트1만.',
+    '서로 다른 지시는 합쳐서 정리한다. 예: 텍스트리뷰로 변경과 5건만 포토로 진행이면 텍스트리뷰로 진행, 5건만 포토.',
+    '숫자, 수량, 키워드, 업체명은 원문 그대로 둔다. 입력에 없는 내용은 만들지 않는다.',
+    '각 항목은 짧은 명사형으로 쓴다. 예: 텍스트리뷰로 진행, 5건 제외.',
+    '입력:',
+    JSON.stringify({ focusDate: focus, logs: packed })
+  ].join('\\n');
+  var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent';
+  var tries = [
+    consultSheetAiPayload_(prompt, true, true),
+    consultSheetAiPayload_(prompt, false, false)
+  ];
+  var last = 'Gemini 실패';
+  for (var t = 0; tries.length > t; t++) {
+    try {
+      var res = UrlFetchApp.fetch(url, {
+        method: 'post',
+        contentType: 'application/json',
+        muteHttpExceptions: true,
+        headers: { 'x-goog-api-key': key },
+        payload: JSON.stringify(tries[t])
+      });
+      var code = res.getResponseCode();
+      var bodyText = res.getContentText() || '';
+      if (200 > code || code > 299) {
+        var why = '';
+        try {
+          var errObj = JSON.parse(bodyText);
+          why = errObj && errObj.error && errObj.error.message ? String(errObj.error.message) : '';
+        } catch (parseErr) {}
+        last = consultSheetSafe_('Gemini HTTP ' + code + ' ' + why, key);
+        continue;
+      }
+      return consultSheetAiParse_(bodyText, key);
+    } catch (err) {
+      last = consultSheetSafe_(err && err.message, key);
+    }
+  }
+  return { ok: false, message: last };
+}
+
+function consultSheetSummarize_(logs, focus, props) {
+  var empty = { always: [], once: [], check: [], today: [] };
+  if (!logs.length) return { summary: empty, aiFailed: false, message: '' };
+  var ai = consultSheetAi_(logs, focus, props);
+  var summary = ai && ai.summary;
+  var weak = !ai.ok || !summary || (!summary.always.length && !summary.once.length && !summary.check.length);
+  if (weak) return { summary: consultSheetFallback_(logs, focus), aiFailed: true, message: (ai && ai.message) || 'Gemini 실패' };
+  return { summary: summary, aiFailed: false, message: '' };
+}
+
+function consultCacheSheet_() {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sh = ss.getSheetByName('_consultCache');
+  if (!sh) {
+    sh = ss.insertSheet('_consultCache');
+    sh.getRange(1, 1, 1, 6).setValues([['clientKey', 'clientName', 'line', 'note', 'bg', 'updatedAt']]);
+    try { sh.hideSheet(); } catch (err) {}
+  }
+  return sh;
+}
+
+function consultCacheMap_() {
+  var sh = consultCacheSheet_();
+  var map = {};
+  var last = sh.getLastRow();
+  if (2 > last) return { sh: sh, map: map };
+  var vals = sh.getRange(2, 1, last - 1, 6).getValues();
+  for (var i = 0; vals.length > i; i++) {
+    var key = consultSheetNorm_(vals[i][0]);
+    if (!key) continue;
+    map[key] = {
+      row: i + 2,
+      name: String(vals[i][1] || ''),
+      line: String(vals[i][2] || ''),
+      note: String(vals[i][3] || ''),
+      bg: String(vals[i][4] || ''),
+      updatedAt: vals[i][5]
+    };
+  }
+  return { sh: sh, map: map };
+}
+
+function consultCacheSave_(norm, clientName, line, note, bg, updatedAt, remove) {
+  var got = consultCacheMap_();
+  var found = got.map[norm];
+  if (remove) {
+    if (found) got.sh.deleteRow(found.row);
+    return;
+  }
+  var values = [[norm, clientName || '', line || '', note || '', bg || '', updatedAt || '']];
+  if (found) got.sh.getRange(found.row, 1, 1, 6).setValues(values);
+  else got.sh.appendRow(values[0]);
+}
+
+function consultSheetTryLock_() {
   var lock = LockService.getScriptLock();
   var locked = false;
+  try { locked = lock.tryLock(20000); } catch (err) { locked = false; }
+  return { lock: lock, locked: locked };
+}
+
+function consultSheetWrite_(body) {
+  var norm = consultSheetNorm_(body.clientName);
+  if (!norm) return consultSheetFinish_(false, 0, 0, 'unknown', '업체명이 비어 있습니다');
+  var syncAt = Number(body.syncAt) || 0;
+  var props = PropertiesService.getScriptProperties();
+  var revKey = consultSheetRevKey_(norm);
+  var prev = Number(props.getProperty(revKey) || 0);
+  if (syncAt && prev && prev > syncAt) return consultSheetFinish_(true, 0, 0, '', '');
+  var opened = consultSheetOpenWork_();
+  if (opened.error) return opened.error;
+  var logs = consultSheetLogs_(body);
+  var focus = consultSheetFocus_(logs, body);
+  var summed = consultSheetSummarize_(logs, focus, props);
+  var summary = summed.summary;
+  var line = consultSheetLine_(summary);
+  var memo = line ? consultSheetMemo_(summary) : '';
+  var bg = summary.check && summary.check.length ? '#F4B183' : '#FFF2CC';
+  var clear = !line;
+  var win = consultSheetWindow_();
+  var picked = consultSheetHeaders_(opened.ss, win.today, win.end);
+  var sheetCount = picked.length;
+  var held = consultSheetTryLock_();
   try {
-    try {
-      locked = lock.tryLock(20000);
-    } catch (err) {
-      locked = false;
-    }
-    if (!locked) return consultSheetResult_(false, 0, sheetCount, 'busy', '잠금을 얻지 못했습니다');
+    if (!held.locked) return consultSheetFinish_(false, 0, sheetCount, 'busy', '잠금을 얻지 못했습니다');
     var matched = 0;
     var blocked = false;
     var plans = [];
-    for (var p = 0; p < picked.length; p++) {
+    for (var p = 0; picked.length > p; p++) {
       var item = picked[p];
-      if (!item.rows.length) continue;
-      var minRow = item.rows[0];
-      var maxRow = item.rows[0];
-      for (var r = 1; r < item.rows.length; r++) {
-        if (minRow > item.rows[r]) minRow = item.rows[r];
-        if (item.rows[r] > maxRow) maxRow = item.rows[r];
+      var mine = [];
+      for (var h = 0; item.rows.length > h; h++) {
+        if (item.rows[h].name === norm) mine.push(item.rows[h].row);
       }
-      var eRange = item.sh.getRange(minRow, 5, maxRow - minRow + 1, 1);
-      var eVals = eRange.getValues();
-      var eDisp = eRange.getDisplayValues();
-      var eNotes = eRange.getNotes();
+      if (!mine.length) continue;
+      var pack = consultSheetReadE_(item.sh, mine);
       var writeRows = [];
-      for (var k = 0; k < item.rows.length; k++) {
-        var row = item.rows[k];
-        var idx = row - minRow;
+      for (var k = 0; mine.length > k; k++) {
+        var row = mine[k];
         matched++;
-        var note = String(eNotes[idx][0] || '');
-        var ours = note === 'consultLog';
-        var empty = !consultSheetIsDate_(eVals[idx][0]) && consultSheetNorm_(eDisp[idx][0]) === '';
-        if (!ours && !empty) {
-          blocked = true;
-          continue;
-        }
+        var cell = consultSheetCell_(pack, row);
+        var ours = consultSheetOurs_(cell.note);
+        var empty = consultSheetEmptyE_(cell);
+        if (!ours && !empty) { blocked = true; continue; }
         if (clear && !ours) continue;
         writeRows.push(row);
       }
       if (writeRows.length) plans.push({ sh: item.sh, rows: writeRows });
     }
-    if (blocked) return consultSheetResult_(false, 0, sheetCount, 'e_cell_occupied', 'E열에 상담일지가 아닌 값이 있습니다');
-    if (!matched) return consultSheetResult_(false, 0, sheetCount, 'not_found', '오늘부터 지정 기간의 날짜 탭에서 업체 헤더를 찾지 못했습니다');
+    if (blocked) return consultSheetFinish_(false, 0, sheetCount, 'e_cell_occupied', 'E열에 상담일지가 아닌 값이 있습니다');
+    if (!matched && !clear) return consultSheetFinish_(false, 0, sheetCount, 'not_found', '오늘부터 지정 기간의 날짜 탭에서 업체 헤더를 찾지 못했습니다');
     var written = 0;
-    for (var n = 0; n < plans.length; n++) {
-      var a1 = [];
-      for (var w = 0; w < plans[n].rows.length; w++) a1.push('E' + plans[n].rows[w]);
-      var list = plans[n].sh.getRangeList(a1);
-      if (clear) {
-        list.setValue('');
-        list.clearFormat();
-        list.clearNote();
-      } else {
-        list.setValue(text);
-        list.setBackground(bg);
-        list.setFontColor('#C00000');
-        list.setFontWeight('bold');
-        list.setWrap(true);
-        list.setNote('consultLog');
-      }
-      written += plans[n].rows.length;
-    }
+    for (var n = 0; plans.length > n; n++) written += consultSheetPaint_(plans[n].sh, plans[n].rows, clear ? '' : line, clear ? '' : memo, bg);
+    var cacheMsg = '';
+    try { consultCacheSave_(norm, body.clientName, clear ? '' : line, clear ? '' : memo, clear ? '' : bg, syncAt || '', clear); }
+    catch (cacheErr) { cacheMsg = String(cacheErr && cacheErr.message || ''); }
     SpreadsheetApp.flush();
     if (syncAt) props.setProperty(revKey, String(syncAt));
-    return consultSheetResult_(true, written, sheetCount, '');
+    var message = summed.message || '';
+    if (cacheMsg) message = message ? (message + ' / ' + cacheMsg) : cacheMsg;
+    return consultSheetFinish_(true, written, sheetCount, '', message, summary, summed.aiFailed, focus);
   } finally {
-    if (locked) lock.releaseLock();
+    if (held.locked) held.lock.releaseLock();
   }
-}</pre>
+}
+
+function consultRefreshFromCache_() {
+  var opened = consultSheetOpenWork_();
+  if (opened.error) return;
+  var win = consultSheetWindow_();
+  var picked = consultSheetHeaders_(opened.ss, win.today, win.end);
+  var cache = consultCacheMap_();
+  var held = consultSheetTryLock_();
+  try {
+    if (!held.locked) return;
+    for (var p = 0; picked.length > p; p++) {
+      var item = picked[p];
+      if (!item.rows.length) continue;
+      var pack = consultSheetReadE_(item.sh, item.rows);
+      var named = {};
+      for (var h = 0; item.rows.length > h; h++) {
+        var info = item.rows[h];
+        var cell = consultSheetCell_(pack, info.row);
+        var ours = consultSheetOurs_(cell.note);
+        var empty = consultSheetEmptyE_(cell);
+        var entry = cache.map[info.name];
+        var action = null;
+        if (ours && entry && entry.line) action = entry;
+        else if (ours) action = { line: '', note: '', bg: '' };
+        else if (empty && entry && entry.line) action = entry;
+        if (!action) continue;
+        if (!named[info.name]) named[info.name] = { rows: [], line: action.line || '', note: action.note || '', bg: action.bg || '' };
+        named[info.name].rows.push(info.row);
+      }
+      var names = Object.keys(named);
+      for (var n = 0; names.length > n; n++) {
+        var slot = named[names[n]];
+        consultSheetPaint_(item.sh, slot.rows, slot.line, slot.note, slot.bg);
+      }
+    }
+    SpreadsheetApp.flush();
+  } finally {
+    if (held.locked) held.lock.releaseLock();
+  }
+}
+
+function installConsultTrigger() {
+  var props = PropertiesService.getScriptProperties();
+  var workId = String(props.getProperty('WORK_SHEET_ID') || '').replace(/^\\s+|\\s+$/g, '');
+  if (!workId) throw new Error('WORK_SHEET_ID 스크립트 속성이 없습니다');
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; triggers.length > i; i++) {
+    var fn = triggers[i].getHandlerFunction();
+    if (fn === 'consultOnSpreadsheetChange_' || fn === 'consultHourlyRefresh_') ScriptApp.deleteTrigger(triggers[i]);
+  }
+  ScriptApp.newTrigger('consultOnSpreadsheetChange_').forSpreadsheet(workId).onChange().create();
+  ScriptApp.newTrigger('consultHourlyRefresh_').timeBased().everyHours(1).create();
+}
+
+function consultOnSpreadsheetChange_(e) {
+  var change = e && e.changeType ? String(e.changeType) : '';
+  if (change !== 'INSERT_GRID' && change !== 'REMOVE_GRID' && change !== 'OTHER') return;
+  var gate = CacheService.getScriptCache();
+  if (gate.get('consultSheetRefresh')) return;
+  gate.put('consultSheetRefresh', '1', 60);
+  consultRefreshFromCache_();
+}
+
+function consultHourlyRefresh_() {
+  consultRefreshFromCache_();
+}
+</pre>
           <button onclick="navigator.clipboard.writeText(document.getElementById('apps-script-code').textContent).then(()=>toast('코드 복사됨','success'))"
             style="position:absolute;top:8px;right:8px;background:#334155;color:#e2e8f0;border:none;border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer">📋 복사</button>
         </div>
-        <div style="font-size:11px;color:#065f46;margin-top:8px">상담일지 E열 반영은 doPost입니다. 코드를 붙인 뒤 배포 관리 → 기존 배포 편집 → 새 버전으로 배포하세요. 웹앱 주소는 유지됩니다. 콘솔에 consultSheet version 2026-10-30-0405가 보이면 새 배포가 반영된 것입니다. 토큰은 스크립트 속성 CONSULT_TOKEN, 업무 시트는 WORK_SHEET_ID에 저장합니다.</div>
+        <div style="font-size:11px;color:#065f46;margin-top:8px">상담일지 E열 반영은 doPost입니다. 코드를 붙인 뒤 배포 관리 → 기존 배포 편집 → 새 버전으로 배포하세요. 웹앱 주소는 유지됩니다. 콘솔에 consultSheet version 2026-10-30-1415가 보이면 새 배포가 반영된 것입니다. 스크립트 속성: CONSULT_TOKEN, WORK_SHEET_ID, GEMINI_API_KEY, GEMINI_MODEL(비우면 gemini-3.1-flash-lite). 저장 후 함수 installConsultTrigger를 선택해 실행하세요.</div>
       </div>
     </div>
 
@@ -16219,7 +16595,10 @@ function consultFsPayload(row, withCreated){
     sheetSyncNote:'',
     sheetSyncDetail:'',
     clientSort:consultEnsureSort(row),
-    kakaoText:row.kakaoText||''
+    kakaoText:row.kakaoText||'',
+    done:!!row.done,
+    doneAt:row.doneAt||null,
+    doneBy:row.doneBy||''
   };
   if(withCreated) data.createdAt=firebase.firestore.FieldValue.serverTimestamp();
   return data;
@@ -16291,7 +16670,10 @@ function consultCreate(fields){
     _createdOnServer:false,
     _failed:false,
     _deleteFailed:false,
-    kakaoText:''
+    kakaoText:'',
+    done:false,
+    doneAt:null,
+    doneBy:''
   };
   if(row.isPhone) row.kakaoText=consultBuildKakao(row);
   consultMarkWrite(row);
@@ -16440,6 +16822,9 @@ function consultRowFromDoc(doc){
     sheetSyncNote:data.sheetSyncNote||'',
     sheetSyncDetail:data.sheetSyncDetail||'',
     kakaoText:data.kakaoText||'',
+    done:!!data.done,
+    doneAt:data.doneAt||null,
+    doneBy:data.doneBy||'',
     clientSort:data.clientSort||'',
     _createdOnServer:true,
     _localMs:consultMs({createdAt:data.createdAt, consultDate:data.consultDate})
@@ -16705,10 +17090,11 @@ function consultDashPaint(){
       +rows.map(function(row){
         const id=consultJsId(row.id);
         const phone=row.isPhone?'<button type="button" title="카톡 문구" onclick="consultOpenKakao(\''+id+'\')" style="background:none;border:none;cursor:pointer;font-size:16px;padding:0">📞</button>':'';
-        return '<tr>'
+        const faded=row.done&&row.scope==='once';
+        return '<tr'+(faded?' style="opacity:.45"':'')+'>'
           +'<td style="white-space:nowrap">'+escHtml(row.consultDate||'-')+'</td>'
           +'<td style="white-space:pre-wrap;word-break:break-word">'+escHtml(row.content||'')+'</td>'
-          +'<td>'+consultScopeBadge(row.scope)+'</td>'
+          +'<td>'+consultScopeBadge(row.scope)+(consultDoneBtn(row)?' '+consultDoneBtn(row):'')+'</td>'
           +'<td style="text-align:center">'+phone+'</td>'
           +'<td>'+escHtml(row.authorName||'-')+'</td>'
           +'</tr>';
@@ -16907,6 +17293,7 @@ function consultLogSheet(json){
   if(json.version) console.log('consultSheet version', json.version);
   if(json.ms!=null) console.log('consultSheet ms', json.ms);
   if(json.message) console.log('consultSheet message', json.message);
+  if(json.aiFailed) console.log('consultSheet aiFailed', json.message||true);
 }
 async function consultPostSheetOnce(body){
   const ctrl=new AbortController();
@@ -16957,21 +17344,73 @@ async function consultPostSheet(payload){
   if(!json||json.ok!==true) throw consultSheetError((json&&json.error)||'unknown', (json&&json.message)||'', json&&json.version);
   return json;
 }
+function consultSheetActiveLogs(rows){
+  return (rows||[]).filter(function(r){
+    if(!r||(r._failed&&!r._createdOnServer)) return false;
+    if(r.scope==='once'&&r.done) return false;
+    return !!String(r.content||'').trim();
+  }).sort(function(a,b){
+    const da=a.consultDate||'';
+    const db=b.consultDate||'';
+    if(da===db) return consultMs(a)-consultMs(b);
+    return da<db?-1:1;
+  });
+}
+function consultSheetFocusDate(rows){
+  let best='';
+  (rows||[]).forEach(function(r){
+    const d=r&&r.consultDate||'';
+    if(d>best) best=d;
+  });
+  return best;
+}
+async function consultSaveSummary(clientId, clientName, json, rows){
+  if(!json||!json.summary||typeof db==='undefined'||!firebase.firestore||!firebase.firestore.FieldValue) return;
+  const summary=json.summary;
+  const now=firebase.firestore.FieldValue.serverTimestamp();
+  await db.collection('consultSummary').doc(clientId).set({
+    always:Array.isArray(summary.always)?summary.always:[],
+    once:Array.isArray(summary.once)?summary.once:[],
+    check:Array.isArray(summary.check)?summary.check:[],
+    updatedAt:now
+  }, {merge:true});
+  const focus=summary.focusDate||consultSheetFocusDate(rows);
+  if(!focus) return;
+  const dayRows=(rows||[]).filter(function(r){return r&&r.consultDate===focus&&!(r.scope==='once'&&r.done);});
+  const scopes=[];
+  dayRows.forEach(function(r){ if(r.scope&&scopes.indexOf(r.scope)<0) scopes.push(r.scope); });
+  await db.collection('consultDaily').doc(focus+'_'+clientId).set({
+    clientName:clientName||'',
+    date:focus,
+    today:Array.isArray(summary.today)?summary.today:[],
+    hasPhone:dayRows.some(function(r){return !!r.isPhone;}),
+    scopes:scopes,
+    updatedAt:now
+  }, {merge:true});
+}
 async function consultRunSheetSync(clientId, clientName, epoch){
   const rows=await consultLoadClientLogs(clientId);
   if(consultSheetStale(clientId, epoch)) return;
   const newest=rows.slice().sort(function(a,b){return consultMs(b)-consultMs(a);})[0];
   const name=(newest&&newest.clientName)||clientName||'';
-  const summary=consultBuildSheetSummary(rows);
+  const active=consultSheetActiveLogs(rows);
   const json=await consultPostSheet({
     action:'consultSheet',
     clientName:name,
-    text:summary.text,
-    hasCheck:!!summary.hasCheck,
-    clear:!!summary.clear,
+    focusDate:consultSheetFocusDate(rows),
+    logs:active.map(function(r){
+      return {date:r.consultDate||'', scope:r.scope||'', content:String(r.content||'').trim(), done:!!r.done};
+    }),
     syncAt:Date.now()
   });
   if(consultSheetStale(clientId, epoch)||(json&&json.skipped)) return;
+  try{
+    await consultSaveSummary(clientId, name, json, rows);
+  }catch(err){
+    console.error('consult summary save', err);
+    toast('상담 요약 저장에 실패했습니다','error');
+  }
+  if(consultSheetStale(clientId, epoch)) return;
   await consultMarkSheetStatus(clientId, rows, 'done', '', '');
 }
 function consultQueueSheetSync(clientId, clientName){
@@ -17009,6 +17448,63 @@ function consultQueueSheetSync(clientId, clientName){
   };
   run();
 }
+function consultDoneBtn(row){
+  if(!row||row.scope!=='once') return '';
+  if(row.done) return '<span style="font-size:11px;color:var(--text3)">완료됨</span>';
+  return '<button type="button" class="btn btn-xs btn-gray" onclick="consultMarkDone(\''+consultJsId(row.id)+'\')">완료</button>';
+}
+function consultApplyDone(row, by){
+  [CONSULT_LOCAL, CONSULT_SERVER, CONSULT_DASH&&CONSULT_DASH.rows].forEach(function(list){
+    (list||[]).forEach(function(r){
+      if(!r||r.id!==row.id) return;
+      r.done=true;
+      r.doneBy=by;
+      r.doneAt=row.doneAt;
+    });
+  });
+  consultRender();
+  try{ consultDashPaint(); }catch(e){}
+}
+function consultMarkDone(id){
+  const row=consultFindAnywhere(id);
+  if(!row||row.scope!=='once'||row.done) return;
+  if(row._saving){ toast('저장이 끝난 뒤 완료해 주세요','error'); return; }
+  const by=(CUR_ADMIN&&(CUR_ADMIN.username||CUR_ADMIN.loginId)||'').trim();
+  row.done=true;
+  row.doneBy=by;
+  row.doneAt=new Date();
+  consultApplyDone(row, by);
+  const revert=function(){
+    row.done=false;
+    row.doneBy='';
+    row.doneAt=null;
+    [CONSULT_LOCAL, CONSULT_SERVER, CONSULT_DASH&&CONSULT_DASH.rows].forEach(function(list){
+      (list||[]).forEach(function(r){
+        if(!r||r.id!==row.id) return;
+        r.done=false;
+        r.doneBy='';
+        r.doneAt=null;
+      });
+    });
+    consultRender();
+    try{ consultDashPaint(); }catch(e){}
+  };
+  if(!row._createdOnServer||typeof db==='undefined'||!firebase.firestore||!firebase.firestore.FieldValue){
+    consultQueueSheetSync(row.clientId, row.clientName);
+    return;
+  }
+  db.collection('consultLogs').doc(row.id).update({
+    done:true,
+    doneAt:firebase.firestore.FieldValue.serverTimestamp(),
+    doneBy:by
+  }).then(function(){
+    consultQueueSheetSync(row.clientId, row.clientName);
+  }).catch(function(err){
+    console.error('consultLogs done', err);
+    revert();
+    toast('완료 처리에 실패했습니다','error');
+  });
+}
 function consultResendSheet(id){
   const row=consultFindAnywhere(id);
   if(!row||!row.clientId){ toast('다시 보낼 상담일지를 찾지 못했습니다','error'); return; }
@@ -17044,12 +17540,14 @@ function consultRender(){
     const id=consultJsId(row.id);
     const phoneBody=row.isPhone?consultPhoneBlock(row.phoneFields):'';
     const can=consultCanEdit(row);
+    const doneBtn=consultDoneBtn(row);
     const actions=can
-      ? '<button type="button" class="btn btn-xs btn-gray" onclick="consultBeginEdit(\''+id+'\')">수정</button> <button type="button" class="btn btn-xs btn-red" onclick="consultDelete(\''+id+'\')">삭제</button>'
-      : '<span style="color:var(--text3);font-size:11px">-</span>';
+      ? (doneBtn?doneBtn+' ':'')+'<button type="button" class="btn btn-xs btn-gray" onclick="consultBeginEdit(\''+id+'\')">수정</button> <button type="button" class="btn btn-xs btn-red" onclick="consultDelete(\''+id+'\')">삭제</button>'
+      : (doneBtn||'<span style="color:var(--text3);font-size:11px">-</span>');
     const fail=row._failed?'<tr><td colspan="7" style="background:#fef2f2"><button type="button" class="consult-fail" onclick="consultRetry(\''+id+'\')">저장 실패 - 재시도</button></td></tr>':'';
     const extra=phoneBody?'<tr><td colspan="7" style="background:var(--bg2);font-size:12px">'+phoneBody+'</td></tr>':'';
-    return '<tr'+(row._failed?' style="background:#fef2f2"':'')+'>'
+    const faded=row.done&&row.scope==='once';
+    return '<tr'+(row._failed?' style="background:#fef2f2"':(faded?' style="opacity:.45"':''))+'>'
       +'<td style="white-space:nowrap">'+escHtml(row.consultDate||'-')+'</td>'
       +'<td style="font-weight:700">'+escHtml(row.clientName||'-')+consultSheetStatusHtml(row)+'</td>'
       +'<td style="white-space:pre-wrap;word-break:break-word;max-width:360px">'+escHtml(row.content||'')+'</td>'
