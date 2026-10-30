@@ -16924,10 +16924,12 @@ function consultDelete(id){
   consultRender();
   if(!row._createdOnServer) return;
   CONSULT_TOMB.add(id);
+  consultDayHideIfEmpty(row.clientId, row.consultDate);
   db.collection('consultLogs').doc(id).delete().then(function(){
     CONSULT_TOMB.delete(id);
     try{ consultQueueSheetSync(row.clientId, row.clientName); }
     catch(syncErr){ console.log('consultSheet 전송 시작', '호출 실패', syncErr&&syncErr.message||syncErr); }
+    consultDailyForget(row.clientId, row.clientName, row.consultDate);
   }).catch(function(err){
     console.error('consultLogs delete', err);
     CONSULT_TOMB.delete(id);
@@ -16936,6 +16938,7 @@ function consultDelete(id){
     CONSULT_LOCAL.unshift(row);
     consultDashTouch(row);
     consultRender();
+    if(CONSULT_DAY===row.consultDate) consultDayLoad();
   });
 }
 function consultRetry(id){
@@ -16948,6 +16951,7 @@ function consultRetry(id){
     row._pendingAck=true;
     CONSULT_TOMB.add(row.id);
     consultRender();
+    consultDayHideIfEmpty(row.clientId, row.consultDate);
     db.collection('consultLogs').doc(row.id).delete().then(function(){
       CONSULT_TOMB.delete(row.id);
       consultRemove(row.id);
@@ -16955,6 +16959,7 @@ function consultRetry(id){
       consultRender();
       try{ consultQueueSheetSync(row.clientId, row.clientName); }
       catch(syncErr){ console.log('consultSheet 전송 시작', '호출 실패', syncErr&&syncErr.message||syncErr); }
+      consultDailyForget(row.clientId, row.clientName, row.consultDate);
     }).catch(function(err){
       console.error('consultLogs delete', err);
       CONSULT_TOMB.delete(row.id);
@@ -16963,6 +16968,7 @@ function consultRetry(id){
       row._failed=true;
       row._deleteFailed=true;
       consultRender();
+      if(CONSULT_DAY===row.consultDate) consultDayLoad();
     });
     return;
   }
@@ -17764,18 +17770,35 @@ async function consultSaveSummary(clientId, clientName, json, rows){
   const focus=summary.focusDate||consultSheetFocusDate(rows);
   if(!focus) return;
   const dayRows=(rows||[]).filter(function(r){return r&&r.consultDate===focus&&!(r.scope==='once'&&r.done);});
+  const ref=db.collection('consultDaily').doc(focus+'_'+clientId);
+  if(!dayRows.length){
+    await ref.delete();
+    consultDayPatch(focus, clientId, null);
+    return;
+  }
   const scopes=[];
   dayRows.forEach(function(r){ if(r.scope&&scopes.indexOf(r.scope)<0) scopes.push(r.scope); });
-  await db.collection('consultDaily').doc(focus+'_'+clientId).set({
+  const today=Array.isArray(summary.today)?summary.today:[];
+  await ref.set({
     clientName:clientName||'',
     date:focus,
-    today:Array.isArray(summary.today)?summary.today:[],
+    today:today,
     hasPhone:dayRows.some(function(r){return !!r.isPhone;}),
     scopes:scopes,
     updatedAt:now
   }, {merge:true});
+  consultDayPatch(focus, clientId, {
+    id:focus+'_'+clientId,
+    clientId:clientId,
+    clientName:clientName||'',
+    date:focus,
+    today:today,
+    hasPhone:dayRows.some(function(r){return !!r.isPhone;}),
+    scopes:scopes
+  });
 }
 async function consultRunSheetSync(clientId, clientName, epoch){
+  const dailyEpoch=CONSULT_DAILY_EPOCH[clientId]||0;
   let rows=[];
   try{
     rows=await consultLoadClientLogs(clientId);
@@ -17805,6 +17828,7 @@ async function consultRunSheetSync(clientId, clientName, epoch){
     syncAt:Date.now()
   });
   if(consultSheetStale(clientId, epoch)||(json&&json.skipped)) return;
+  if((CONSULT_DAILY_EPOCH[clientId]||0)!==dailyEpoch) return;
   try{
     await consultSaveSummary(clientId, name, json, rows);
   }catch(err){
@@ -18051,6 +18075,78 @@ let CONSULT_DAY_OPEN='';
 let CONSULT_DAY_BUSY=false;
 let CONSULT_DAY_LOADED='';
 let CONSULT_DAY_FS=null;
+const CONSULT_DAILY_EPOCH={};
+function consultDayPatch(ymd, clientId, card){
+  if(!ymd||CONSULT_DAY!==ymd) return;
+  const idx=CONSULT_DAY_ROWS.findIndex(function(r){return r.clientId===clientId;});
+  if(!card){
+    if(idx>=0) CONSULT_DAY_ROWS.splice(idx, 1);
+    if(CONSULT_DAY_OPEN===clientId) CONSULT_DAY_OPEN='';
+  }else if(idx>=0){
+    CONSULT_DAY_ROWS[idx]=card;
+  }else{
+    CONSULT_DAY_ROWS.push(card);
+  }
+  if(CONSULT_DAY_LOGS&&CONSULT_DAY_LOGS.date===ymd&&!card){
+    CONSULT_DAY_LOGS.rows=(CONSULT_DAY_LOGS.rows||[]).filter(function(r){return r.clientId!==clientId;});
+  }
+  consultDayRender();
+}
+function consultDayHideIfEmpty(clientId, ymd){
+  if(!clientId||!ymd) return;
+  const left=[CONSULT_LOCAL, CONSULT_SERVER].some(function(list){
+    return (list||[]).some(function(r){
+      return r&&r.clientId===clientId&&r.consultDate===ymd&&!(r.scope==='once'&&r.done)&&!CONSULT_TOMB.has(r.id);
+    });
+  });
+  if(!left) consultDayPatch(ymd, clientId, null);
+}
+async function consultDailyForget(clientId, clientName, ymd){
+  if(!clientId||!ymd||typeof db==='undefined') return;
+  CONSULT_DAILY_EPOCH[clientId]=(CONSULT_DAILY_EPOCH[clientId]||0)+1;
+  fsBegin('상담일지 일자 정리 1회');
+  try{
+    const snap=await db.collection('consultLogs').where('consultDate','==', ymd).get();
+    const rows=snap.docs.map(consultRowFromDoc).filter(function(r){
+      return r.clientId===clientId&&!(r.scope==='once'&&r.done);
+    });
+    const ref=db.collection('consultDaily').doc(ymd+'_'+clientId);
+    if(!rows.length){
+      await ref.delete();
+      consultDayPatch(ymd, clientId, null);
+      return;
+    }
+    const scopes=[];
+    rows.forEach(function(r){ if(r.scope&&scopes.indexOf(r.scope)<0) scopes.push(r.scope); });
+    const today=rows.map(function(r){return String(r.content||'').trim();}).filter(Boolean);
+    const card={
+      id:ymd+'_'+clientId,
+      clientId:clientId,
+      clientName:clientName||rows[0].clientName||'',
+      date:ymd,
+      today:today,
+      hasPhone:rows.some(function(r){return !!r.isPhone;}),
+      scopes:scopes
+    };
+    await ref.set({
+      clientName:card.clientName,
+      date:ymd,
+      today:today,
+      hasPhone:card.hasPhone,
+      scopes:scopes,
+      updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+    }, {merge:true});
+    if(CONSULT_DAY===ymd){
+      if(!CONSULT_DAY_LOGS||CONSULT_DAY_LOGS.date!==ymd) CONSULT_DAY_LOGS={date:ymd, rows:[]};
+      CONSULT_DAY_LOGS.rows=CONSULT_DAY_LOGS.rows.filter(function(r){return r.clientId!==clientId;}).concat(rows);
+    }
+    consultDayPatch(ymd, clientId, card);
+  }catch(err){
+    console.error('consultDaily forget', err);
+  }finally{
+    fsEnd('상담일지 일자 정리 1회');
+  }
+}
 function consultDayAdd(ymd, delta){
   const parts=String(ymd||getKSTDate()).split('-');
   const dt=new Date(Date.UTC(Number(parts[0]), Number(parts[1])-1, Number(parts[2])+delta));
@@ -18127,7 +18223,11 @@ async function consultDayLoadLogs(req){
   const ymd=CONSULT_DAY;
   const snap=await db.collection('consultLogs').where('consultDate','==', ymd).get();
   if(req!==CONSULT_DAY_REQ) return;
-  CONSULT_DAY_LOGS={date:ymd, rows:snap.docs.map(consultRowFromDoc)};
+  CONSULT_DAY_LOGS={
+    date:ymd,
+    fromCache:!!(snap.metadata&&snap.metadata.fromCache),
+    rows:snap.docs.map(consultRowFromDoc)
+  };
 }
 async function consultDayLoad(){
   const input=document.getElementById('consult-day-date');
@@ -18165,7 +18265,21 @@ async function consultDayLoad(){
         scopes:Array.isArray(data.scopes)?data.scopes:[]
       };
     });
-    if(CONSULT_DAY_ROWS.some(function(row){return !row.today.length;})) await consultDayLoadLogs(req);
+    await consultDayLoadLogs(req);
+    if(req!==CONSULT_DAY_REQ) return;
+    const alive={};
+    (CONSULT_DAY_LOGS&&CONSULT_DAY_LOGS.rows||[]).forEach(function(r){
+      if(r.clientId&&!(r.scope==='once'&&r.done)) alive[r.clientId]=true;
+    });
+    if(!(CONSULT_DAY_LOGS&&CONSULT_DAY_LOGS.fromCache)){
+      const stale=CONSULT_DAY_ROWS.filter(function(row){return row.clientId&&!alive[row.clientId];});
+      CONSULT_DAY_ROWS=CONSULT_DAY_ROWS.filter(function(row){return row.clientId&&alive[row.clientId];});
+      stale.forEach(function(row){
+        db.collection('consultDaily').doc(row.id).delete().catch(function(err){
+          console.error('consultDaily stale', err);
+        });
+      });
+    }
     if(req===CONSULT_DAY_REQ) CONSULT_DAY_LOADED=ymd;
   }catch(err){
     console.error('consultDaily', err);
