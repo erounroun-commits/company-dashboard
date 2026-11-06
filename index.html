@@ -159,6 +159,9 @@ tr:last-child td{border-bottom:none;}
 .qt-drag-handle:hover{background:var(--bg2);color:var(--text2);}
 .qt-drag-handle:active{cursor:grabbing;}
 .qt-card-dragover{outline:2px dashed var(--accent);outline-offset:2px;}
+.qt-item-dragover{outline:2px dashed var(--accent);outline-offset:-2px;}
+.qt-move-btn{padding:1px 5px;font-size:10px;line-height:1.4;min-width:22px;}
+.qt-move-btn:disabled{opacity:.35;cursor:not-allowed;}
 .ds-sum-row td{background:var(--bg2)!important;font-weight:700;color:var(--text);border-top:2px solid var(--accent);}
 .ds-xscroll-top{
   position:sticky;
@@ -487,7 +490,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
           <div style="display:flex;gap:8px;align-items:center">
             <button class="btn btn-sm btn-gray" onclick="refreshAllData()" title="최신 데이터로 새로고침">🔄 새로고침</button>
             <button class="btn btn-gray" onclick="openMd('bulk-upload')">📥 과거 데이터 업로드</button>
-            <button class="btn btn-blue" onclick="openMd('add-client')">+ 거래처 추가</button>
+            <button class="btn btn-blue" onclick="openAddClientModal()">+ 거래처 추가</button>
           </div>
         </div>
         <div class="card">
@@ -862,7 +865,14 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
           <button class="btn btn-green btn-sm" onclick="exportSettleExcel()">📥 엑셀 다운로드</button>
         </div>
       </div>
-      <div id="settle-all-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px"></div>
+      <div id="settle-all-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px"></div>
+      <div id="settle-supplier-card" style="display:flex;align-items:flex-end;gap:14px;margin-bottom:14px;padding:12px 14px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;flex-wrap:wrap">
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#065f46;margin-bottom:4px">공급자 사업자</div>
+          <select id="settle-supplier-key" class="fs" style="min-width:240px;padding:6px 8px;font-size:12px" onchange="renderSettleSupplierAccount()"></select>
+        </div>
+        <div id="settle-supplier-bank" style="flex:1;min-width:280px;font-size:12px"></div>
+      </div>
       <div class="card">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
           <span style="font-size:11px;font-weight:700;color:var(--text2)">일자</span>
@@ -1278,6 +1288,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
     <div class="fg"><label class="fl">사업자번호</label><input class="fi" id="c-biz" /></div>
     <div class="fg"><label class="fl">메모</label><textarea class="fta" id="c-memo"></textarea></div>
     <div class="fg"><label class="fl">상태</label><select class="fs" id="c-status"><option>활성</option><option>비활성</option></select></div>
+    <div id="c-price-fields"></div>
     <div class="mf"><button class="btn btn-gray" onclick="closeMd('add-client')">취소</button><button class="btn btn-blue" onclick="saveClient()">저장</button></div>
   </div>
 </div>
@@ -3510,12 +3521,77 @@ function resolveQuoteSupplier(qt){
   if(qt?.supplierKey) return getWaveBiz(qt.supplierKey);
   return getWaveBiz(WAVE_BIZ_DEFAULT_KEY);
 }
+function splitSupplierBank(biz){
+  const raw=String(biz&&biz.bankAccount||'').trim();
+  const m=raw.match(/^(.+?)\s+(\d[\d\-]*)\s+(.+)$/);
+  if(!m) return {bankName:raw, accountNo:'', holder:'', raw};
+  return {bankName:m[1].trim(), accountNo:m[2].trim(), holder:m[3].trim(), raw};
+}
+function renderSettleSupplierAccount(){
+  const sel=document.getElementById('settle-supplier-key');
+  const box=document.getElementById('settle-supplier-bank');
+  if(!sel||!box) return;
+  if(!sel.dataset.ready){
+    sel.innerHTML=Object.keys(WAVE_BIZ_LIST).map(k=>{
+      const b=WAVE_BIZ_LIST[k];
+      return `<option value="${k}">${escHtml(b.bizName||'')} (${escHtml(b.bizNo||'')})</option>`;
+    }).join('');
+    sel.value=WAVE_BIZ_DEFAULT_KEY;
+    sel.dataset.ready='1';
+  }
+  const biz=getWaveBiz(sel.value||WAVE_BIZ_DEFAULT_KEY);
+  const bank=splitSupplierBank(biz);
+  const account=bank.accountNo||'';
+  box.innerHTML=`<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+    <div><div style="font-size:10px;color:#065f46;font-weight:700">은행명</div><div style="font-weight:800">${escHtml(bank.bankName||'—')}</div></div>
+    <div><div style="font-size:10px;color:#065f46;font-weight:700">계좌번호</div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span id="settle-account-no" data-no="${escHtml(account)}" style="font-weight:800;font-family:monospace">${escHtml(account||'—')}</span>
+        <button type="button" class="btn btn-xs btn-gray" onclick="copySupplierAccountNo()" ${account?'':'disabled'}>복사</button>
+      </div>
+    </div>
+    <div><div style="font-size:10px;color:#065f46;font-weight:700">예금주</div><div style="font-weight:800">${escHtml(bank.holder||'—')}</div></div>
+  </div>`;
+}
+function copySupplierAccountNo(){
+  const text=document.getElementById('settle-account-no')?.dataset.no||'';
+  if(!text){ toast('복사할 계좌번호가 없습니다','error'); return; }
+  const done=()=>toast('계좌번호를 복사했습니다');
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done).catch(()=>fallbackCopyText(text, done));
+  } else fallbackCopyText(text, done);
+}
+function fallbackCopyText(text, done){
+  const ta=document.createElement('textarea');
+  ta.value=text;
+  ta.style.position='fixed';
+  ta.style.left='-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try{ document.execCommand('copy'); if(done) done(); }
+  catch(e){ toast('복사에 실패했습니다','error'); }
+  ta.remove();
+}
 // 견적서 항목 유형 — 4가지 고정
 // calc: fee1=진행비유형1, fee2=진행비유형2, delivery=택배대행비, product=상품금액, custom=직접입력
+const DEFAULT_DELIVERY_PRICE=3000;
+function deliveryPriceOf(c){
+  if(!c || c.price3==null || c.price3==='') return DEFAULT_DELIVERY_PRICE;
+  const n=Number(c.price3);
+  return Number.isFinite(n)?n:DEFAULT_DELIVERY_PRICE;
+}
+function readIntOr(id, fallback){
+  const el=document.getElementById(id);
+  if(!el) return fallback;
+  const raw=String(el.value==null?'':el.value).trim();
+  if(raw==='') return fallback;
+  const n=parseInt(raw,10);
+  return Number.isFinite(n)?n:fallback;
+}
 function getQtTypeList(c){
   const v1=c?.price1||0;
   const v2=c?.price2||0;
-  const v3=c?.price3||0;
+  const v3=deliveryPriceOf(c);
   const p1=c?.price1Type||'실배송';
   const p2=c?.price2Type||'빈박스';
   return [
@@ -3534,7 +3610,7 @@ function seed(){
   if(ld().clients.length)return;
   const cl=[
     {id:gid(),name:'파도스토리',manager:'김대표',phone:'010-1234-5678',email:'info@padostory.kr',biz:'123-45-67890',code:'WAVE01',status:'활성',memo:'',quote:'',
-     price1Type:"실배송",price1:3000,price2Type:"빈박스",price2:3500,price3:2000,
+     price1Type:"실배송",price1:3000,price2Type:"빈박스",price2:3500,price3:DEFAULT_DELIVERY_PRICE,
      taxYn:true,
      bizInfoList:[
        {bizName:'파도스토리(주)',bizNo:'123-45-67890',bizEmail:'tax@padostory.kr',bizCeo:'김대표',bizAddr:'서울시 강남구 테헤란로 123',bizType:'도소매업',bizItem:'수산물'},
@@ -4543,7 +4619,7 @@ function buildCvDash(c,projs,d){
       +'<div class="price-grid">'
       +'<div class="price-item"><div class="price-item-label">유형1 · '+(c.price1Type||'실배송')+'</div><div class="price-item-val">'+fmtN(c.price1||0)+'원</div><div style="font-size:10px;color:var(--text3)">/건</div></div>'
       +'<div class="price-item"><div class="price-item-label">유형2 · '+(c.price2Type||'빈박스')+'</div><div class="price-item-val">'+fmtN(c.price2||0)+'원</div><div style="font-size:10px;color:var(--text3)">/건</div></div>'
-      +'<div class="price-item"><div class="price-item-label">유형3 · 택배대행</div><div class="price-item-val">'+fmtN(c.price3||0)+'원</div><div style="font-size:10px;color:var(--text3)">/건</div></div>'
+      +'<div class="price-item"><div class="price-item-label">유형3 · 택배대행</div><div class="price-item-val">'+fmtN(deliveryPriceOf(c))+'원</div><div style="font-size:10px;color:var(--text3)">/건</div></div>'
       +'</div></div>'
       +'<div class="tax-box" style="flex:1;min-width:180px;margin-bottom:0">'
       +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
@@ -7054,6 +7130,7 @@ function settleMismatchBadge(s){
 }
 
 function renderSettleAll(){
+  try{ renderSettleSupplierAccount(); }catch(e){}
   const settles=listSettleRowsForView();
   const d=ld();
   const search=(document.getElementById('settle-search')?.value||'').toLowerCase();
@@ -10471,7 +10548,7 @@ function renderDetDash(){
       <div class="price-grid">
         <div class="price-item"><div class="price-item-label">유형1 · ${c?.price1Type||'실배송'}</div><div class="price-item-val">${fmtN(c?.price1||0)}원</div><div style="font-size:9px;color:var(--text3)">/건</div></div>
         <div class="price-item"><div class="price-item-label">유형2 · ${c?.price2Type||'빈박스'}</div><div class="price-item-val">${fmtN(c?.price2||0)}원</div><div style="font-size:9px;color:var(--text3)">/건</div></div>
-        <div class="price-item"><div class="price-item-label">유형3 · 택배대행</div><div class="price-item-val">${fmtN(c?.price3||0)}원</div><div style="font-size:9px;color:var(--text3)">/건</div></div>
+        <div class="price-item"><div class="price-item-label">유형3 · 택배대행</div><div class="price-item-val">${fmtN(deliveryPriceOf(c))}원</div><div style="font-size:9px;color:var(--text3)">/건</div></div>
       </div>
     </div>
     <div class="tax-box" style="flex:1;min-width:220px;margin-bottom:0">
@@ -11419,7 +11496,7 @@ function fillQuoteFormFields(qt, opts={}){
   setQtTaxItem('fee', !!ti.fee);
   setQtTaxItem('del', !!ti.delivery);
   setQtTaxItem('prod', !!ti.product);
-  QT_NEW_ITEMS=(qt.items||[]).map(it=>{
+  QT_NEW_ITEMS=orderedQuoteItems(qt.items||[]).map(it=>{
     let productName=it.productName||'';
     if(!productName && (it.calc==='product'||String(it.label||'').startsWith('상품금액'))){
       const m=String(it.label||'').match(/^상품금액\((.*)\)$/);
@@ -11506,18 +11583,7 @@ async function saveQuoteForm(){
   if(!QT_NEW_ITEMS.length){toast('견적 항목을 1개 이상 추가하세요','error');return;}
   const taxYn=document.getElementById('qn-tax-yn')?.checked||false;
   const taxItems=getQtTaxItems();
-  const items=QT_NEW_ITEMS.map(it=>{
-    const productName=(it.productName||'').trim();
-    const label=(it.calc==='product')
-      ?('상품금액'+(productName?`(${productName})`:'')) 
-      : (it.label||'');
-    return {
-      ...it,
-      label,
-      productName,
-      taxApply: it.calc==='custom' ? (it.taxApply!==false) : it.taxApply
-    };
-  });
+  const items=quoteItemsForSave(QT_NEW_ITEMS);
   const d=ld();
   const editId=QT_EDIT_ID||document.getElementById('qn-edit-id')?.value||'';
   const supplierInfo=getSelectedSupplier();
@@ -11602,6 +11668,121 @@ function onQtTextDraft(itemId,field,val){
   if(it) it[field]=val;
 }
 
+function orderedQuoteItems(items){
+  const arr=Array.isArray(items)?items.slice():[];
+  const allHave=arr.length>0 && arr.every(it=>it && it.order!=null && it.order!=='' && !isNaN(Number(it.order)));
+  if(!allHave) return arr;
+  return arr.sort((a,b)=>Number(a.order)-Number(b.order));
+}
+function quoteProductKey(it){
+  if(!it || it.calc!=='product') return null;
+  return String(it.productName||'').trim();
+}
+function groupQuoteItems(items){
+  const groups=[];
+  (items||[]).forEach((it,idx)=>{
+    const key=quoteProductKey(it);
+    const prev=groups[groups.length-1];
+    if(key!=null && prev && prev.kind==='product' && prev.key===key){
+      prev.items.push(it);
+      prev.indices.push(idx);
+    } else if(key!=null){
+      groups.push({kind:'product', key, items:[it], indices:[idx]});
+    } else {
+      groups.push({kind:'line', key:null, items:[it], indices:[idx]});
+    }
+  });
+  return groups;
+}
+function quoteItemsForSave(list){
+  return (list||[]).map((it,idx)=>{
+    const productName=String(it.productName||'').trim();
+    const label=(it.calc==='product')
+      ?('상품금액'+(productName?`(${productName})`:''))
+      : (it.label||'');
+    return {
+      ...it,
+      order:idx,
+      label,
+      productName,
+      taxApply: it.calc==='custom' ? (it.taxApply!==false) : it.taxApply
+    };
+  });
+}
+function moveQtItem(itemId, dir){
+  const i=QT_NEW_ITEMS.findIndex(x=>x.id===itemId);
+  const j=i+Number(dir);
+  if(i<0||j<0||j>=QT_NEW_ITEMS.length) return;
+  const t=QT_NEW_ITEMS[i];
+  QT_NEW_ITEMS[i]=QT_NEW_ITEMS[j];
+  QT_NEW_ITEMS[j]=t;
+  renderQtNewItems();
+}
+let QT_ITEM_DRAG_ID='';
+let QT_FOCUS_PRICE_ID='';
+function qtItemDragStart(ev, id){
+  QT_ITEM_DRAG_ID=id;
+  try{
+    ev.dataTransfer.setData('text/plain', id);
+    ev.dataTransfer.effectAllowed='move';
+  }catch(e){}
+  ev.stopPropagation();
+}
+function qtItemDragOver(ev){
+  ev.preventDefault();
+  if(ev.currentTarget) ev.currentTarget.classList.add('qt-item-dragover');
+}
+function qtItemDragLeave(ev){
+  if(ev.currentTarget) ev.currentTarget.classList.remove('qt-item-dragover');
+}
+function qtItemDrop(ev, toId){
+  ev.preventDefault();
+  ev.stopPropagation();
+  if(ev.currentTarget) ev.currentTarget.classList.remove('qt-item-dragover');
+  let fromId='';
+  try{ fromId=ev.dataTransfer.getData('text/plain'); }catch(e){}
+  fromId=fromId||QT_ITEM_DRAG_ID;
+  if(!fromId||!toId||fromId===toId) return;
+  const from=QT_NEW_ITEMS.findIndex(x=>x.id===fromId);
+  if(from<0) return;
+  const [item]=QT_NEW_ITEMS.splice(from,1);
+  const dest=QT_NEW_ITEMS.findIndex(x=>x.id===toId);
+  if(dest<0){ QT_NEW_ITEMS.splice(from,0,item); return; }
+  QT_NEW_ITEMS.splice(dest,0,item);
+  QT_ITEM_DRAG_ID='';
+  renderQtNewItems();
+}
+function onQtProductNameDraft(idList, val){
+  const ids=String(idList||'').split(',').filter(Boolean);
+  ids.forEach(id=>{
+    const it=QT_NEW_ITEMS.find(x=>x.id===id);
+    if(it) it.productName=val;
+  });
+  const label=document.getElementById('qt-sub-label-'+(ids[0]||''));
+  if(label) label.textContent=(String(val||'').trim()||'상품')+' 소계';
+}
+function addQtPriceRow(itemId){
+  const groups=groupQuoteItems(QT_NEW_ITEMS);
+  const g=groups.find(gr=>gr.items.some(it=>it.id===itemId));
+  const src=(g&&g.items[0])||QT_NEW_ITEMS.find(x=>x.id===itemId);
+  if(!src||src.calc!=='product') return;
+  const insertAt=(g?g.indices[g.indices.length-1]:QT_NEW_ITEMS.findIndex(x=>x.id===itemId))+1;
+  const row={
+    id:gid(),
+    typeIdx:src.typeIdx,
+    label:src.label||'상품금액',
+    calc:'product',
+    qty:1,
+    unitPrice:0,
+    feeRate:src.feeRate||10,
+    taxApply:src.taxApply,
+    memo:'',
+    productName:src.productName||''
+  };
+  QT_NEW_ITEMS.splice(Math.max(0,insertAt),0,row);
+  QT_FOCUS_PRICE_ID=row.id;
+  renderQtNewItems();
+}
 function renderQtNewItems(){
   const taxYn=document.getElementById('qn-tax-yn')?.checked||false;
   const wrap=document.getElementById('qn-items-wrap');if(!wrap)return;
@@ -11622,10 +11803,82 @@ function renderQtNewItems(){
   }
 
   const grandTotal=QT_NEW_ITEMS.reduce((s,it)=>{const r=calcRow(it);return s+r.total;},0);
+  const groups=groupQuoteItems(QT_NEW_ITEMS);
+  const lastIdx=QT_NEW_ITEMS.length-1;
+  const body=[];
+  groups.forEach(g=>{
+    const lines=g.items.map((it,li)=>({it, r:calcRow(it), idx:g.indices[li]}));
+    lines.forEach((line,li)=>{
+      const it=line.it, r=line.r, idx=line.idx;
+      const isProd=it.calc==='product';
+      const isCustom=it.calc==='custom';
+      let nameCell='';
+      if(g.kind!=='product' || li===0){
+        if(isProd){
+          const ids=g.items.map(x=>x.id).join(',');
+          nameCell=`<td rowspan="${g.items.length}" style="padding:5px 8px;vertical-align:top;background:#fffdf5;border-right:1px solid var(--border)">
+            <div style="font-size:10px;color:var(--text3);font-weight:700">상품금액</div>
+            <input class="fi" style="font-size:11px;padding:3px 6px;width:100%" placeholder="제품명 수기입력" value="${escHtml(g.key||'')}" oninput="onQtProductNameDraft('${ids}',this.value)">
+            <button type="button" class="btn btn-xs btn-blue" style="margin-top:4px" onclick="addQtPriceRow('${g.items[0].id}')">+ 단가 추가</button>
+          </td>`;
+        } else {
+          nameCell=`<td style="padding:5px 8px">
+            <input class="fi" style="font-size:11px;padding:3px 6px;width:100%" placeholder="${it.calc==='custom'?'품명 입력':escHtml(it.label||'')}" value="${it.calc==='custom'?escHtml(it.label||''):''}" ${it.calc!=='custom'?'disabled style="background:#f0f0f0;color:var(--text3);font-size:10px"':''} oninput="onQtTextDraft('${it.id}','label',this.value)">
+          </td>`;
+        }
+      }
+      body.push(`<tr style="border-top:1px solid var(--border);background:${isProd?'#fffdf5':''}" ondragover="qtItemDragOver(event)" ondragleave="qtItemDragLeave(event)" ondrop="qtItemDrop(event,'${it.id}')">
+        <td style="padding:4px 4px;text-align:center;white-space:nowrap;width:78px">
+          <span class="qt-drag-handle" draggable="true" ondragstart="qtItemDragStart(event,'${it.id}')" title="드래그하여 순서 변경">⋮⋮</span>
+          <button type="button" class="btn btn-xs btn-gray qt-move-btn" ${idx===0?'disabled':''} onclick="moveQtItem('${it.id}',-1)" title="위로">▲</button>
+          <button type="button" class="btn btn-xs btn-gray qt-move-btn" ${idx===lastIdx?'disabled':''} onclick="moveQtItem('${it.id}',1)" title="아래로">▼</button>
+        </td>
+        <td style="padding:5px 8px">
+          <select class="fs" style="font-size:11px;padding:3px 6px" onchange="onQtTypeChange('${it.id}',this)">
+            ${QUOTE_TYPES.map((t,i)=>`<option value="${i}" ${i===it.typeIdx?'selected':''}>${t.label}</option>`).join('')}
+          </select>
+        </td>
+        ${nameCell}
+        <td style="padding:5px 6px;text-align:center"><input class="fi" type="text" inputmode="numeric" style="font-size:12px;padding:4px 6px;width:64px;text-align:center;font-weight:700" value="${it.qty}" onchange="onQtFieldChange('${it.id}','qty',this.value)"></td>
+        <td style="padding:5px 6px;text-align:right"><input class="fi" id="qt-price-${it.id}" type="text" inputmode="numeric" style="font-size:12px;padding:4px 6px;width:110px;text-align:right" value="${it.unitPrice}" onchange="onQtFieldChange('${it.id}','unitPrice',this.value)" placeholder="예: 100000"></td>
+        <td style="padding:5px 6px;text-align:right;font-size:11px;color:var(--text2)">${fmtN(r.supply)}</td>
+        ${taxYn?`<td style="padding:5px 6px;text-align:right;font-size:11px;color:#ea580c">
+          ${isProd&&r.applyTax?`<div style="display:flex;align-items:center;gap:2px;justify-content:flex-end"><input class="fi" type="number" min="0" style="font-size:10px;padding:2px 5px;width:50px;text-align:right" value="${r.feeRate}" oninput="onQtFeeRateChange('${it.id}',this.value)" title="수수료율(%)"><span style="font-size:9px;color:var(--text3)">%</span></div>`:(r.commission?fmtN(r.commission):'—')}
+        </td>
+        <td style="padding:5px 6px;text-align:right;font-size:11px;color:#7c3aed">
+          ${isCustom?`<label style="display:inline-flex;align-items:center;gap:6px;justify-content:flex-end;cursor:pointer">
+            <input type="checkbox" ${it.taxApply===false?'':'checked'} onchange="onQtFieldChange('${it.id}','taxApply',this.checked)">
+            <span style="font-size:10px;color:var(--text2);font-weight:700">부가세</span>
+          </label>
+          <div style="margin-top:2px">${(taxYn&&(it.taxApply!==false))?(r.vat?fmtN(r.vat)+'원':'0원'):'—'}</div>`
+          : (r.applyTax?(r.vat?fmtN(r.vat)+'원':'0원'):'—')}
+        </td>`:''}
+        <td style="padding:5px 6px;text-align:right;font-weight:700;color:var(--accent)" id="qt-row-total-${it.id}">${fmtN(r.total)}</td>
+        <td style="padding:5px 4px;text-align:center"><button type="button" class="btn btn-xs btn-red" style="padding:2px 5px" onclick="removeQtItem('${it.id}')">✕</button></td>
+      </tr>`);
+    });
+    if(g.kind==='product'){
+      const sub=lines.reduce((s,line)=>({
+        supply:s.supply+line.r.supply,
+        commission:s.commission+line.r.commission,
+        vat:s.vat+line.r.vat,
+        total:s.total+line.r.total
+      }),{supply:0,commission:0,vat:0,total:0});
+      body.push(`<tr style="background:#fffbeb;border-top:1px dashed #fcd34d">
+        <td id="qt-sub-label-${g.items[0].id}" colspan="5" style="padding:6px 10px;text-align:right;font-weight:800;color:#92400e">${escHtml(g.key||'상품')} 소계</td>
+        <td style="padding:6px;text-align:right;font-weight:700">${fmtN(sub.supply)}</td>
+        ${taxYn?`<td style="padding:6px;text-align:right;color:#ea580c;font-weight:700">${fmtN(sub.commission)}</td>
+        <td style="padding:6px;text-align:right;color:#7c3aed;font-weight:700">${fmtN(sub.vat)}</td>`:''}
+        <td style="padding:6px;text-align:right;font-weight:900;color:var(--accent)">${fmtN(sub.total)}</td>
+        <td></td>
+      </tr>`);
+    }
+  });
 
-  wrap.innerHTML=`<div style="border:1px solid var(--border);border-radius:8px;overflow:hidden">
+  wrap.innerHTML=`<div style="border:1px solid var(--border);border-radius:8px;overflow:auto">
     <table style="width:100%;font-size:12px;border-collapse:collapse">
       <thead><tr style="background:var(--bg2)">
+        <th style="padding:7px 4px;width:78px;font-size:11px">순서</th>
         <th style="padding:7px 10px;text-align:left;font-size:11px;min-width:120px">유형</th>
         <th style="padding:7px 8px;text-align:left;font-size:11px">품명</th>
         <th style="padding:7px 6px;width:55px;font-size:11px;text-align:center">수량</th>
@@ -11636,51 +11889,18 @@ function renderQtNewItems(){
         <th style="padding:7px 6px;width:90px;font-size:11px;text-align:right;color:var(--accent)">합계</th>
         <th style="padding:7px 4px;width:24px"></th>
       </tr></thead>
-      <tbody>
-        ${QT_NEW_ITEMS.map(it=>{
-          const r=calcRow(it);
-          const isProd=it.calc==='product';
-          const isCustom=it.calc==='custom';
-          return `<tr style="border-top:1px solid var(--border);background:${isProd?'#fffdf5':''}">
-            <td style="padding:5px 8px">
-              <select class="fs" style="font-size:11px;padding:3px 6px" onchange="onQtTypeChange('${it.id}',this)">
-                ${QUOTE_TYPES.map((t,i)=>`<option value="${i}" ${i===it.typeIdx?'selected':''}>${t.label}</option>`).join('')}
-              </select>
-            </td>
-            <td style="padding:5px 8px">
-        ${isProd
-          ?(`<div style="display:flex;flex-direction:column;gap:4px">
-              <div style="font-size:10px;color:var(--text3);font-weight:700">상품금액</div>
-              <input class="fi" style="font-size:11px;padding:3px 6px;width:100%" placeholder="제품명 수기입력" value="${escHtml(it.productName||'')}" oninput="onQtTextDraft('${it.id}','productName',this.value)">
-            </div>`)
-          :(`<input class="fi" style="font-size:11px;padding:3px 6px;width:100%" placeholder="${it.calc==='custom'?'품명 입력':it.label}" value="${it.calc==='custom'?escHtml(it.label||''):''}" ${it.calc!=='custom'?'disabled style="background:#f0f0f0;color:var(--text3);font-size:10px"':''} oninput="onQtTextDraft('${it.id}','label',this.value)">`)
-        }
-            </td>
-      <td style="padding:5px 6px;text-align:center"><input class="fi" type="text" inputmode="numeric" style="font-size:12px;padding:4px 6px;width:64px;text-align:center;font-weight:700" value="${it.qty}" onchange="onQtFieldChange('${it.id}','qty',this.value)"></td>
-      <td style="padding:5px 6px;text-align:right"><input class="fi" type="text" inputmode="numeric" style="font-size:12px;padding:4px 6px;width:110px;text-align:right" value="${it.unitPrice}" onchange="onQtFieldChange('${it.id}','unitPrice',this.value)" placeholder="예: 100000"></td>
-            <td style="padding:5px 6px;text-align:right;font-size:11px;color:var(--text2)">${fmtN(r.supply)}</td>
-            ${taxYn?`<td style="padding:5px 6px;text-align:right;font-size:11px;color:#ea580c">
-              ${isProd&&r.applyTax?`<div style="display:flex;align-items:center;gap:2px;justify-content:flex-end"><input class="fi" type="number" min="0" style="font-size:10px;padding:2px 5px;width:50px;text-align:right" value="${r.feeRate}" oninput="onQtFeeRateChange('${it.id}',this.value)" title="수수료율(%)"><span style="font-size:9px;color:var(--text3)">%</span></div>`:(r.commission?fmtN(r.commission):'—')}
-            </td>
-            <td style="padding:5px 6px;text-align:right;font-size:11px;color:#7c3aed">
-              ${isCustom?`<label style="display:inline-flex;align-items:center;gap:6px;justify-content:flex-end;cursor:pointer">
-                <input type="checkbox" ${it.taxApply===false?'':'checked'} onchange="onQtFieldChange('${it.id}','taxApply',this.checked)">
-                <span style="font-size:10px;color:var(--text2);font-weight:700">부가세</span>
-              </label>
-              <div style="margin-top:2px">${(taxYn&&(it.taxApply!==false))?(r.vat?fmtN(r.vat)+'원':'0원'):'—'}</div>`
-              : (r.applyTax?(r.vat?fmtN(r.vat)+'원':'0원'):'—')}
-            </td>`:''}
-            <td style="padding:5px 6px;text-align:right;font-weight:700;color:var(--accent)">${fmtN(r.total)}</td>
-            <td style="padding:5px 4px;text-align:center"><button class="btn btn-xs btn-red" style="padding:2px 5px" onclick="removeQtItem('${it.id}')">✕</button></td>
-          </tr>`;
-        }).join('')}
-      </tbody>
+      <tbody>${body.join('')}</tbody>
     </table>
   </div>
   <div style="margin-top:8px;text-align:right;font-size:12px;color:var(--text2);display:flex;justify-content:flex-end;align-items:center;gap:12px">
     ${taxYn?`<span style="font-size:11px;color:var(--text3)">수수료+부가세 포함</span>`:''}
     <span>최종 합계: <span style="font-size:16px;font-weight:900;color:var(--accent)">${fmtN(grandTotal)}원</span></span>
   </div>`;
+  if(QT_FOCUS_PRICE_ID){
+    const focusEl=document.getElementById('qt-price-'+QT_FOCUS_PRICE_ID);
+    if(focusEl){ focusEl.focus(); try{ focusEl.select(); }catch(e){} }
+    QT_FOCUS_PRICE_ID='';
+  }
 }
 
 function onQtFeeRateChange(itemId,val){
@@ -11745,18 +11965,7 @@ async function saveNewQuote(){
   if(!QT_NEW_ITEMS.length){toast('견적 항목을 1개 이상 추가하세요','error');return;}
   const taxYn=document.getElementById('qn-tax-yn')?.checked||false;
   const taxItems=getQtTaxItems();
-  const items=QT_NEW_ITEMS.map(it=>{
-    const productName=(it.productName||'').trim();
-    const label=(it.calc==='product')
-      ?('상품금액'+(productName?`(${productName})`:'')) 
-      : (it.label||'');
-    return {
-      ...it,
-      label,
-      productName,
-      taxApply: it.calc==='custom' ? (it.taxApply!==false) : it.taxApply
-    };
-  });
+  const items=quoteItemsForSave(QT_NEW_ITEMS);
   const supplierInfo=getSelectedSupplier();
   const qt={
     id:gid(),clientId:CUR_CLIENT,
@@ -12197,32 +12406,7 @@ function exportClientQuotesExcel(){
       [],
       ['품명','수량','단가','공급가액','수수료','부가세','합계']
     ];
-    const ti=q.taxItems||{};
-    (q.items||[]).forEach(it=>{
-      const qty=Number(it.qty)||0;
-      const unit=Number(it.unitPrice)||0;
-      const sup=qty*unit;
-      const applyTax=!!q.taxYn&&(
-        ((it.calc==='fee1'||it.calc==='fee2')&&ti.fee) ||
-        (it.calc==='delivery'&&ti.delivery) ||
-        (it.calc==='product'&&ti.product) ||
-        (it.calc==='custom'&&(it.taxApply!==false)) ||
-        (!ti.fee&&!ti.delivery&&!ti.product)
-      );
-      const feeRate=(it.calc==='product'&&applyTax)?(Number(it.feeRate)||10):0;
-      const comm=applyTax?Math.round(sup*(feeRate/100)):0;
-      const vat=applyTax?Math.round((sup+comm)*0.1):0;
-      const total=sup+comm+vat;
-      rows.push([
-        it.label||it.calc||'',
-        qty,
-        unit,
-        sup,
-        comm,
-        vat,
-        total
-      ]);
-    });
+    quoteGroupedSheetRows(q, true).forEach(r=>rows.push(r));
     rows.push([]);
     rows.push(['최종 합계','','','','','',calcQtTotal(q)||0]);
     if(q.notes){
@@ -12251,7 +12435,7 @@ function getCrmQuoteTypeList(base){
   return [
     {label:`진행비 (${p1})`,calc:'fee1',defaultPrice:parseInt(b.price1)||0,feeRate:0},
     {label:`진행비 (${p2})`,calc:'fee2',defaultPrice:parseInt(b.price2)||0,feeRate:0},
-    {label:'택배대행비',calc:'delivery',defaultPrice:parseInt(b.price3)||0,feeRate:0},
+    {label:'택배대행비',calc:'delivery',defaultPrice:deliveryPriceOf(b),feeRate:0},
     {label:'상품금액',calc:'product',defaultPrice:0,feeRate:10},
     {label:'직접 입력',calc:'custom',defaultPrice:0,feeRate:0},
   ];
@@ -12362,7 +12546,8 @@ function openCrmQuoteForm(id){
   document.getElementById('crm-p2-type').value=q?.basePricing?.price2Type||'빈박스';
   document.getElementById('crm-p1').value=q?.basePricing?.price1||0;
   document.getElementById('crm-p2').value=q?.basePricing?.price2||0;
-  document.getElementById('crm-p3').value=q?.basePricing?.price3||0;
+  const _crmP3=q&&q.basePricing?q.basePricing.price3:undefined;
+  document.getElementById('crm-p3').value=(_crmP3!=null&&_crmP3!=='')?_crmP3:DEFAULT_DELIVERY_PRICE;
   document.getElementById('crm-tax-yn').checked=!!q?.taxYn;
   document.getElementById('crm-ti-fee').checked=!!(q?.taxItems?.fee ?? true);
   document.getElementById('crm-ti-del').checked=!!(q?.taxItems?.delivery ?? true);
@@ -12376,7 +12561,7 @@ function closeCrmQuoteForm(){
   CRM_NEW_ITEMS=[];
 }
 function crmAddItem(){
-  const base={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:parseInt(document.getElementById('crm-p3')?.value)||0};
+  const base={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:readIntOr('crm-p3', DEFAULT_DELIVERY_PRICE)};
   const types=getCrmQuoteTypeList(base);
   CRM_NEW_ITEMS.push({id:gid(),typeIdx:0,label:types[0].label,calc:types[0].calc,qty:1,unitPrice:types[0].defaultPrice||0,feeRate:0,taxApply:true,productName:''});
   renderCrmItems();
@@ -12384,7 +12569,7 @@ function crmAddItem(){
 function crmRemoveItem(id){ CRM_NEW_ITEMS=CRM_NEW_ITEMS.filter(x=>x.id!==id); renderCrmItems(); }
 function crmChangeType(id,idx){
   const it=CRM_NEW_ITEMS.find(x=>x.id===id); if(!it)return;
-  const base={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:parseInt(document.getElementById('crm-p3')?.value)||0};
+  const base={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:readIntOr('crm-p3', DEFAULT_DELIVERY_PRICE)};
   const t=getCrmQuoteTypeList(base)[idx]||getCrmQuoteTypeList(base)[0];
   it.typeIdx=idx; it.label=t.label; it.calc=t.calc; it.unitPrice=t.defaultPrice||0; if(it.calc!=='product') it.productName='';
   renderCrmItems();
@@ -12397,7 +12582,7 @@ function renderCrmItems(){
   const wrap=document.getElementById('crm-items-wrap'); if(!wrap)return;
   const taxYn=document.getElementById('crm-tax-yn')?.checked||false;
   const ti={fee:document.getElementById('crm-ti-fee')?.checked||false,delivery:document.getElementById('crm-ti-del')?.checked||false,product:document.getElementById('crm-ti-prod')?.checked||false};
-  const base={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:parseInt(document.getElementById('crm-p3')?.value)||0};
+  const base={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:readIntOr('crm-p3', DEFAULT_DELIVERY_PRICE)};
   const types=getCrmQuoteTypeList(base);
   const calc=(it)=>{
     const sup=(it.qty||0)*(it.unitPrice||0);
@@ -12431,7 +12616,7 @@ async function saveCrmQuote(){
     if(prevQt&&prevQt.id!=null&&!Object.prototype.hasOwnProperty.call(_qtCollapseMap(), prevQt.id)){
       qtSetCollapsed(prevQt.id, prevQt.collapsed!==false);
     }
-    const basePricing={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:parseInt(document.getElementById('crm-p3')?.value)||0};
+    const basePricing={price1Type:document.getElementById('crm-p1-type')?.value||'실배송',price2Type:document.getElementById('crm-p2-type')?.value||'빈박스',price1:parseInt(document.getElementById('crm-p1')?.value)||0,price2:parseInt(document.getElementById('crm-p2')?.value)||0,price3:readIntOr('crm-p3', DEFAULT_DELIVERY_PRICE)};
     const quote={
       id:CRM_EDIT_ID||gid(),
       date:normalizeYMD(date),
@@ -12517,10 +12702,7 @@ function exportCrmQuoteExcel(id){
   const q=(ld().quotes||[]).find(x=>x.id===id&&x.crmMode===true);
   if(!q){toast('대상을 찾을 수 없습니다','error');return;}
   const rows=[['견적일자',q.date],['견적번호',q.no||''],['수신처',q.toName||''],['사업자번호',q.toBizNo||''],['상호',q.toBizName||''],['대표자',q.toCeo||''],['업태/종목',q.toType||''],[],['품명','수량','단가','합계']];
-  (q.items||[]).forEach(it=>{
-    const itemQt={taxYn:q.taxYn,taxItems:q.taxItems,items:[it]};
-    rows.push([it.label||it.calc,it.qty||0,it.unitPrice||0,calcQtTotal(itemQt)]);
-  });
+  quoteGroupedSheetRows(q, false).forEach(r=>rows.push(r));
   rows.push([]);
   rows.push(['최종합계','','',calcQtTotal(q)]);
   const wb=XLSX.utils.book_new();
@@ -12530,24 +12712,51 @@ function exportCrmQuoteExcel(id){
   XLSX.writeFile(wb,`CRM_견적서_${(q.no||q.date||'')}.xlsx`);
 }
 
+function qtDocLine(it, taxYn, qti){
+  const ti=qti||{};
+  const supply=(Number(it&&it.qty)||0)*(Number(it&&it.unitPrice)||0);
+  const isProd=!!(it&&it.calc==='product');
+  const applyTax=!!taxYn&&!!it&&(
+    ((it.calc==='fee1'||it.calc==='fee2')&&ti.fee) ||
+    (it.calc==='delivery'&&ti.delivery) ||
+    (it.calc==='product'&&ti.product) ||
+    (it.calc==='custom'&&(it.taxApply!==false)) ||
+    (!ti.fee&&!ti.delivery&&!ti.product)
+  );
+  const feeRate=(isProd&&applyTax)?(Number(it.feeRate)||10):0;
+  const commission=applyTax?Math.round(supply*(feeRate/100)):0;
+  const vat=applyTax?Math.round((supply+commission)*0.1):0;
+  return {supply, commission, vat, total:supply+commission+vat, feeRate, applyTax, isProd};
+}
 function calcQtTotal(qt){
-  if(!qt.items)return 0;
-  const ti=qt.taxItems||{};
-  return (qt.items||[]).reduce((s,it)=>{
-    const sup=(it.qty||0)*(it.unitPrice||0);
-    const applyTax=qt.taxYn&&(
-      ((it.calc==='fee1'||it.calc==='fee2')&&ti.fee) ||
-      (it.calc==='delivery'&&ti.delivery) ||
-      (it.calc==='product'&&ti.product) ||
-      (it.calc==='custom'&&(it.taxApply!==false)) ||
-      (!ti.fee&&!ti.delivery&&!ti.product)
-    );
-    const fr=(it.calc==='product'&&applyTax)?(it.feeRate||10):0;
-    const comm=applyTax?Math.round(sup*(fr/100)):0;
-    const supWF=sup+comm;
-    const vat=applyTax?Math.round(supWF*0.1):0;
-    return s+supWF+vat;
-  },0);
+  if(!qt||!qt.items) return 0;
+  const qti=qt.taxItems||{};
+  return orderedQuoteItems(qt.items).reduce((s,it)=>s+qtDocLine(it, !!qt.taxYn, qti).total, 0);
+}
+function quoteGroupedSheetRows(q, full){
+  const taxYn=!!(q&&q.taxYn);
+  const qti=(q&&q.taxItems)||{};
+  const groups=groupQuoteItems(orderedQuoteItems((q&&q.items)||[]));
+  const rows=[];
+  groups.forEach(g=>{
+    const lines=g.items.map(it=>({it, amt:qtDocLine(it, taxYn, qti)}));
+    lines.forEach((line,i)=>{
+      const name=g.kind==='product'
+        ? (i===0 ? (g.key||line.it.label||'상품금액') : '')
+        : (line.it.label||line.it.calc||'');
+      if(full) rows.push([name, Number(line.it.qty)||0, Number(line.it.unitPrice)||0, line.amt.supply, line.amt.commission, line.amt.vat, line.amt.total]);
+      else rows.push([name, Number(line.it.qty)||0, Number(line.it.unitPrice)||0, line.amt.total]);
+    });
+    if(g.kind==='product'){
+      const sub=lines.reduce((s,l)=>({
+        supply:s.supply+l.amt.supply, commission:s.commission+l.amt.commission, vat:s.vat+l.amt.vat, total:s.total+l.amt.total
+      }),{supply:0,commission:0,vat:0,total:0});
+      const label=(g.key?g.key+' ':'')+'소계';
+      if(full) rows.push([label,'','',sub.supply,sub.commission,sub.vat,sub.total]);
+      else rows.push([label,'','',sub.total]);
+    }
+  });
+  return rows;
 }
 
 function buildQtDoc(qt){
@@ -12555,57 +12764,51 @@ function buildQtDoc(qt){
   const taxYn=qt.taxYn||false;
   const qti=qt.taxItems||{};
   const supplier=resolveQuoteSupplier(qt);
-  const rows=qt.items.map(it=>{
-    const sup=(it.qty||0)*(it.unitPrice||0);
-    const isProd=it.calc==='product';
-    const applyTax=taxYn&&(
-      ((it.calc==='fee1'||it.calc==='fee2')&&qti.fee) ||
-      (it.calc==='delivery'&&qti.delivery) ||
-      (it.calc==='product'&&qti.product) ||
-      (it.calc==='custom'&&(it.taxApply!==false)) ||
-      (!qti.fee&&!qti.delivery&&!qti.product)
-    );
-    const feeRate=(isProd&&applyTax)?(it.feeRate||10):0;
-    const commission=applyTax?Math.round(sup*(feeRate/100)):0;
-    const supplyWF=sup+commission;
-    const vat=applyTax?Math.round(supplyWF*0.1):0;
-    const rowBg=isProd?'background:#fffdf5':'';
-    return `<tr style="${rowBg}">
-      <td style="padding:7px 10px">${it.label||it.calc}${isProd&&applyTax?`<br><span style="font-size:10px;color:#ea580c">수수료율 ${feeRate}%</span>`:''}</td>
-      <td style="padding:7px 10px;text-align:center">${fmtN(it.qty||1)}</td>
-      <td style="padding:7px 10px;text-align:right">${fmtN(it.unitPrice||0)}원</td>
-      <td style="padding:7px 10px;text-align:right">${fmtN(sup)}원</td>
-      ${taxYn?`<td style="padding:7px 10px;text-align:right;color:#ea580c">${commission?fmtN(commission)+'원':'—'}</td>
-      <td style="padding:7px 10px;text-align:right;color:#7c3aed">${applyTax?fmtN(vat)+'원':'—'}</td>`:''}
-      <td style="padding:7px 10px;text-align:right;font-weight:700;color:var(--accent)">${fmtN(supplyWF+vat)}원</td>
-    </tr>`;
-  }).join('');
-  const totalSupply=qt.items.reduce((s,it)=>s+(it.qty||0)*(it.unitPrice||0),0);
-  const totalCommission=taxYn?qt.items.reduce((s,it)=>{
-    const sup=(it.qty||0)*(it.unitPrice||0);
-    const applyTax=(
-      ((it.calc==='fee1'||it.calc==='fee2')&&qti.fee) ||
-      (it.calc==='delivery'&&qti.delivery) ||
-      (it.calc==='product'&&qti.product) ||
-      (it.calc==='custom'&&(it.taxApply!==false)) ||
-      (!qti.fee&&!qti.delivery&&!qti.product)
-    );
-    const fr=(it.calc==='product'&&applyTax)?(it.feeRate||10):0;
-    return s+(applyTax?Math.round(sup*(fr/100)):0);
-  },0):0;
-  const totalVat=taxYn?qt.items.reduce((s,it)=>{
-    const sup=(it.qty||0)*(it.unitPrice||0);
-    const applyTax=(
-      ((it.calc==='fee1'||it.calc==='fee2')&&qti.fee) ||
-      (it.calc==='delivery'&&qti.delivery) ||
-      (it.calc==='product'&&qti.product) ||
-      (it.calc==='custom'&&(it.taxApply!==false)) ||
-      (!qti.fee&&!qti.delivery&&!qti.product)
-    );
-    const fr=(it.calc==='product'&&applyTax)?(it.feeRate||10):0;
-    const comm=applyTax?Math.round(sup*(fr/100)):0;
-    return s+(applyTax?Math.round((sup+comm)*0.1):0);
-  },0):0;
+  const groups=groupQuoteItems(orderedQuoteItems(qt.items));
+  const rowHtml=[];
+  let totalSupply=0, totalCommission=0, totalVat=0;
+  groups.forEach(g=>{
+    const lines=g.items.map(it=>({it, amt:qtDocLine(it, taxYn, qti)}));
+    lines.forEach((line,i)=>{
+      const it=line.it, amt=line.amt;
+      totalSupply+=amt.supply;
+      totalCommission+=amt.commission;
+      totalVat+=amt.vat;
+      const rowBg=amt.isProd?'background:#fffdf5':'';
+      let nameCell='';
+      if(g.kind==='product'){
+        if(i===0){
+          nameCell=`<td rowspan="${lines.length}" style="padding:7px 10px;vertical-align:top;font-weight:700;border-right:1px solid var(--border);background:#fffdf5"><div style="font-size:10px;font-weight:600;color:var(--text3)">상품금액</div>${escHtml(g.key||it.label||'상품')}</td>`;
+        }
+      } else {
+        nameCell=`<td style="padding:7px 10px">${escHtml(it.label||it.calc||'')}</td>`;
+      }
+      const feeNote=(g.kind==='product'&&amt.applyTax)?`<div style="font-size:10px;color:#ea580c">수수료 ${amt.feeRate}%</div>`:'';
+      rowHtml.push(`<tr style="${rowBg}">
+        ${nameCell}
+        <td style="padding:7px 10px;text-align:center">${fmtN(it.qty||1)}</td>
+        <td style="padding:7px 10px;text-align:right">${fmtN(it.unitPrice||0)}원${feeNote}</td>
+        <td style="padding:7px 10px;text-align:right">${fmtN(amt.supply)}원</td>
+        ${taxYn?`<td style="padding:7px 10px;text-align:right;color:#ea580c">${amt.commission?fmtN(amt.commission)+'원':'—'}</td>
+        <td style="padding:7px 10px;text-align:right;color:#7c3aed">${amt.applyTax?fmtN(amt.vat)+'원':'—'}</td>`:''}
+        <td style="padding:7px 10px;text-align:right;font-weight:700;color:var(--accent)">${fmtN(amt.total)}원</td>
+      </tr>`);
+    });
+    if(g.kind==='product'){
+      const sub=lines.reduce((s,l)=>({
+        supply:s.supply+l.amt.supply, commission:s.commission+l.amt.commission, vat:s.vat+l.amt.vat, total:s.total+l.amt.total
+      }),{supply:0,commission:0,vat:0,total:0});
+      rowHtml.push(`<tr style="background:#fffbeb">
+        <td style="padding:7px 10px;text-align:right;font-weight:800;color:#92400e">${escHtml(g.key||'상품')} 소계</td>
+        <td></td><td></td>
+        <td style="padding:7px 10px;text-align:right;font-weight:700">${fmtN(sub.supply)}원</td>
+        ${taxYn?`<td style="padding:7px 10px;text-align:right;font-weight:700;color:#ea580c">${fmtN(sub.commission)}원</td>
+        <td style="padding:7px 10px;text-align:right;font-weight:700;color:#7c3aed">${fmtN(sub.vat)}원</td>`:''}
+        <td style="padding:7px 10px;text-align:right;font-weight:900;color:var(--accent)">${fmtN(sub.total)}원</td>
+      </tr>`);
+    }
+  });
+  const rows=rowHtml.join('');
   const grandTotal=totalSupply+totalCommission+totalVat;
 
   return `<div style="border:1px solid var(--border);border-radius:10px;overflow:hidden;font-size:12px">
@@ -12711,6 +12914,104 @@ function toggleCiTaxBox(type){
     box.style.borderColor=checked?'#16a34a':'var(--border)';
   }
 }
+function priceFieldValue(v, fallback){
+  if(v==null || v==='') return fallback;
+  return v;
+}
+function renderDefaultPriceSection(c, prefix, badge){
+  const p=prefix||'ci';
+  const p1Type=(c&&c.price1Type)||'실배송';
+  const p2Type=(c&&c.price2Type)||'빈박스';
+  const p1=priceFieldValue(c&&c.price1, 3000);
+  const p2=priceFieldValue(c&&c.price2, 3500);
+  const p3=priceFieldValue(c&&c.price3, DEFAULT_DELIVERY_PRICE);
+  const badgeHtml=badge?`<span style="background:#f59e0b;color:#fff;border-radius:50%;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:900">2</span>`:'';
+  return `<div style="background:#fffbeb;border:2px solid #fcd34d;border-radius:14px;padding:18px;box-shadow:var(--sh)">
+    <div style="font-size:13px;font-weight:800;color:#92400e;margin-bottom:14px;display:flex;align-items:center;gap:8px">
+      ${badgeHtml}
+      💰 기본 단가 설정 <span style="font-size:11px;font-weight:400;color:#78350f">(견적서 항목 자동 채움)</span>
+    </div>
+    <div style="font-size:11px;color:#92400e;margin-bottom:12px;padding:8px 12px;background:#fef3c7;border-radius:8px">
+      ✏️ 거래처마다 리뷰 유형이 다를 수 있어요. 유형별 이름과 단가를 설정하면 견적서 드롭다운에 자동 반영됩니다.
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div style="background:#fff;border:1px solid #fcd34d;border-radius:10px;padding:11px 13px">
+        <div style="font-size:10px;font-weight:800;color:#92400e;margin-bottom:6px">📦 진행비 유형 1</div>
+        <select class="fs" id="${p}-price1Type" style="margin-bottom:6px;padding:5px 8px;font-size:12px;width:100%">
+          <option value="실배송" ${p1Type==='실배송'?'selected':''}>실배송</option>
+          <option value="별점리뷰" ${p1Type==='별점리뷰'?'selected':''}>별점리뷰</option>
+        </select>
+        <div style="display:flex;align-items:center;gap:6px">
+          <input class="fi" type="number" id="${p}-price1" value="${p1}" style="padding:6px 10px" oninput="onDefaultPriceInput('${p}',this)">
+          <span style="font-size:11px;color:var(--text2);white-space:nowrap">원/건</span>
+        </div>
+      </div>
+      <div style="background:#fff;border:1px solid #fcd34d;border-radius:10px;padding:11px 13px">
+        <div style="font-size:10px;font-weight:800;color:#92400e;margin-bottom:6px">📦 진행비 유형 2</div>
+        <select class="fs" id="${p}-price2Type" style="margin-bottom:6px;padding:5px 8px;font-size:12px;width:100%">
+          <option value="빈박스" ${p2Type==='빈박스'?'selected':''}>빈박스</option>
+          <option value="텍스트/포토리뷰" ${p2Type==='텍스트/포토리뷰'?'selected':''}>텍스트/포토리뷰</option>
+        </select>
+        <div style="display:flex;align-items:center;gap:6px">
+          <input class="fi" type="number" id="${p}-price2" value="${p2}" style="padding:6px 10px" oninput="onDefaultPriceInput('${p}',this)">
+          <span style="font-size:11px;color:var(--text2);white-space:nowrap">원/건</span>
+        </div>
+      </div>
+      <div style="background:#fff;border:1px solid #fcd34d;border-radius:10px;padding:11px 13px">
+        <div style="font-size:10px;font-weight:800;color:#92400e;margin-bottom:6px">🚚 택배대행비용</div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <input class="fi" type="number" id="${p}-price3" value="${p3}" style="padding:6px 10px" oninput="onDefaultPriceInput('${p}',this)">
+          <span style="font-size:11px;color:var(--text2);white-space:nowrap">원/건</span>
+        </div>
+      </div>
+    </div>
+    <div id="${p}-price-error" style="display:none;margin-top:8px;font-size:12px;font-weight:700;color:#b91c1c">기본 단가 설정을 모두 입력해주세요</div>
+  </div>`;
+}
+function onDefaultPriceInput(prefix, el){
+  if(el && String(el.value).trim()!==''){
+    el.style.outline='';
+    el.style.outlineOffset='';
+  }
+  const filled=['price1','price2','price3'].every(k=>{
+    const e=document.getElementById(prefix+'-'+k);
+    return e && String(e.value).trim()!=='';
+  });
+  const err=document.getElementById(prefix+'-price-error');
+  if(err && filled) err.style.display='none';
+}
+function defaultPriceFieldsFilled(prefix){
+  let ok=true;
+  ['price1','price2','price3'].forEach(k=>{
+    const el=document.getElementById(prefix+'-'+k);
+    const empty=!el || String(el.value).trim()==='';
+    if(el){
+      el.style.outline=empty?'2px solid #ef4444':'';
+      el.style.outlineOffset=empty?'1px':'';
+    }
+    if(empty) ok=false;
+  });
+  const err=document.getElementById(prefix+'-price-error');
+  if(err) err.style.display=ok?'none':'block';
+  return ok;
+}
+function readDefaultPriceFields(prefix){
+  const p=prefix||'ci';
+  return {
+    price1Type:document.getElementById(p+'-price1Type')?.value||'실배송',
+    price1:readIntOr(p+'-price1', 0),
+    price2Type:document.getElementById(p+'-price2Type')?.value||'빈박스',
+    price2:readIntOr(p+'-price2', 0),
+    price3:readIntOr(p+'-price3', 0)
+  };
+}
+function openAddClientModal(){
+  const box=document.getElementById('c-price-fields');
+  if(box && !box.querySelector('#c-price1')){
+    box.innerHTML=renderDefaultPriceSection(null,'c',false);
+  }
+  openMd('add-client');
+}
 function renderInfoForm(c){
   const bizList=c.bizInfoList||[];
   document.getElementById('dp-info-form').innerHTML=`
@@ -12754,47 +13055,7 @@ function renderInfoForm(c){
       <div class="fg"><label class="fl">메모</label><textarea class="fta" id="ci-memo" style="min-height:72px">${c.memo||''}</textarea></div>
     </div>
 
-    <!-- ━━━ 박스 2: 기본 단가 설정 ━━━ -->
-    <div style="background:#fffbeb;border:2px solid #fcd34d;border-radius:14px;padding:18px;box-shadow:var(--sh)">
-      <div style="font-size:13px;font-weight:800;color:#92400e;margin-bottom:14px;display:flex;align-items:center;gap:8px">
-        <span style="background:#f59e0b;color:#fff;border-radius:50%;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:900">2</span>
-        💰 기본 단가 설정 <span style="font-size:11px;font-weight:400;color:#78350f">(견적서 항목 자동 채움)</span>
-      </div>
-      <div style="font-size:11px;color:#92400e;margin-bottom:12px;padding:8px 12px;background:#fef3c7;border-radius:8px">
-        ✏️ 거래처마다 리뷰 유형이 다를 수 있어요. 유형별 이름과 단가를 설정하면 견적서 드롭다운에 자동 반영됩니다.
-      </div>
-      <div style="display:flex;flex-direction:column;gap:10px">
-        <div style="background:#fff;border:1px solid #fcd34d;border-radius:10px;padding:11px 13px">
-          <div style="font-size:10px;font-weight:800;color:#92400e;margin-bottom:6px">📦 진행비 유형 1</div>
-          <select class="fs" id="ci-price1Type" style="margin-bottom:6px;padding:5px 8px;font-size:12px;width:100%">
-            <option value="실배송" ${(c.price1Type||'실배송')==='실배송'?'selected':''}>실배송</option>
-            <option value="별점리뷰" ${(c.price1Type||'')==='별점리뷰'?'selected':''}>별점리뷰</option>
-          </select>
-          <div style="display:flex;align-items:center;gap:6px">
-            <input class="fi" type="number" id="ci-price1" value="${c.price1||3000}" style="padding:6px 10px">
-            <span style="font-size:11px;color:var(--text2);white-space:nowrap">원/건</span>
-          </div>
-        </div>
-        <div style="background:#fff;border:1px solid #fcd34d;border-radius:10px;padding:11px 13px">
-          <div style="font-size:10px;font-weight:800;color:#92400e;margin-bottom:6px">📦 진행비 유형 2</div>
-          <select class="fs" id="ci-price2Type" style="margin-bottom:6px;padding:5px 8px;font-size:12px;width:100%">
-            <option value="빈박스" ${(c.price2Type||'빈박스')==='빈박스'?'selected':''}>빈박스</option>
-            <option value="텍스트/포토리뷰" ${(c.price2Type||'')==='텍스트/포토리뷰'?'selected':''}>텍스트/포토리뷰</option>
-          </select>
-          <div style="display:flex;align-items:center;gap:6px">
-            <input class="fi" type="number" id="ci-price2" value="${c.price2||3500}" style="padding:6px 10px">
-            <span style="font-size:11px;color:var(--text2);white-space:nowrap">원/건</span>
-          </div>
-        </div>
-        <div style="background:#fff;border:1px solid #fcd34d;border-radius:10px;padding:11px 13px">
-          <div style="font-size:10px;font-weight:800;color:#92400e;margin-bottom:6px">🚚 택배대행비용</div>
-          <div style="display:flex;align-items:center;gap:6px">
-            <input class="fi" type="number" id="ci-price3" value="${c.price3||2000}" style="padding:6px 10px">
-            <span style="font-size:11px;color:var(--text2);white-space:nowrap">원/건</span>
-          </div>
-        </div>
-      </div>
-    </div><!-- /박스2 -->
+    ${renderDefaultPriceSection(c,'ci',true)}
     </div><!-- /상단 2컬럼 그리드 -->
 
     <!-- ━━━ 박스 3: 세금계산서 ━━━ -->
@@ -12995,11 +13256,7 @@ function saveClientInfo(){
     biz:document.getElementById('ci-biz').value.trim(),
     status:document.getElementById('ci-status').value,
     memo:document.getElementById('ci-memo').value.trim(),
-    price1Type:document.getElementById('ci-price1Type')?.value||'실배송',
-    price1:parseInt(document.getElementById('ci-price1')?.value)||0,
-    price2Type:document.getElementById('ci-price2Type')?.value||'빈박스',
-    price2:parseInt(document.getElementById('ci-price2')?.value)||0,
-    price3:parseInt(document.getElementById('ci-price3')?.value)||0,
+    ...readDefaultPriceFields('ci'),
     contractTotal:parseInt(document.getElementById('ci-contractTotal')?.value)||0,
     depositName:document.getElementById('ci-depositName')?.value.trim()||'',
     requestUrl:document.getElementById('ci-requestUrl')?.value.trim()||'',
@@ -14473,15 +14730,20 @@ function handlePaste(e,startRi,startKey){
 // CLIENT ACTIONS
 // ═══════════════════════════════════════════
 async function saveClient(){
+  const name=document.getElementById('c-name').value.trim();
+  if(!name){toast('거래처명을 입력하세요','error');return;}
+  if(!defaultPriceFieldsFilled('c')) return;
+  const prices=readDefaultPriceFields('c');
   const d=ld();
-  const c={id:gid(),name:document.getElementById('c-name').value.trim(),manager:document.getElementById('c-mgr').value.trim(),phone:document.getElementById('c-phone').value.trim(),email:document.getElementById('c-email').value.trim(),biz:document.getElementById('c-biz').value.trim(),memo:document.getElementById('c-memo').value.trim(),status:document.getElementById('c-status').value,code:gcode(),quote:'',price1Type:"실배송",price1:3000,price2Type:"빈박스",price2:3500,price3:2000,taxYn:false,bizInfoList:[],createdAt:new Date().toISOString()};
-  if(!c.name){toast('거래처명을 입력하세요','error');return;}
+  const c={id:gid(),name,manager:document.getElementById('c-mgr').value.trim(),phone:document.getElementById('c-phone').value.trim(),email:document.getElementById('c-email').value.trim(),biz:document.getElementById('c-biz').value.trim(),memo:document.getElementById('c-memo').value.trim(),status:document.getElementById('c-status').value,code:gcode(),quote:'',price1Type:prices.price1Type,price1:prices.price1,price2Type:prices.price2Type,price2:prices.price2,price3:prices.price3,taxYn:false,bizInfoList:[],createdAt:new Date().toISOString()};
   d.clients.push(c);
   console.log('저장 전 clients 수:', d.clients.length);
   await sv('cl',d.clients);
   console.log('sv 완료');
   closeMd('add-client');renderClients();renderOverview();toast('거래처 추가 완료');
   document.querySelectorAll('#modal-add-client input,#modal-add-client textarea').forEach(el=>el.value='');
+  const priceBox=document.getElementById('c-price-fields');
+  if(priceBox) priceBox.innerHTML='';
 }
 
 // ═══════════════════════════════════════════
