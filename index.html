@@ -869,7 +869,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
       <div id="settle-supplier-card" style="display:flex;align-items:flex-end;gap:14px;margin-bottom:14px;padding:12px 14px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;flex-wrap:wrap">
         <div>
           <div style="font-size:11px;font-weight:700;color:#065f46;margin-bottom:4px">공급자 사업자</div>
-          <select id="settle-supplier-key" class="fs" style="min-width:240px;padding:6px 8px;font-size:12px" onchange="renderSettleSupplierAccount()"></select>
+          <select id="settle-supplier-key" class="fs" style="min-width:240px;padding:6px 8px;font-size:12px" onchange="renderSettleAll()"></select>
         </div>
         <div id="settle-supplier-bank" style="flex:1;min-width:280px;font-size:12px"></div>
       </div>
@@ -3527,19 +3527,35 @@ function splitSupplierBank(biz){
   if(!m) return {bankName:raw, accountNo:'', holder:'', raw};
   return {bankName:m[1].trim(), accountNo:m[2].trim(), holder:m[3].trim(), raw};
 }
+function quoteSupplierFilterKey(qt){
+  if(!qt) return '';
+  const key=qt.supplierKey||(qt.supplier&&qt.supplier.key)||'';
+  if(key&&WAVE_BIZ_LIST[key]) return key;
+  const bizNo=String((qt.supplier&&qt.supplier.bizNo)||'').trim();
+  if(!bizNo) return '';
+  return Object.keys(WAVE_BIZ_LIST).find(k=>WAVE_BIZ_LIST[k].bizNo===bizNo)||'';
+}
 function renderSettleSupplierAccount(){
   const sel=document.getElementById('settle-supplier-key');
   const box=document.getElementById('settle-supplier-bank');
   if(!sel||!box) return;
-  if(!sel.dataset.ready){
-    sel.innerHTML=Object.keys(WAVE_BIZ_LIST).map(k=>{
+  if(sel.dataset.ready!=='1'||!sel.querySelector('option[value=""]')){
+    const prev=sel.value;
+    sel.innerHTML='<option value="">전체 사업자</option>'+Object.keys(WAVE_BIZ_LIST).map(k=>{
       const b=WAVE_BIZ_LIST[k];
       return `<option value="${k}">${escHtml(b.bizName||'')} (${escHtml(b.bizNo||'')})</option>`;
     }).join('');
-    sel.value=WAVE_BIZ_DEFAULT_KEY;
+    sel.value=[...sel.options].some(o=>o.value===prev)?prev:'';
     sel.dataset.ready='1';
   }
-  const biz=getWaveBiz(sel.value||WAVE_BIZ_DEFAULT_KEY);
+  const key=sel.value||'';
+  if(!key||!WAVE_BIZ_LIST[key]){
+    box.style.display='none';
+    box.innerHTML='';
+    return;
+  }
+  box.style.display='';
+  const biz=getWaveBiz(key);
   const bank=splitSupplierBank(biz);
   const account=bank.accountNo||'';
   box.innerHTML=`<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
@@ -7140,17 +7156,7 @@ function renderSettleAll(){
   const amtFilter=document.getElementById('settle-filter-amt')?.value||'';
   const taxFilter=document.getElementById('settle-filter-tax')?.value||'';
   const taxIssuedFilter=document.getElementById('settle-filter-taxissued')?.value||'';
-
-  // 통계
-  const totalAmt=settles.reduce((s,x)=>s+x.total,0);
-  const settledAmt=settles.filter(x=>x.settled).reduce((s,x)=>s+x.total,0);
-  const pendingAmt=totalAmt-settledAmt;
-  const statEl=document.getElementById('settle-all-stats');
-  if(statEl) statEl.innerHTML=`
-    ${sCard('전체 견적 건수','var(--accent)',settles.length+'건','')}
-    ${sCard('총 견적 금액','#0891b2',fmtN(totalAmt)+'원','')}
-    ${sCard('정산 완료','var(--green)',fmtN(settledAmt)+'원',settles.filter(x=>x.settled).length+'건')}
-    ${sCard('미정산','var(--red)',fmtN(pendingAmt)+'원',settles.filter(x=>!x.settled).length+'건')}`;
+  const supplierFilter=document.getElementById('settle-supplier-key')?.value||'';
 
   // 요청3 진단용: quotes 전체 개수 확인 (건수에 따라 최적화 방식이 달라짐)
   console.log('quotes 전체 개수:', QUOTES_CACHE.length);
@@ -7184,12 +7190,24 @@ function renderSettleAll(){
     if(taxFilter==='n'&&s.taxYn)return false;
     if(taxIssuedFilter==='y'){ if(!s.taxYn||!s.taxIssued)return false; }
     if(taxIssuedFilter==='n'){ if(s.taxYn&&s.taxIssued)return false; }
+    if(supplierFilter && quoteSupplierFilterKey(quoteMap[s.qtId])!==supplierFilter) return false;
     return true;
   }).sort((a,b)=>{
     const oa=quoteOrder[a.qtId]!=null?quoteOrder[a.qtId]:9999, ob=quoteOrder[b.qtId]!=null?quoteOrder[b.qtId]:9999;
     if(oa!==ob)return oa-ob;
     return (b.date||'').localeCompare(a.date||'');
   });
+
+  const totalAmt=filtered.reduce((s,x)=>s+(Number(x.total)||0),0);
+  const settledRows=filtered.filter(x=>x.settled);
+  const settledAmt=settledRows.reduce((s,x)=>s+(Number(x.total)||0),0);
+  const pendingAmt=totalAmt-settledAmt;
+  const statEl=document.getElementById('settle-all-stats');
+  if(statEl) statEl.innerHTML=`
+    ${sCard('전체 견적 건수','var(--accent)',filtered.length+'건','')}
+    ${sCard('총 견적 금액','#0891b2',fmtN(totalAmt)+'원','')}
+    ${sCard('정산 완료','var(--green)',fmtN(settledAmt)+'원',settledRows.length+'건')}
+    ${sCard('미정산','var(--red)',fmtN(pendingAmt)+'원',filtered.filter(x=>!x.settled).length+'건')}`;
 
   const tbody=filtered.map((s,i)=>{
     // 요청1: settle → quote(taxBizIdx) → client.bizInfoList[idx].bizNo
@@ -11709,14 +11727,33 @@ function quoteItemsForSave(list){
     };
   });
 }
-function moveQtItem(itemId, dir){
-  const i=QT_NEW_ITEMS.findIndex(x=>x.id===itemId);
-  const j=i+Number(dir);
-  if(i<0||j<0||j>=QT_NEW_ITEMS.length) return;
-  const t=QT_NEW_ITEMS[i];
-  QT_NEW_ITEMS[i]=QT_NEW_ITEMS[j];
-  QT_NEW_ITEMS[j]=t;
+function moveQuoteGroup(fromIdx, toIdx, placeAfter){
+  const groups=groupQuoteItems(QT_NEW_ITEMS);
+  if(fromIdx<0||toIdx<0||fromIdx>=groups.length||toIdx>=groups.length||fromIdx===toIdx) return;
+  const before=QT_NEW_ITEMS.map(it=>it.id).join('\n');
+  const block=groups[fromIdx].items.slice();
+  const len=block.length;
+  const start=groups[fromIdx].indices[0];
+  QT_NEW_ITEMS.splice(start, len);
+  const target=groups[toIdx];
+  let insertAt;
+  if(placeAfter){
+    const end=target.indices[target.indices.length-1];
+    insertAt=fromIdx<toIdx?end-len+1:end+1;
+  } else {
+    const tStart=target.indices[0];
+    insertAt=fromIdx<toIdx?tStart-len:tStart;
+  }
+  QT_NEW_ITEMS.splice(insertAt, 0, ...block);
+  if(QT_NEW_ITEMS.map(it=>it.id).join('\n')===before) return;
   renderQtNewItems();
+}
+function moveQtItem(itemId, dir){
+  const groups=groupQuoteItems(QT_NEW_ITEMS);
+  const gi=groups.findIndex(g=>g.items.some(it=>it.id===itemId));
+  const dest=gi+Number(dir);
+  if(gi<0||dest<0||dest>=groups.length) return;
+  moveQuoteGroup(gi, dest, Number(dir)>0);
 }
 let QT_ITEM_DRAG_ID='';
 let QT_FOCUS_PRICE_ID='';
@@ -11742,15 +11779,15 @@ function qtItemDrop(ev, toId){
   let fromId='';
   try{ fromId=ev.dataTransfer.getData('text/plain'); }catch(e){}
   fromId=fromId||QT_ITEM_DRAG_ID;
-  if(!fromId||!toId||fromId===toId) return;
-  const from=QT_NEW_ITEMS.findIndex(x=>x.id===fromId);
-  if(from<0) return;
-  const [item]=QT_NEW_ITEMS.splice(from,1);
-  const dest=QT_NEW_ITEMS.findIndex(x=>x.id===toId);
-  if(dest<0){ QT_NEW_ITEMS.splice(from,0,item); return; }
-  QT_NEW_ITEMS.splice(dest,0,item);
   QT_ITEM_DRAG_ID='';
-  renderQtNewItems();
+  if(!fromId||!toId) return;
+  const groups=groupQuoteItems(QT_NEW_ITEMS);
+  const fromG=groups.findIndex(g=>g.items.some(it=>it.id===fromId));
+  const toG=groups.findIndex(g=>g.items.some(it=>it.id===toId));
+  if(fromG<0||toG<0||fromG===toG) return;
+  const rect=ev.currentTarget&&ev.currentTarget.getBoundingClientRect();
+  const placeAfter=!!(rect&&ev.clientY>=rect.top+rect.height/2);
+  moveQuoteGroup(fromG, toG, placeAfter);
 }
 function onQtProductNameDraft(idList, val){
   const ids=String(idList||'').split(',').filter(Boolean);
@@ -11804,14 +11841,25 @@ function renderQtNewItems(){
 
   const grandTotal=QT_NEW_ITEMS.reduce((s,it)=>{const r=calcRow(it);return s+r.total;},0);
   const groups=groupQuoteItems(QT_NEW_ITEMS);
-  const lastIdx=QT_NEW_ITEMS.length-1;
   const body=[];
-  groups.forEach(g=>{
+  groups.forEach((g,gi)=>{
     const lines=g.items.map((it,li)=>({it, r:calcRow(it), idx:g.indices[li]}));
+    const isFirstGroup=gi===0;
+    const isLastGroup=gi===groups.length-1;
     lines.forEach((line,li)=>{
-      const it=line.it, r=line.r, idx=line.idx;
+      const it=line.it, r=line.r;
       const isProd=it.calc==='product';
       const isCustom=it.calc==='custom';
+      let orderCell='';
+      if(g.kind!=='product'||li===0){
+        const headId=g.items[0].id;
+        const span=g.kind==='product'?g.items.length:1;
+        orderCell=`<td rowspan="${span}" style="padding:4px 4px;text-align:center;white-space:nowrap;width:78px;vertical-align:middle">
+          <span class="qt-drag-handle" draggable="true" ondragstart="qtItemDragStart(event,'${headId}')" title="드래그하여 그룹 순서 변경">⋮⋮</span>
+          <button type="button" class="btn btn-xs btn-gray qt-move-btn" ${isFirstGroup?'disabled':''} onclick="moveQtItem('${headId}',-1)" title="그룹 위로">▲</button>
+          <button type="button" class="btn btn-xs btn-gray qt-move-btn" ${isLastGroup?'disabled':''} onclick="moveQtItem('${headId}',1)" title="그룹 아래로">▼</button>
+        </td>`;
+      }
       let nameCell='';
       if(g.kind!=='product' || li===0){
         if(isProd){
@@ -11828,11 +11876,7 @@ function renderQtNewItems(){
         }
       }
       body.push(`<tr style="border-top:1px solid var(--border);background:${isProd?'#fffdf5':''}" ondragover="qtItemDragOver(event)" ondragleave="qtItemDragLeave(event)" ondrop="qtItemDrop(event,'${it.id}')">
-        <td style="padding:4px 4px;text-align:center;white-space:nowrap;width:78px">
-          <span class="qt-drag-handle" draggable="true" ondragstart="qtItemDragStart(event,'${it.id}')" title="드래그하여 순서 변경">⋮⋮</span>
-          <button type="button" class="btn btn-xs btn-gray qt-move-btn" ${idx===0?'disabled':''} onclick="moveQtItem('${it.id}',-1)" title="위로">▲</button>
-          <button type="button" class="btn btn-xs btn-gray qt-move-btn" ${idx===lastIdx?'disabled':''} onclick="moveQtItem('${it.id}',1)" title="아래로">▼</button>
-        </td>
+        ${orderCell}
         <td style="padding:5px 8px">
           <select class="fs" style="font-size:11px;padding:3px 6px" onchange="onQtTypeChange('${it.id}',this)">
             ${QUOTE_TYPES.map((t,i)=>`<option value="${i}" ${i===it.typeIdx?'selected':''}>${t.label}</option>`).join('')}
