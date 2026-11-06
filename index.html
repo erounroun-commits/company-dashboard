@@ -448,6 +448,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
       <div class="nav-item nav-sub" onclick="openChangeLogModal()"><span class="nav-icon" style="font-size:12px">📜</span>수정 이력</div>
       <div class="nav-item nav-sub" onclick="cleanupOrphanSettles()"><span class="nav-icon" style="font-size:12px">🧹</span>고아 정산 정리</div>
       <div class="nav-item nav-sub" onclick="openQuoteLinkCheck()"><span class="nav-icon" style="font-size:12px">🔎</span>견적-정산 연동 점검</div>
+      <div class="nav-item nav-sub" onclick="openPayMigration()"><span class="nav-icon" style="font-size:12px">💳</span>결제 데이터 이관</div>
     </div>
     <div class="nav-item" onclick="showPage('export')" data-page="export"><span class="nav-icon">📤</span>엑셀 추출</div>
     <div style="padding:10px 20px;border-top:1px solid var(--border);margin-top:auto">
@@ -1323,15 +1324,15 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
 <div class="mo hidden" id="modal-client-payments">
   <div class="md md-lg" style="max-width:820px">
     <div class="mt">💳 결제 현황</div>
-    <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
-      기타 플랫폼(오픈마켓·구독 등) 결제 내역을 관리합니다. 일반/관리자 모두 편집 가능합니다.
+    <div id="cp-help" style="font-size:11px;color:var(--text3);margin-bottom:10px">
+      기타 플랫폼(오픈마켓·구독 등) 결제 내역을 관리합니다. 로그인한 사용자는 편집할 수 있습니다.
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
       <div id="cp-title" style="font-size:12px;font-weight:700;color:var(--text2)"></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <button class="btn btn-gray btn-sm" onclick="addPayRow()">+ 행 추가</button>
+        <button class="btn btn-gray btn-sm" id="cp-add-btn" onclick="addPayRow()">+ 행 추가</button>
         <button class="btn btn-blue btn-sm" onclick="exportPaymentsExcel()">📥 엑셀 추출</button>
-        <button class="btn btn-green btn-sm" onclick="savePayments()">💾 저장</button>
+        <button class="btn btn-green btn-sm" id="cp-save-btn" onclick="savePayments()">💾 저장</button>
       </div>
     </div>
     <div class="sheet-outer" style="max-height:420px">
@@ -1344,7 +1345,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
             <th style="min-width:70px">건수</th>
             <th style="min-width:110px">결제 금액</th>
             <th style="min-width:140px">메모</th>
-            <th style="width:40px"></th>
+            <th style="width:40px" id="cp-del-th"></th>
           </tr>
         </thead>
         <tbody id="cp-tbody"></tbody>
@@ -1833,7 +1834,7 @@ function _waitFlag(pred, ms){
   });
 }
 
-const FS_BACKUP_COLS=['users','clients','projects','quotes','records','settles','depositHistory','depositUnmatched','depNames','dailySettleRows','bankTransactions','companyExpenses','blogProjects','changeLogs'];
+const FS_BACKUP_COLS=['users','clients','projects','quotes','records','settles','depositHistory','depositUnmatched','depNames','dailySettleRows','bankTransactions','companyExpenses','blogProjects','changeLogs','payRecords','payHistory'];
 const FS_BACKUP_DOCS=[['settings','gsync'],['settings','monthlyCnt'],['settings','uiCols'],['settings','gsyncLock']];
 function _fsPlain(val){
   if(val==null) return val;
@@ -2154,6 +2155,9 @@ let COMPANY_EXP_CACHE = [];
 let MONTHLY_CNT_CACHE = {};
 // 블로그 프로젝트 입력 데이터 캐시 (Firestore 연동)
 let BLOG_PROJECTS_CACHE = [];
+// 결제 기록/연대기. 전체 구독하지 않으므로 캐시는 이번 세션에 읽거나 쓴 문서만 담는다.
+let PAY_RECORDS_CACHE = [];
+let PAY_HISTORY_CACHE = [];
 let BLOG_SAVE_IN_FLIGHT = false;
 let BLOG_SAVE_PENDING = null;
 const BLOG_LOCAL_KEY = 'wv_blog_projects';
@@ -2432,7 +2436,7 @@ function _rememberColUnsub(key, fn){
 function ensureCollectionSubs(keys){
   if(!CUR_ADMIN || typeof db==='undefined' || !keys) return;
   keys.forEach(function(key){
-    if(!SV_COL[key] || _colAlreadyListening(key)) return;
+    if(!SV_COL[key] || SV_LAZY_KEYS[key] || _colAlreadyListening(key)) return;
     const colName=SV_COL[key];
     const unsub=db.collection(colName).onSnapshot(function(snap){
       _svOnSnap(key, snap);
@@ -2449,6 +2453,7 @@ function ensureCollectionSubs(keys){
   });
 }
 function subscribeMainDataFromFirestore(){
+  // pay/payh(payRecords, payHistory)는 읽기 비용 때문에 여기 넣지 않는다.
   ensureCollectionSubs(['cl','pr','qt','st','dep','um','dn','ds','bank','exp','bp']);
   if(!_unsubMain) _unsubMain=function(){};
 }
@@ -3117,7 +3122,11 @@ const SV_COL={
   bank:'bankTransactions',
   exp:'companyExpenses',
   bp:'blogProjects',
+  pay:'payRecords',
+  payh:'payHistory',
 };
+// 전체 onSnapshot 대상이 아니다. 문서 단위 upsert만 하고, 읽을 때는 clientId 조건으로만 가져온다.
+const SV_LAZY_KEYS={pay:1, payh:1};
 // key별 로드 성공 플래그. 성공 전에 sv/svDelete는 저장하지 않는다.
 const _svLoaded={cl:false,pr:false,rc:false,qt:false,st:false,dep:false,um:false,dn:false,ds:false,bank:false,exp:false,bp:false};
 // key별 마지막 서버 동기화 상태 (id → JSON 문자열). 스냅샷/로드 시 갱신.
@@ -3139,6 +3148,8 @@ function _svGetCache(key){
     case 'bank': return BANK_TX_CACHE;
     case 'exp': return COMPANY_EXP_CACHE;
     case 'bp': return BLOG_PROJECTS_CACHE;
+    case 'pay': return PAY_RECORDS_CACHE;
+    case 'payh': return PAY_HISTORY_CACHE;
     default: return [];
   }
 }
@@ -3197,6 +3208,8 @@ function _svSetCache(key, rows){
     case 'bank': BANK_TX_CACHE=next; break;
     case 'exp': COMPANY_EXP_CACHE=next; break;
     case 'bp': BLOG_PROJECTS_CACHE=next; break;
+    case 'pay': PAY_RECORDS_CACHE=next; break;
+    case 'payh': PAY_HISTORY_CACHE=next; break;
   }
   _svReindex(key, next);
 }
@@ -3276,6 +3289,7 @@ function _svOnSnap(key, snap){
   if(changes.length||firstSnap) scheduleRerender(SV_COL[key]||key);
 }
 function _svRequireLoaded(key){
+  if(SV_LAZY_KEYS[key]) return;
   if(!_svLoaded[key]) throw new Error('데이터 로드 전 저장 차단');
 }
 function _svBackupBlog(){
@@ -3395,7 +3409,7 @@ async function commitSvOps(ops){
   const list=[...map.values()];
   if(!list.length) return;
   const keys=new Set(list.map(op=>op.key));
-  keys.forEach(k=>{ if(!_svLoaded[k]) throw new Error('데이터 로드 전 저장 차단'); });
+  keys.forEach(k=>{ if(!SV_LAZY_KEYS[k] && !_svLoaded[k]) throw new Error('데이터 로드 전 저장 차단'); });
 
   const setByKey={};
   list.forEach(op=>{
@@ -10411,7 +10425,7 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
   const contractType=(c&&c.contractType==='건별결제')?'건별결제':'숫자입력';
   const contractTotal=(c&&c.contractTotal!==undefined&&c.contractTotal!==null)?Number(c.contractTotal):projs.reduce((a,p)=>a+(p.contractTotal||p.total||0),0);
   const prevPurchaseDone=(c&&c.prevPurchaseDone!=null)?Number(c.prevPurchaseDone):0;
-  const purchaseDoneAuto=allRecs.filter(r=>r.nickname||r.tracking).length; // 닉네임 있으면 구매완료
+  const purchaseDoneAuto=allRecs.filter(r=>r.nickname||r.tracking).length; // 닉네임 또는 송장 = 구매완료
   const purchaseDone=purchaseDoneAuto+prevPurchaseDone;
   const isPerItem=contractType==='건별결제';
   const remaining=isPerItem?null:Math.max(0,contractTotal-purchaseDone);
@@ -10544,11 +10558,6 @@ function renderDetDash(){
   const purchaseDateNorm2=(r)=>normDate(r.purchaseDate)||purchaseDateToYYYYMMDD(r.purchaseDate)||'';
   const todayBuy=allRecs.filter(r=>purchaseDateNorm2(r)===todayISO).length;
   const tmrBuy=allRecs.filter(r=>purchaseDateNorm2(r)===tmrISO).length;
-  // 선계약수량: 거래처 레벨 우선 (거래처 정보에서 입력), 없으면 프로젝트 합산 (0 입력 시 0 반영)
-  const contractTotal=(c&&c.contractTotal!==undefined&&c.contractTotal!==null)?Number(c.contractTotal):projs.reduce((a,p)=>a+(p.contractTotal||p.total||0),0);
-  const purchaseDone=allRecs.filter(r=>r.tracking).length; // 송장번호 입력 = 구매완료
-  const remaining=Math.max(0,contractTotal-purchaseDone);
-  const paymentMethod=c?.paymentMethod||'계좌이체';
 
   // 단가/세금 요약
   const bizList=c?.bizInfoList||[];
@@ -10678,6 +10687,7 @@ function savePaymentMethod(method){
 }
 
 let PAY_EDIT_ROWS=[];
+let PAY_MODAL_READONLY=false;
 function openPaymentModal(){
   const d=ld();
   let c=null;
@@ -10687,6 +10697,7 @@ function openPaymentModal(){
     c=d.clients.find(x=>x.code===CV_CURRENT_CODE);
   }
   if(!c){toast('거래처를 먼저 선택하세요','error');return;}
+  PAY_MODAL_READONLY=!CUR_ADMIN;
   const rows=Array.isArray(c.payments)?c.payments:[];
   PAY_EDIT_ROWS=rows.map(r=>({
     id:r.id||gid(),
@@ -10696,29 +10707,47 @@ function openPaymentModal(){
     amount:Number(r.amount)||'',
     memo:r.memo||'',
   }));
-  if(!PAY_EDIT_ROWS.length){
+  if(!PAY_EDIT_ROWS.length && !PAY_MODAL_READONLY){
     PAY_EDIT_ROWS.push({id:gid(),platform:'',requestDate:'',qty:'',amount:'',memo:''});
   }
   const title=document.getElementById('cp-title');
   if(title)title.textContent=`거래처: ${c.name}`;
+  const help=document.getElementById('cp-help');
+  if(help){
+    help.textContent=PAY_MODAL_READONLY
+      ?'조회 전용입니다. 행 추가, 삭제, 저장은 로그인한 관리 화면에서만 할 수 있습니다.'
+      :'기타 플랫폼(오픈마켓·구독 등) 결제 내역을 관리합니다. 로그인한 사용자는 편집할 수 있습니다.';
+  }
+  const addBtn=document.getElementById('cp-add-btn');
+  const saveBtn=document.getElementById('cp-save-btn');
+  const delTh=document.getElementById('cp-del-th');
+  if(addBtn) addBtn.style.display=PAY_MODAL_READONLY?'none':'';
+  if(saveBtn) saveBtn.style.display=PAY_MODAL_READONLY?'none':'';
+  if(delTh) delTh.style.display=PAY_MODAL_READONLY?'none':'';
   renderPaymentTable();
   openMd('client-payments');
 }
 function renderPaymentTable(){
   const tbody=document.getElementById('cp-tbody');
   if(!tbody)return;
+  if(PAY_MODAL_READONLY && !PAY_EDIT_ROWS.length){
+    tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:16px">등록된 결제 내역이 없습니다</td></tr>';
+    return;
+  }
+  const ro=PAY_MODAL_READONLY;
   tbody.innerHTML=PAY_EDIT_ROWS.map((r,i)=>`
     <tr>
       <td style="text-align:center;font-size:11px;color:var(--text3)">${i+1}</td>
-      <td><input class="sc" style="width:100%" value="${(r.platform||'').replace(/"/g,'&quot;')}" oninput="onPayChange(${i},'platform',this.value)"></td>
-      <td><input class="sc sc-date" type="text" placeholder="YYYY-MM-DD" value="${(r.requestDate||'').replace(/"/g,'&quot;')}" oninput="onPayChange(${i},'requestDate',this.value)"></td>
-      <td><input class="sc" type="number" min="0" value="${r.qty!==''?r.qty:''}" oninput="onPayChange(${i},'qty',this.value)"></td>
-      <td><input class="sc" type="number" min="0" value="${r.amount!==''?r.amount:''}" oninput="onPayChange(${i},'amount',this.value)"></td>
-      <td><input class="sc" style="width:100%" value="${(r.memo||'').replace(/"/g,'&quot;')}" oninput="onPayChange(${i},'memo',this.value)"></td>
-      <td style="text-align:center"><button class="btn btn-xs btn-red" onclick="delPayRow(${i})">✕</button></td>
+      <td><input class="sc" style="width:100%" ${ro?'readonly':''} value="${(r.platform||'').replace(/"/g,'&quot;')}" ${ro?'':`oninput="onPayChange(${i},'platform',this.value)"`}></td>
+      <td><input class="sc sc-date" type="text" placeholder="YYYY-MM-DD" ${ro?'readonly':''} value="${(r.requestDate||'').replace(/"/g,'&quot;')}" ${ro?'':`oninput="onPayChange(${i},'requestDate',this.value)"`}></td>
+      <td><input class="sc" type="number" min="0" ${ro?'readonly':''} value="${r.qty!==''?r.qty:''}" ${ro?'':`oninput="onPayChange(${i},'qty',this.value)"`}></td>
+      <td><input class="sc" type="number" min="0" ${ro?'readonly':''} value="${r.amount!==''?r.amount:''}" ${ro?'':`oninput="onPayChange(${i},'amount',this.value)"`}></td>
+      <td><input class="sc" style="width:100%" ${ro?'readonly':''} value="${(r.memo||'').replace(/"/g,'&quot;')}" ${ro?'':`oninput="onPayChange(${i},'memo',this.value)"`}></td>
+      ${ro?'':`<td style="text-align:center"><button class="btn btn-xs btn-red" onclick="delPayRow(${i})">✕</button></td>`}
     </tr>`).join('');
 }
 function onPayChange(idx,key,val){
+  if(PAY_MODAL_READONLY||!CUR_ADMIN)return;
   if(!PAY_EDIT_ROWS[idx])return;
   if(key==='qty'||key==='amount'){
     const n=parseInt(val,10);
@@ -10728,15 +10757,18 @@ function onPayChange(idx,key,val){
   }
 }
 function addPayRow(){
+  if(PAY_MODAL_READONLY||!CUR_ADMIN)return;
   PAY_EDIT_ROWS.push({id:gid(),platform:'',requestDate:'',qty:'',amount:'',memo:''});
   renderPaymentTable();
 }
 function delPayRow(idx){
+  if(PAY_MODAL_READONLY||!CUR_ADMIN)return;
   if(PAY_EDIT_ROWS.length===1){PAY_EDIT_ROWS[0]={id:gid(),platform:'',requestDate:'',qty:'',amount:'',memo:''};}
   else PAY_EDIT_ROWS.splice(idx,1);
   renderPaymentTable();
 }
 function savePayments(){
+  if(!CUR_ADMIN){toast('조회 전용입니다','error');return;}
   const d=ld();
   let idx=d.clients.findIndex(x=>x.id===CUR_CLIENT);
   if(idx<0 && typeof CV_CURRENT_CODE!=='undefined' && CV_CURRENT_CODE){
@@ -10780,6 +10812,404 @@ function exportPaymentsExcel(){
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'결제현황');
   XLSX.writeFile(wb,`결제현황_${(c.name||'').replace(/[\\/:*?"<>|]/g,'_')||'client'}_${getKSTDate()}.xlsx`);
+}
+
+// ── 결제 구조 (payRecords / payHistory). 화면 잔여에는 아직 연결하지 않는다. ──
+function recordIsPurchaseDone(r){
+  return !!(r&&(r.nickname||r.tracking));
+}
+function effectiveContractTotal(c, projs){
+  if(c&&c.contractTotal!==undefined&&c.contractTotal!==null) return Number(c.contractTotal);
+  return (projs||[]).reduce((a,p)=>a+((p&&(p.contractTotal||p.total))||0),0);
+}
+function screenContractRemaining(c, projs, doneAuto){
+  if(c&&c.contractType==='건별결제') return null;
+  const contractTotal=effectiveContractTotal(c, projs);
+  const prev=(c&&c.prevPurchaseDone!=null)?Number(c.prevPurchaseDone):0;
+  return Math.max(0, contractTotal-((Number(doneAuto)||0)+prev));
+}
+function sumProjectDone(projs, doneByProject, onlyPrepaid){
+  let n=0;
+  (projs||[]).forEach(p=>{
+    if(!p||!p.id) return;
+    if(onlyPrepaid&&p.payMode!=='prepaid') return;
+    n+=Number(doneByProject&&doneByProject.get(p.id))||0;
+  });
+  return n;
+}
+function getPrepaidSummary(clientId, ctx){
+  const clients=(ctx&&ctx.clients)||CLIENTS_CACHE||[];
+  const projects=(ctx&&ctx.projects)||PROJECTS_CACHE||[];
+  const c=clients.find(x=>x&&x.id===clientId)||null;
+  const projs=projects.filter(p=>p&&p.clientId===clientId);
+  const total=Number(c&&c.prepaidTotal)||0;
+  const prevDone=(c&&c.prevPurchaseDone!=null)?Number(c.prevPurchaseDone):0;
+  let done=0;
+  if(ctx&&ctx.doneByProject){
+    done=sumProjectDone(projs, ctx.doneByProject, true);
+  }else{
+    const records=(ctx&&ctx.records)||RECORDS_CACHE||[];
+    const ids=new Set(projs.filter(p=>p&&p.payMode==='prepaid'&&p.id).map(p=>p.id));
+    records.forEach(r=>{
+      if(!r||!ids.has(r.projectId)||!recordIsPurchaseDone(r)) return;
+      done++;
+    });
+  }
+  return {total, prevDone, done, remaining:Math.max(0, total-(prevDone+done))};
+}
+function inferPayMode(c, contractTotal){
+  const t=c?c.contractType:undefined;
+  if(t==='건별결제') return {payMode:'perItem', estimated:false};
+  if(t==='숫자입력') return {payMode:'prepaid', estimated:false};
+  const n=Number(contractTotal);
+  return {payMode:(Number.isFinite(n)&&n>0)?'prepaid':'perItem', estimated:true};
+}
+function inferPayRoute(c){
+  const m=c&&c.paymentMethod!=null?String(c.paymentMethod).trim():'';
+  if(m==='계좌이체'||m==='카드결제') return {payRoute:m, payRouteMemo:''};
+  if(m==='기타플랫폼') return {payRoute:'크몽', payRouteMemo:''};
+  return {payRoute:'계좌이체', payRouteMemo:''};
+}
+function payRemainingsDiffer(before, after){
+  if(before==null) return Number(after)!==0;
+  if(!Number.isFinite(Number(before))||!Number.isFinite(Number(after))) return true;
+  return Math.abs(Number(before)-Number(after))>1e-6;
+}
+function payMigDocId(clientId, suffix){
+  return ('mig_'+String(clientId)+'_'+suffix).replace(/\//g,'_');
+}
+function payAuditStamp(iso){
+  const who=(CUR_ADMIN&&(CUR_ADMIN.username||CUR_ADMIN.loginId||CUR_ADMIN.id))||'';
+  return {createdBy:who, createdAt:iso, updatedBy:who, updatedAt:iso, deleted:false};
+}
+function payNormYmd(s, fallback){
+  const raw=s==null?'':String(s).trim();
+  const m=raw.match(/(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/);
+  if(m) return m[1]+'-'+m[2].padStart(2,'0')+'-'+m[3].padStart(2,'0');
+  if(/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0,10);
+  return fallback||'';
+}
+function payQtySum(rows){
+  return (rows||[]).reduce((a,r)=>a+(Number(r&&r.qty)||0),0);
+}
+function payCopiedRecords(c, kind, iso, ymd){
+  const out=[];
+  (Array.isArray(c.payments)?c.payments:[]).forEach((p,i)=>{
+    if(!p||typeof p!=='object') return;
+    const platform=String(p.platform||'').trim();
+    const requestDate=String(p.requestDate||'').trim();
+    const qtyN=Number.isFinite(Number(p.qty))?Number(p.qty):0;
+    const amountN=Number.isFinite(Number(p.amount))?Number(p.amount):0;
+    const memo=p.memo==null?'':String(p.memo);
+    if(!platform&&!requestDate&&!qtyN&&!amountN&&!String(memo).trim()) return;
+    out.push(Object.assign({
+      id:payMigDocId(c.id,'p_'+i+'_'+(p.id?String(p.id):'x')),
+      clientId:c.id,
+      kind, route:'크몽', routeMemo:'',
+      date:payNormYmd(requestDate, ymd),
+      qty:qtyN,
+      unitPrice:qtyN?amountN/qtyN:0,
+      amount:amountN,
+      memo,
+    }, payAuditStamp(iso)));
+  });
+  return out;
+}
+function payTaxValue(c){
+  const ti=(c&&c.taxItems)||{};
+  return {taxYn:!!(c&&c.taxYn), fee:!!ti.fee, delivery:!!ti.delivery, product:!!ti.product};
+}
+function payPriceValue(c){
+  const price1=Number(c&&c.price1)||0;
+  const price2=Number(c&&c.price2)||0;
+  return {services:[{
+    service:'리뷰마케팅',
+    sameT12:price1===price2,
+    t1:{label:(c&&c.price1Type)||'실배송', price:price1},
+    t2:{label:(c&&c.price2Type)||'빈박스', price:price2},
+    t3:{label:'택배대행', price:deliveryPriceOf(c)},
+  }]};
+}
+function payHistoryDocs(c, mode, route, iso, ymd){
+  const base=Object.assign({clientId:c.id, effectiveDate:ymd, memo:'이관 시점 값'}, payAuditStamp(iso));
+  function doc(suffix, type, value){
+    return Object.assign({id:payMigDocId(c.id, suffix), type, value}, base);
+  }
+  return [
+    doc('h_route','route',{route:route.payRoute, routeMemo:''}),
+    doc('h_mode','mode',{mode:mode.payMode, modeMemo:''}),
+    doc('h_tax','tax', payTaxValue(c)),
+    doc('h_price','price', payPriceValue(c)),
+  ];
+}
+function buildPayMigrationPlan(c, projs, doneByProject, now){
+  const iso=now.iso;
+  const ymd=now.ymd;
+  const contractTotal=effectiveContractTotal(c, projs);
+  const mode=inferPayMode(c, contractTotal);
+  const route=inferPayRoute(c);
+  const doneAuto=sumProjectDone(projs, doneByProject, false);
+  const beforeRemaining=screenContractRemaining(c, projs, doneAuto);
+  const oldMode=(c&&c.contractType)?String(c.contractType):'(없음)';
+  const oldRoute=(c&&c.paymentMethod!=null&&String(c.paymentMethod).trim()!=='')?String(c.paymentMethod).trim():'(없음)';
+  const base={
+    clientId:c.id, name:c.name||'(이름 없음)',
+    oldMode, payMode:mode.payMode, oldRoute, payRoute:route.payRoute,
+    estimated:mode.estimated, already:false, needCheck:false, mismatch:false, include:false,
+    kmongCount:0, adjustQty:0, adjustLabel:'0',
+    beforeRemaining, afterRemaining:null, status:'정상', ops:[],
+  };
+  if(c.payMigratedAt){
+    const after=getPrepaidSummary(c.id,{clients:[c], projects:projs, doneByProject});
+    return Object.assign(base,{
+      already:true,
+      payMode:c.payMode||mode.payMode,
+      payRoute:c.payRoute||route.payRoute,
+      afterRemaining:after.remaining,
+      kmongCount:(Array.isArray(c.payments)?c.payments:[]).filter(p=>p&&(p.platform||p.requestDate||p.qty||p.amount||p.memo)).length,
+      adjustLabel:'—',
+      status:'이미 이관',
+    });
+  }
+  const kind=mode.payMode==='prepaid'?'prepaid':'perItem';
+  const copied=payCopiedRecords(c, kind, iso, ymd);
+  const S=kind==='prepaid'?payQtySum(copied):0;
+  let needCheck=false;
+  let adjustQty=0;
+  if(mode.payMode==='prepaid'){
+    if(!Number.isFinite(contractTotal)||contractTotal<S) needCheck=true;
+    else if(contractTotal>S) adjustQty=contractTotal-S;
+  }
+  const prepaidTotal=(mode.payMode==='prepaid'&&Number.isFinite(contractTotal))?contractTotal:0;
+  const projPayMode=mode.payMode==='prepaid'?'prepaid':'separate';
+  const simClient=Object.assign({}, c, {prepaidTotal:prepaidTotal, payMode:mode.payMode});
+  const simProjects=projs.map(p=>Object.assign({}, p, {payMode:projPayMode}));
+  const after=getPrepaidSummary(c.id,{clients:[simClient], projects:simProjects, doneByProject});
+  const mismatch=payRemainingsDiffer(beforeRemaining, after.remaining);
+  let status='정상';
+  if(needCheck&&mode.estimated) status='추정 · 확인 필요';
+  else if(needCheck) status='확인 필요';
+  else if(mode.estimated) status='추정';
+  if(mismatch) status+=' · 잔여 불일치';
+  const include=!needCheck&&!mismatch;
+  let adjustLabel='0';
+  if(mode.payMode!=='prepaid') adjustLabel='—';
+  else if(needCheck) adjustLabel='초과 '+(Number.isFinite(contractTotal)?(S-contractTotal):S);
+  else if(adjustQty) adjustLabel='+'+adjustQty;
+  const plan=Object.assign(base,{
+    needCheck, mismatch, include, kmongCount:copied.length,
+    adjustQty, adjustLabel, afterRemaining:after.remaining, status,
+  });
+  if(!include) return plan;
+  const records=copied.slice();
+  if(adjustQty){
+    const unitPrice=Number(c.price1)||0;
+    records.push(Object.assign({
+      id:payMigDocId(c.id,'adj'),
+      clientId:c.id,
+      kind:'prepaid',
+      route:route.payRoute,
+      routeMemo:'',
+      date:ymd,
+      qty:adjustQty,
+      unitPrice,
+      amount:adjustQty*unitPrice,
+      memo:'이관: 기존 선계약 수량 보정',
+    }, payAuditStamp(iso)));
+  }
+  const histories=payHistoryDocs(c, mode, route, iso, ymd);
+  const group=String(c.id);
+  const ops=[];
+  records.forEach(rec=>ops.push({key:'pay', id:rec.id, data:rec, group}));
+  histories.forEach(h=>ops.push({key:'payh', id:h.id, data:h, group}));
+  projs.forEach(p=>{
+    if(!p||!p.id) return;
+    ops.push({key:'pr', id:p.id, data:Object.assign({}, p, {payMode:projPayMode}), group});
+  });
+  ops.push({key:'cl', id:c.id, data:Object.assign({}, c, {
+    payRoute:route.payRoute,
+    payRouteMemo:'',
+    payMode:mode.payMode,
+    payModeMemo:'',
+    prepaidTotal,
+    payMigratedAt:iso,
+  }), group});
+  plan.ops=ops;
+  return plan;
+}
+async function fetchPurchaseDoneByProject(){
+  if(typeof db==='undefined') throw new Error('Firestore가 준비되지 않았습니다');
+  const ids=[];
+  const seen=new Set();
+  (PROJECTS_CACHE||[]).forEach(p=>{
+    if(!p||!p.id||seen.has(p.id)) return;
+    seen.add(p.id);
+    ids.push(p.id);
+  });
+  const counts=new Map();
+  fsBegin('결제 이관 집계');
+  try{
+    for(let i=0;i<ids.length;i+=30){
+      const chunk=ids.slice(i,i+30);
+      const snap=await db.collection('records').where('projectId','in',chunk).get();
+      snap.docs.forEach(doc=>{
+        const r=doc.data()||{};
+        if(!r.projectId||!recordIsPurchaseDone(r)) return;
+        counts.set(r.projectId,(counts.get(r.projectId)||0)+1);
+      });
+    }
+  }finally{
+    fsEnd('결제 이관 집계');
+  }
+  return counts;
+}
+let PAY_MIG_PLANS=[];
+let PAY_MIG_DONE=null;
+let PAY_MIG_RUNNING=false;
+function payMigRank(p){
+  if(p.mismatch) return 0;
+  if(p.needCheck) return 1;
+  if(p.include&&p.estimated) return 2;
+  if(p.include) return 3;
+  if(p.already) return 5;
+  return 4;
+}
+async function buildPayMigrationPlans(doneByProject){
+  const done=doneByProject||await fetchPurchaseDoneByProject();
+  PAY_MIG_DONE=done;
+  const now={iso:new Date().toISOString(), ymd:getKSTDate()};
+  const byClient=new Map();
+  (PROJECTS_CACHE||[]).forEach(p=>{
+    if(!p||!p.clientId) return;
+    if(!byClient.has(p.clientId)) byClient.set(p.clientId,[]);
+    byClient.get(p.clientId).push(p);
+  });
+  const plans=(CLIENTS_CACHE||[]).filter(c=>c&&c.id).map(c=>buildPayMigrationPlan(c, byClient.get(c.id)||[], done, now));
+  plans.sort((a,b)=>{
+    const d=payMigRank(a)-payMigRank(b);
+    if(d) return d;
+    return String(a.name||'').localeCompare(String(b.name||''),'ko');
+  });
+  PAY_MIG_PLANS=plans;
+  return plans;
+}
+function payMigRemainText(v){
+  if(v==null) return '—';
+  if(!Number.isFinite(Number(v))) return String(v);
+  return fmtN(v);
+}
+function renderPayMigrationPreview(plans){
+  const body=document.getElementById('pay-mig-body');
+  const sum=document.getElementById('pay-mig-summary');
+  const btn=document.getElementById('pay-mig-run');
+  const list=plans||[];
+  const inc=list.filter(p=>p.include).length;
+  const est=list.filter(p=>p.include&&p.estimated).length;
+  const chk=list.filter(p=>p.needCheck).length;
+  const bad=list.filter(p=>p.mismatch).length;
+  const doneN=list.filter(p=>p.already).length;
+  if(sum){
+    sum.innerHTML='실행 대상 <b>'+inc+'</b>곳'
+      +(est?' (그중 추정 '+est+')':'')
+      +' · 확인 필요 '+chk
+      +' · 잔여 불일치 '+bad
+      +' · 이미 이관 '+doneN
+      +' · 전체 '+list.length;
+  }
+  if(btn){
+    btn.disabled=!inc||PAY_MIG_RUNNING;
+    btn.textContent=inc?('이관 실행 ('+inc+'곳)'):'이관 실행';
+  }
+  if(!body) return;
+  if(!list.length){
+    body.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3)">거래처가 없습니다</div>';
+    return;
+  }
+  const headers=['거래처명','기존 결제방식 → 새 payMode','기존 결제수단 → 새 payRoute','크몽 기록 수','보정 기록','이관 전 잔여','이관 후 잔여','상태'];
+  let html='<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>'
+    +headers.map(h=>'<th style="position:sticky;top:0;background:#f8fafc;text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap">'+h+'</th>').join('')
+    +'</tr></thead><tbody>';
+  list.forEach(p=>{
+    const red=!!p.mismatch;
+    const rc=red?'color:#dc2626;font-weight:800;':'';
+    const modeLabel=p.payMode==='prepaid'?'선결제(prepaid)':(p.payMode==='perItem'?'건별결제(perItem)':(p.payMode==='etc'?'기타(etc)':String(p.payMode||'')));
+    const statusColor=red||p.needCheck?'color:#dc2626;font-weight:800;':(p.estimated?'color:#b45309;font-weight:700;':'');
+    html+='<tr>'
+      +'<td style="padding:6px 8px;border-bottom:1px solid var(--border)">'+escHtml(p.name)+'</td>'
+      +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap">'+escHtml(p.oldMode)+' → '+escHtml(modeLabel)+'</td>'
+      +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap">'+escHtml(p.oldRoute)+' → '+escHtml(p.payRoute||'')+'</td>'
+      +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);text-align:right">'+p.kmongCount+'</td>'
+      +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);text-align:right">'+escHtml(String(p.adjustLabel))+'</td>'
+      +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);text-align:right;'+rc+'">'+escHtml(payMigRemainText(p.beforeRemaining))+'</td>'
+      +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);text-align:right;'+rc+'">'+escHtml(payMigRemainText(p.afterRemaining))+'</td>'
+      +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap;'+statusColor+'">'+escHtml(p.status)+'</td>'
+      +'</tr>';
+  });
+  body.innerHTML=html+'</tbody></table>';
+}
+async function openPayMigration(){
+  if(!CUR_ADMIN||CUR_ADMIN.role!=='admin'){toast('관리자만 실행할 수 있습니다','error');return;}
+  if(typeof db==='undefined'){toast('Firestore가 아직 준비되지 않았습니다','error');return;}
+  if(!_svLoaded.cl||!_svLoaded.pr){toast('거래처·프로젝트 로드가 끝난 뒤 다시 실행하세요','error');return;}
+  openMd('pay-migration');
+  const body=document.getElementById('pay-mig-body');
+  const sum=document.getElementById('pay-mig-summary');
+  const btn=document.getElementById('pay-mig-run');
+  if(body) body.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3)">명단을 읽어 잔여를 계산하는 중입니다. 저장하지 않습니다.</div>';
+  if(sum) sum.textContent='';
+  if(btn){btn.disabled=true;btn.textContent='이관 실행';}
+  try{
+    renderPayMigrationPreview(await buildPayMigrationPlans());
+  }catch(e){
+    console.error(e);
+    if(body) body.innerHTML='<div style="padding:16px;color:#dc2626">집계 실패: '+escHtml(e&&e.message?e.message:String(e))+'</div>';
+    toast('미리보기 집계에 실패했습니다','error');
+  }
+}
+async function runPayMigration(){
+  if(!CUR_ADMIN||CUR_ADMIN.role!=='admin'){toast('관리자만 실행할 수 있습니다','error');return;}
+  if(PAY_MIG_RUNNING) return;
+  const targets=(PAY_MIG_PLANS||[]).filter(p=>p.include&&p.ops&&p.ops.length);
+  if(!targets.length){toast('이관할 거래처가 없습니다','error');return;}
+  if(!confirm(targets.length+'곳의 결제 데이터를 이관합니다.\n확인 필요, 잔여 불일치, 이미 이관된 거래처는 저장하지 않습니다.')) return;
+  PAY_MIG_RUNNING=true;
+  const btn=document.getElementById('pay-mig-run');
+  if(btn) btn.disabled=true;
+  let ok=0;
+  try{
+    for(const plan of targets){
+      if(btn) btn.textContent='저장 중 '+(ok+1)+'/'+targets.length;
+      await commitSvOps(plan.ops);
+      ok++;
+    }
+    toast(ok+'곳 이관을 저장했습니다');
+    renderPayMigrationPreview(await buildPayMigrationPlans(PAY_MIG_DONE));
+  }catch(e){
+    console.error(e);
+    toast('이관 실패 ('+ok+'곳 반영): '+(e&&e.message?e.message:e),'error');
+  }finally{
+    PAY_MIG_RUNNING=false;
+    renderPayMigrationPreview(PAY_MIG_PLANS||[]);
+  }
+}
+async function loadPayForClient(clientId){
+  if(typeof db==='undefined'||!clientId) return {records:[], history:[]};
+  fsBegin('결제 조회 1회');
+  try{
+    const recSnap=await db.collection('payRecords').where('clientId','==',clientId).get();
+    const histSnap=await db.collection('payHistory').where('clientId','==',clientId).get();
+    const records=recSnap.docs.map(d=>({id:d.id, ...(d.data()||{})}));
+    const history=histSnap.docs.map(d=>({id:d.id, ...(d.data()||{})}));
+    _svSetCache('pay', _svMergeRows(_svGetCache('pay'), records));
+    _svSetCache('payh', _svMergeRows(_svGetCache('payh'), history));
+    const syncPay=_svSync.pay||(_svSync.pay=new Map());
+    const syncHist=_svSync.payh||(_svSync.payh=new Map());
+    records.forEach(item=>{ const json=_svItemJson(item); if(json!=null) syncPay.set(item.id, json); });
+    history.forEach(item=>{ const json=_svItemJson(item); if(json!=null) syncHist.set(item.id, json); });
+    return {records, history};
+  }finally{
+    fsEnd('결제 조회 1회');
+  }
 }
 
 function setClientMemoEmoji(em){
@@ -15119,13 +15549,17 @@ function confirmBulkUpload(){
       biz:document.getElementById('bu-biz').value.trim(),
       status:document.getElementById('bu-status').value||'활성',
       price1:parseInt(document.getElementById('bu-price1').value)||0,
-      price2:parseInt(document.getElementById('bu-price2').value)||0,
       taxYn:document.getElementById('bu-tax').value==='Y',
       taxDate:document.getElementById('bu-tax-date').value||'',
       memo:document.getElementById('bu-memo').value.trim(),
       code:'C'+Date.now().toString(36).toUpperCase(),
       depositName:'',createdAt:new Date().toISOString()
     };
+    const buDeliveryRaw=String((document.getElementById('bu-price2')||{}).value||'').trim();
+    if(buDeliveryRaw!==''){
+      const buDelivery=parseInt(buDeliveryRaw,10);
+      client.price3=Number.isFinite(buDelivery)?buDelivery:0;
+    }
     d.clients.push(client);
     sv('cl',d.clients);
   }
@@ -18749,6 +19183,27 @@ installPerfProbes();
     <div class="mf">
       <button class="btn btn-gray" onclick="closeMd('qt-link-check')">닫기</button>
       <button class="btn btn-blue" id="qt-link-check-run" onclick="runQuoteLinkRepair()">복구 실행</button>
+    </div>
+  </div>
+</div>
+
+<div class="mo hidden" id="modal-pay-migration">
+  <div class="md md-lg" style="max-width:1100px">
+    <div class="mt">💳 결제 데이터 이관</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:8px;line-height:1.6">
+      미리보기만 보여 주며, 이관 실행을 누르기 전에는 저장하지 않습니다. 이미 이관한 거래처는 건너뜁니다.
+      계약 현황의 선계약·구매완료·잔여 표시는 이 단계에서 바꾸지 않습니다.
+    </div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;line-height:1.6">
+      추정 = 결제방식이 비어 있어 선계약 수량으로 정한 값. 확인 필요 = 선결제 기록 건수 합이 선계약보다 많아 자동 보정하지 않음.
+      잔여가 다르면 빨간색이며 실행에서 빠집니다. 건별결제는 화면 잔여가 없어(—) 이관 후 선결제 잔여가 0이면 정상입니다.
+      명단은 잔여 계산을 위해 미리보기에서 한 번 읽습니다.
+    </div>
+    <div id="pay-mig-summary" style="font-size:12px;font-weight:700;margin-bottom:8px"></div>
+    <div id="pay-mig-body" style="max-height:60vh;overflow:auto;border:1px solid var(--border);border-radius:8px"></div>
+    <div class="mf">
+      <button class="btn btn-gray" onclick="closeMd('pay-migration')">닫기</button>
+      <button class="btn btn-blue" id="pay-mig-run" onclick="runPayMigration()" disabled>이관 실행</button>
     </div>
   </div>
 </div>
