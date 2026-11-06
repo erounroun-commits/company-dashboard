@@ -433,6 +433,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
     <div class="nav-item" onclick="showPage('clients')" data-page="clients"><span class="nav-icon">🏢</span>거래처 관리</div>
     <div class="nav-item nav-sub" onclick="showPage('dupcheck')" data-page="dupcheck"><span class="nav-icon" style="font-size:12px">🔎</span>스중체크</div>
     <div class="nav-item nav-sub" onclick="showPage('consult')" data-page="consult"><span class="nav-icon" style="font-size:12px">📒</span>상담일지</div>
+    <div class="nav-item nav-sub" onclick="showPage('paystatus')" data-page="paystatus"><span class="nav-icon" style="font-size:12px">💳</span>결제 현황</div>
     <div class="nav-item" onclick="showPage('crm')" data-page="crm"><span class="nav-icon">📇</span>CRM</div>
     <!-- 관리자 접이식 메뉴 -->
     <div class="nav-item" id="nav-admin-toggle" onclick="toggleAdminMenu()" data-page="__admin__" style="display:flex;align-items:center;justify-content:space-between">
@@ -702,6 +703,53 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
         <input id="dup-common-filter" class="fi" style="max-width:360px" placeholder="모든 칸에 같은 이름으로 검색" autocomplete="off" oninput="dupOnCommonInput()" oncompositionstart="dupCommonCompose(true)" oncompositionend="dupCommonCompose(false)" />
       </div>
       <div id="dup-cols" style="display:flex;gap:12px;align-items:flex-start;overflow-x:auto;padding-bottom:8px"></div>
+    </div>
+
+    <!-- 결제 현황 -->
+    <div class="page" id="page-paystatus">
+      <div class="page-header">
+        <div>
+          <div class="page-title">💳 결제 현황</div>
+          <div class="page-sub">목록은 이미 불러온 거래처·프로젝트만 사용합니다. 상세를 열 때 그 거래처의 결제 기록을 읽습니다.</div>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input id="ps-q" class="fi" style="max-width:220px" placeholder="거래처명 검색" autocomplete="off" oninput="renderPayStatus()">
+          <select id="ps-route" class="fs" style="max-width:150px" onchange="renderPayStatus()">
+            <option value="">결제경로 전체</option>
+            <option value="크몽">크몽</option>
+            <option value="계좌이체">계좌이체</option>
+            <option value="카드결제">카드결제</option>
+            <option value="기타">기타</option>
+          </select>
+          <select id="ps-mode" class="fs" style="max-width:170px" onchange="renderPayStatus()">
+            <option value="">결제방식 전체</option>
+            <option value="prepaid">선결제 후 차감</option>
+            <option value="perItem">건별결제</option>
+            <option value="etc">기타</option>
+          </select>
+          <select id="ps-sort" class="fs" style="max-width:150px" onchange="renderPayStatus()">
+            <option value="name">이름순</option>
+            <option value="remain">잔여 적은 순</option>
+          </select>
+          <span id="ps-count" style="font-size:12px;color:var(--text3)"></span>
+        </div>
+      </div>
+      <div class="card" style="overflow:auto;padding:0">
+        <table>
+          <thead><tr>
+            <th>거래처명</th>
+            <th>현황</th>
+            <th>현재 결제경로</th>
+            <th>현재 결제방식</th>
+            <th>단가 요약</th>
+            <th>선결제 잔여</th>
+            <th>계산서</th>
+          </tr></thead>
+          <tbody id="paystatus-tbody"></tbody>
+        </table>
+      </div>
     </div>
 
     <!-- CRM -->
@@ -2385,6 +2433,7 @@ function scheduleRerender(collectionName){
     paint('daily-settle','page-daily-settle', _renderColsHit(cols, ['dailySettleRows','bankTransactions','companyExpenses']), function(){ refreshOpenDailySettle(); });
     paint('user-mgmt','page-user-mgmt', _renderColsHit(cols, ['users']), function(){ renderUserMgmt(); });
     paint('crm','page-crm', _renderColsHit(cols, ['quotes','clients']), function(){ renderCrmQuotes(); });
+    paint('paystatus','page-paystatus', _renderColsHit(cols, ['clients','projects']), function(){ renderPayStatus(); });
     try{
       const detailHit=_renderColsHit(cols, ['clients','projects','records','quotes','settles','uiCols','dailySettleRows','blogProjects']);
       if(CUR_CLIENT && detailHit){
@@ -2619,9 +2668,10 @@ function subscribeRecordsForClient(clientId){
   const projIds=_clientProjectIds(clientId);
   _recordsSubClientId=clientId;
   _recordsSubProjKey=projIds.slice().sort().join(',');
-  if(!projIds.length){
+    if(!projIds.length){
     _recordsChunksReady=true;
     _applyRecordsRows(clientId, []);
+    try{ schedulePrepaidDoneCache(clientId); }catch(e){}
     return Promise.resolve();
   }
   const chunks=[];
@@ -2643,6 +2693,7 @@ function subscribeRecordsForClient(clientId){
       merged.push(rec);
     }));
     _applyRecordsRows(clientId, merged);
+    try{ schedulePrepaidDoneCache(clientId); }catch(e){}
     try{ scheduleRerender('records'); }catch(e){}
     if(!settled){ settled=true; resolveReady(); }
   };
@@ -9409,6 +9460,7 @@ function showPage(n){
     if(!CONSULT_LOADED) consultReload();
     consultDayEnsure();
   }
+  if(n==='paystatus') renderPayStatus();
   }finally{
     const label='탭 전환 1회 ('+n+')';
     setTimeout(()=>fsEnd(label), 0);
@@ -10422,14 +10474,13 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
 
   const rev=allRecs.filter(r=>r.reviewUrl).length;
   const tot=allRecs.length;
-  const contractType=(c&&c.contractType==='건별결제')?'건별결제':'숫자입력';
-  const contractTotal=(c&&c.contractTotal!==undefined&&c.contractTotal!==null)?Number(c.contractTotal):projs.reduce((a,p)=>a+(p.contractTotal||p.total||0),0);
   const prevPurchaseDone=(c&&c.prevPurchaseDone!=null)?Number(c.prevPurchaseDone):0;
-  const purchaseDoneAuto=allRecs.filter(r=>r.nickname||r.tracking).length; // 닉네임 또는 송장 = 구매완료
+  const purchaseDoneAuto=allRecs.filter(r=>r.nickname||r.tracking).length; // 진행 현황: 전체 프로젝트, 닉네임 또는 송장
   const purchaseDone=purchaseDoneAuto+prevPurchaseDone;
-  const isPerItem=contractType==='건별결제';
-  const remaining=isPerItem?null:Math.max(0,contractTotal-purchaseDone);
-  const paymentMethod=c?.paymentMethod||'계좌이체';
+  const contract=payDashContract(c, projs, allRecs);
+  const isPerItem=!contract.isPrepaid;
+  const contractTotal=contract.qty==null?0:contract.qty;
+  const remaining=contract.remaining;
   // 금일/익일 구매예정: 구매날짜만 기준 (닉네임·수취인 비어 있어도 카운팅)
   const purchaseDateNorm=(r)=>purchaseDateToYYYYMMDD(r.purchaseDate)||nd(r.purchaseDate);
   const todayBuy=activeRecs.filter(r=>purchaseDateNorm(r)===todayISO).length;
@@ -10452,37 +10503,23 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
   </div>`;
 
   const uid='d'+Math.random().toString(36).slice(2,8);
-  const contractPct=!isPerItem&&contractTotal>0?Math.round((purchaseDone/contractTotal)*100):0;
+  const contractDone=contract.done;
+  const contractPct=!isPerItem&&contractTotal>0?Math.round((contractDone/contractTotal)*100):0;
   const reviewPct=tot>0?Math.round((rev/tot)*100):0;
-  const contractSelect=isAdmin?('<select id="contract-type-'+uid+'" style="font-size:10px;padding:2px 6px;border-radius:6px;border:1px solid #0891b2;background:#fff;cursor:pointer" onchange="saveContractType(this.value);renderDetDash();renderDetProjView();">'
-    +'<option value="건별결제"'+(isPerItem?' selected':'')+'>건별결제</option>'
-    +'<option value="숫자입력"'+(!isPerItem?' selected':'')+'>숫자입력</option></select>'):'';
-  const paymentSelect=isAdmin?(
-    '<select id="payment-method-'+uid+'" style="font-size:10px;padding:2px 6px;border-radius:6px;border:1px solid #0891b2;background:#fff;cursor:pointer;margin-left:6px" onchange="savePaymentMethod(this.value);">'
-    +'<option value="계좌이체"'+(paymentMethod==='계좌이체'?' selected':'')+'>계좌이체</option>'
-    +'<option value="카드결제"'+(paymentMethod==='카드결제'?' selected':'')+'>카드결제</option>'
-    +'<option value="기타플랫폼"'+(paymentMethod==='기타플랫폼'?' selected':'')+'>기타플랫폼</option>'
-    +'</select>'
-  ):'';
-  const paymentButton=(paymentMethod==='기타플랫폼')
-    ?'<button class="btn btn-xs btn-gray" style="margin-left:6px;font-size:10px;padding:2px 6px" onclick="openPaymentModal()">결제 현황 보기</button>'
-    :'';
-  const paymentLabel=' <span style="font-size:9px;color:var(--text3);margin-left:4px">결제수단: '+paymentMethod+'</span>';
+  const routeInfo=payShownRoute(c);
+  const modeInfo=payShownMode(c);
+  const payLine='<span style="font-size:10px;font-weight:700;color:#0e7490">결제경로: '+escHtml(routeInfo.route||'—')+' · 결제방식: '+escHtml(payModeLabel(modeInfo.mode))+'</span>';
+  const payEditBtn=(isAdmin&&c&&c.id)?'<button type="button" class="btn btn-xs btn-blue" style="margin-left:6px" onclick="openPayStatusDetail(decodeURIComponent(\''+encodeURIComponent(c.id)+'\'))">수정</button>':'';
   const contractValueHtml=isPerItem
     ?('<span style="font-size:14px;font-weight:800;color:#0891b2">건별결제</span>')
-    :(isAdmin
-      ?('<input type="number" id="contract-num-'+uid+'" value="'+contractTotal+'" min="0" style="width:70px;font-size:13px;font-weight:700;text-align:right;padding:2px 6px;border:1px solid #0891b2;border-radius:6px" onchange="saveContractTotal(this.value);renderDetDash();renderDetProjView();" onblur="saveContractTotal(this.value);renderDetDash();renderDetProjView();" title="숫자 입력 후 Enter 또는 포커스 아웃"> <small style="font-size:9px;color:var(--text3)">건</small>')
-      :('<span style="font-size:14px;font-weight:800;color:#0891b2">'+fmtN(contractTotal)+'<small style="font-size:9px;color:var(--text3)">건</small></span>'));
+    :('<span style="font-size:14px;font-weight:800;color:#0891b2">'+fmtN(contractTotal)+'<small style="font-size:9px;color:var(--text3)">건</small></span>');
   const remainingHtml=isPerItem
     ?'<span style="font-size:14px;font-weight:800;color:var(--text3)">—</span>'
     :('<span style="font-size:14px;font-weight:800;color:'+(remaining>0?'#ef4444':'#22c55e')+'">'+fmtN(remaining)+'<small style="font-size:9px;color:var(--text3)">건</small></span>');
   const prevBuyInput=isPerItem?'':(
     '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)">'+
       '<span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#94a3b8;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">기존 구매완료</span></span>'+
-      (isAdmin
-        ?('<input type="number" min="0" value="'+prevPurchaseDone+'" style="width:70px;font-size:12px;font-weight:800;text-align:right;padding:2px 6px;border:1px solid #94a3b8;border-radius:6px" onchange="savePrevPurchaseDone(this.value)" onblur="savePrevPurchaseDone(this.value)" title="기존 구매완료 수량(수기)"> <small style="font-size:9px;color:var(--text3)">건</small>')
-        :('<span style="font-size:14px;font-weight:800;color:#94a3b8">'+fmtN(prevPurchaseDone)+'<small style="font-size:9px;color:var(--text3)">건</small></span>')
-      )+
+      '<span style="font-size:14px;font-weight:800;color:#94a3b8">'+fmtN(prevPurchaseDone)+'<small style="font-size:9px;color:var(--text3)">건</small></span>'+
     '</div>'
   );
   const result=warnHtml
@@ -10492,13 +10529,13 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
     // ① 계약현황 도넛
     +'<div style="background:var(--card);border:1px solid #a5f3fc;border-radius:12px;overflow:hidden;box-shadow:var(--sh)">'
     +'<div style="padding:7px 12px;background:#ecfeff;border-bottom:1px solid #a5f3fc;font-size:10px;font-weight:700;color:#0891b2;display:flex;justify-content:space-between;align-items:center">'
-    +'📊 계약 현황 '+contractSelect+paymentSelect+paymentLabel+paymentButton+'</div>'
+    +'📊 계약 현황</div><div style="padding:6px 12px;background:#f0fdff;border-bottom:1px solid #a5f3fc;display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap">'+payLine+payEditBtn+'</div>'
     +'<div style="display:flex;flex-direction:column;align-items:center;padding:14px 12px;gap:10px">'
     +'<canvas id="donut-c-'+uid+'" width="100" height="100"></canvas>'
     +'<div style="width:100%">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#0891b2;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">선계약</span></span>'+contractValueHtml+'</div>'
     +prevBuyInput
-    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">구매완료(합계)</span></span><span style="font-size:14px;font-weight:800;color:#22c55e">'+fmtN(purchaseDone)+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">구매완료(합계)</span></span><span style="font-size:14px;font-weight:800;color:#22c55e">'+fmtN(contractDone)+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:'+(isPerItem?'var(--border)':(remaining>0?'#ef4444':'#22c55e'))+';display:inline-block"></span><span style="font-size:11px;color:var(--text2)">잔여</span></span>'+remainingHtml+'</div>'
     +'</div></div></div>'
 
@@ -10530,8 +10567,8 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
     +'</div>';
   // 도넛 그래프 렌더 (건별결제 시 잔여 없음)
   drawDonut('donut-c-'+uid, isPerItem
-    ?[{val:purchaseDone,color:'#22c55e'},{val:Math.max(1,purchaseDone||0),color:'#e5e7eb'}]
-    :[{val:purchaseDone,color:'#22c55e'},{val:remaining,color:remaining>0?'#ef4444':'#d1fae5'}],
+    ?[{val:contractDone,color:'#22c55e'},{val:Math.max(1,contractDone||0),color:'#e5e7eb'}]
+    :[{val:contractDone,color:'#22c55e'},{val:remaining,color:remaining>0?'#ef4444':'#d1fae5'}],
   {size:100,lineWidth:16,centerLabel:isPerItem?'—':(contractPct+'%'),centerSub:isPerItem?'건별결제':'구매율'});
   drawDonut('donut-r-'+uid,[
     {val:rev,color:'#7c3aed'},
@@ -10655,35 +10692,34 @@ function openRequestUrl(btn){
   }catch(e){}
 }
 
-function saveContractType(type){
-  const d=ld();const idx=d.clients.findIndex(x=>x.id===CUR_CLIENT);if(idx<0)return;
-  d.clients[idx].contractType=type;
-  sv('cl',d.clients);
-  toast(type==='건별결제'?'선계약: 건별결제로 저장':'선계약: 숫자입력 모드');
-}
-function saveContractTotal(val){
-  const d=ld();const idx=d.clients.findIndex(x=>x.id===CUR_CLIENT);if(idx<0)return;
-  const n=parseInt(val,10);
-  const numVal=isNaN(n)||n<0?0:n;
-  d.clients[idx].contractTotal=numVal;
-  d.clients[idx].contractType='숫자입력';
-  sv('cl',d.clients);
-  toast('선계약 수량 저장: '+fmtN(numVal)+'건');
-}
-function savePrevPurchaseDone(val){
-  const d=ld();const idx=d.clients.findIndex(x=>x.id===CUR_CLIENT);if(idx<0)return;
-  const n=parseInt(val,10);
-  const numVal=isNaN(n)||n<0?0:n;
-  d.clients[idx].prevPurchaseDone=numVal;
-  sv('cl',d.clients);
-  try{ renderDetDash(); }catch(e){}
-  toast('기존 구매완료 수량 저장: '+fmtN(numVal)+'건');
-}
-function savePaymentMethod(method){
-  const d=ld();const idx=d.clients.findIndex(x=>x.id===CUR_CLIENT);if(idx<0)return;
-  d.clients[idx].paymentMethod=method;
-  sv('cl',d.clients);
-  toast('결제수단 저장: '+method);
+function saveContractType(){ toast('결제 현황에서 수정해 주세요','error'); }
+function saveContractTotal(){ toast('결제 현황에서 수정해 주세요','error'); }
+function savePrevPurchaseDone(){ toast('결제 현황에서 수정해 주세요','error'); }
+function savePaymentMethod(){ toast('결제 현황에서 수정해 주세요','error'); }
+function payDashContract(c, projs, allRecs){
+  const mode=payShownMode(c).mode;
+  const isPrepaid=mode==='prepaid';
+  const prev=(c&&c.prevPurchaseDone!=null)?(Number(c.prevPurchaseDone)||0):0;
+  const ids=new Set();
+  (projs||[]).forEach(p=>{
+    if(!p||!p.id) return;
+    if(p.payMode==='prepaid') ids.add(p.id);
+    else if(p.payMode==='separate') return;
+    else if(isPrepaid) ids.add(p.id);
+  });
+  let auto=0;
+  (allRecs||[]).forEach(r=>{
+    if(!r||!ids.has(r.projectId)||!(r.nickname||r.tracking)) return;
+    auto++;
+  });
+  const done=auto+prev;
+  let qty=null;
+  if(isPrepaid){
+    if(c&&c.prepaidTotal!=null&&c.prepaidTotal!=='') qty=Number(c.prepaidTotal)||0;
+    else if(c&&c.contractTotal!=null&&c.contractTotal!=='') qty=Number(c.contractTotal);
+    else qty=(projs||[]).reduce((a,p)=>a+((p&&(p.contractTotal||p.total))||0),0);
+  }
+  return {isPrepaid, prev, done, qty, remaining:isPrepaid?Math.max(0,(Number(qty)||0)-done):null};
 }
 
 let PAY_EDIT_ROWS=[];
@@ -11323,6 +11359,1421 @@ async function loadPayForClient(clientId){
   }
 }
 
+// ── 결제 현황 (목록은 clients/projects 캐시, 상세에서만 payHistory 를 읽는다) ──
+let _prepaidDoneTimer=null;
+let PAY_ST_ID='';
+let PAY_ST_HIST=[];
+let PAY_ST_PAY=[];
+let PAY_ST_RECS=null;
+let PAY_ST_FILTER='all';
+let PAY_ST_TRASH=false;
+let PAY_REC_FORM=null;
+let PAY_REC_EDIT='';
+let PAY_ST_EDIT='';
+let PAY_ST_FORM=null;
+let PAY_EDIT=null;
+let PAY_ST_TOKEN=0;
+let PAY_ST_BUSY=false;
+function payClient(id){
+  return (CLIENTS_CACHE||[]).find(c=>c&&c.id===id)||null;
+}
+function payWho(){
+  return (CUR_ADMIN&&(CUR_ADMIN.username||CUR_ADMIN.loginId||CUR_ADMIN.id))||'';
+}
+function payJs(s){
+  return String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+}
+function payTrim(s){ return s==null?'':String(s).trim(); }
+function payHistFor(clientId){
+  return (PAY_HISTORY_CACHE||[]).filter(h=>h&&h.clientId===clientId);
+}
+function payHistAsc(a,b){
+  const d=String(a&&a.effectiveDate||'').localeCompare(String(b&&b.effectiveDate||''));
+  if(d) return d;
+  return String(a&&a.createdAt||'').localeCompare(String(b&&b.createdAt||''));
+}
+function payLatestMap(history){
+  const map={};
+  (history||[]).forEach(h=>{
+    if(!h||h.deleted||!h.type) return;
+    if(!map[h.type]||payHistAsc(map[h.type], h)<0) map[h.type]=h;
+  });
+  return map;
+}
+function payNormRoute(v){
+  const route=v&&v.route?String(v.route):'';
+  return {route, routeMemo:route==='기타'?payTrim(v&&v.routeMemo):''};
+}
+function payNormMode(v){
+  const mode=v&&v.mode?String(v.mode):'';
+  return {mode, modeMemo:mode==='etc'?payTrim(v&&v.modeMemo):''};
+}
+function payNormTax(v){
+  return {taxYn:!!(v&&v.taxYn), fee:!!(v&&v.fee), delivery:!!(v&&v.delivery), product:!!(v&&v.product)};
+}
+function payNormInflow(v){
+  const route=v&&v.route?String(v.route):'';
+  return {
+    route,
+    referrerClientId:route==='지인소개'?payTrim(v&&v.referrerClientId):'',
+    referrerName:route==='지인소개'?payTrim(v&&v.referrerName):'',
+    memo:route==='기타'?payTrim(v&&v.memo):'',
+    firstContractDate:v&&v.firstContractDate?String(v.firstContractDate).slice(0,10):'',
+  };
+}
+function payNormPrice(v){
+  const src=(v&&Array.isArray(v.services))?v.services:[];
+  const services=[];
+  src.forEach(s=>{
+    if(!s||!s.service) return;
+    if(s.service==='리뷰마케팅'){
+      const t1n=Number(s.t1&&s.t1.price);
+      const t2n=Number(s.t2&&s.t2.price);
+      const t3n=Number(s.t3&&s.t3.price);
+      const t1=Number.isFinite(t1n)?t1n:0;
+      const t2=s.sameT12?t1:(Number.isFinite(t2n)?t2n:0);
+      const t3=Number.isFinite(t3n)?t3n:0;
+      services.push({
+        service:'리뷰마케팅',
+        sameT12:!!s.sameT12,
+        t1:{label:(s.t1&&s.t1.label)||'실배송', price:t1},
+        t2:{label:(s.t2&&s.t2.label)||'빈박스', price:t2},
+        t3:{label:'택배대행', price:t3},
+      });
+      return;
+    }
+    const n=Number(s.price);
+    services.push({service:String(s.service), price:Number.isFinite(n)?n:0});
+  });
+  return {services};
+}
+function payNormByType(type, value){
+  if(type==='route') return payNormRoute(value);
+  if(type==='mode') return payNormMode(value);
+  if(type==='price') return payNormPrice(value);
+  if(type==='tax') return payNormTax(value);
+  if(type==='inflow') return payNormInflow(value);
+  return value||{};
+}
+function payModeLabel(mode){
+  if(mode==='prepaid') return '선결제 후 차감';
+  if(mode==='perItem') return '건별결제';
+  if(mode==='etc') return '기타';
+  return mode||'—';
+}
+function payLegacyMethod(route){
+  if(route==='계좌이체'||route==='카드결제') return route;
+  return '기타플랫폼';
+}
+function payClientProjects(clientId){
+  return (PROJECTS_CACHE||[]).filter(p=>p&&p.clientId===clientId);
+}
+function payShownRoute(c){
+  if(c&&c.payRoute) return payNormRoute({route:c.payRoute, routeMemo:c.payRouteMemo});
+  if(c&&c.paymentMethod!=null&&String(c.paymentMethod).trim()!==''){
+    const inferred=inferPayRoute(c);
+    return payNormRoute({route:inferred.payRoute, routeMemo:inferred.payRouteMemo});
+  }
+  return payNormRoute({});
+}
+function payShownMode(c){
+  if(c&&c.payMode) return payNormMode({mode:c.payMode, modeMemo:c.payModeMemo});
+  if(c&&c.contractType){
+    const inferred=inferPayMode(c, effectiveContractTotal(c, payClientProjects(c.id)));
+    return payNormMode({mode:inferred.payMode, modeMemo:''});
+  }
+  return payNormMode({});
+}
+function payCurrentSnapshot(c, history){
+  const latest=payLatestMap(history);
+  const route=latest.route?payNormRoute(latest.route.value):payShownRoute(c);
+  const mode=latest.mode?payNormMode(latest.mode.value):payShownMode(c);
+  const price=payNormPrice(latest.price?latest.price.value:((c&&c.payPrice&&Array.isArray(c.payPrice.services))?c.payPrice:payPriceValue(c)));
+  const tax=payNormTax(latest.tax?latest.tax.value:payTaxValue(c));
+  let inflow=null;
+  if(latest.inflow) inflow=payNormInflow(latest.inflow.value);
+  else if(c&&c.firstInflow&&c.firstInflow.route){
+    inflow=payNormInflow(Object.assign({}, c.firstInflow, {firstContractDate:(c.firstContractDate||c.firstInflow.firstContractDate||'')}));
+  }
+  return {route, mode, price, tax, inflow};
+}
+function payChangedTypes(cur, next){
+  const out=[];
+  ['route','mode','price','tax'].forEach(type=>{
+    if(JSON.stringify(cur[type])!==JSON.stringify(next[type])) out.push(type);
+  });
+  return out;
+}
+function payClientPatch(c, history){
+  const latest=payLatestMap(history);
+  const patch={};
+  if(latest.route){
+    const r=payNormRoute(latest.route.value);
+    patch.payRoute=r.route;
+    patch.payRouteMemo=r.routeMemo;
+    patch.paymentMethod=payLegacyMethod(r.route);
+  }
+  if(latest.mode){
+    const m=payNormMode(latest.mode.value);
+    patch.payMode=m.mode;
+    patch.payModeMemo=m.modeMemo;
+    patch.contractType=m.mode==='prepaid'?'숫자입력':'건별결제';
+  }
+  if(latest.price){
+    const p=payNormPrice(latest.price.value);
+    patch.payPrice=p;
+    const rev=(p.services||[]).find(s=>s.service==='리뷰마케팅');
+    if(rev){
+      patch.price1Type=rev.t1.label;
+      patch.price1=rev.t1.price;
+      patch.price2Type=rev.t2.label;
+      patch.price2=rev.t2.price;
+      patch.price3=rev.t3.price;
+    }
+  }else if((history||[]).some(h=>h&&h.type==='price')) patch.payPrice=null;
+  if(latest.tax){
+    const t=payNormTax(latest.tax.value);
+    patch.taxYn=t.taxYn;
+    patch.taxItems={fee:t.fee, delivery:t.delivery, product:t.product};
+  }
+  if(latest.inflow){
+    const inf=payNormInflow(latest.inflow.value);
+    patch.firstInflow=inf;
+    patch.firstContractDate=inf.firstContractDate||'';
+  }else if((history||[]).some(h=>h&&h.type==='inflow')){
+    patch.firstInflow=null;
+    patch.firstContractDate='';
+  }
+  return Object.assign({}, c, patch);
+}
+function countPrepaidPurchaseDone(clientId, records){
+  const ids=new Set();
+  payClientProjects(clientId).forEach(p=>{
+    if(p.payMode==='prepaid'&&p.id) ids.add(p.id);
+  });
+  let n=0;
+  (records||[]).forEach(r=>{
+    if(!r||!ids.has(r.projectId)||!recordIsPurchaseDone(r)) return;
+    n++;
+  });
+  return n;
+}
+function payRemainingCount(c, records){
+  if(!c) return 0;
+  const total=Number(c.prepaidTotal)||0;
+  const prev=Number(c.prevPurchaseDone)||0;
+  let done=0;
+  if(records) done=countPrepaidPurchaseDone(c.id, records);
+  else if(c.prepaidDoneCache!=null&&c.prepaidDoneCache!=='') done=Number(c.prepaidDoneCache)||0;
+  return Math.max(0, total-(prev+done));
+}
+function payListRemain(c){
+  if(!c||c.payMode!=='prepaid') return {kind:'na'};
+  if(c.prepaidDoneCache==null||c.prepaidDoneCache==='') return {kind:'miss'};
+  const total=Number(c.prepaidTotal)||0;
+  const remaining=payRemainingCount(c, null);
+  return {kind:'ok', total, remaining, at:c.prepaidDoneAt||'', low:total>0&&remaining*10<=total};
+}
+function payServiceShort(name){
+  if(name==='블로그체험단') return '블로그';
+  if(name==='영수증리뷰') return '영수증';
+  return name||'서비스';
+}
+function payExtraBadge(extras){
+  if(!extras||!extras.length) return '';
+  const head=payServiceShort(extras[0].service);
+  if(extras.length===1) return '+'+head;
+  return '+'+head+' 외 '+(extras.length-1);
+}
+function payPriceSummary(c){
+  const raw=(c&&c.payPrice&&Array.isArray(c.payPrice.services))?c.payPrice:payPriceValue(c);
+  const price=payNormPrice(raw);
+  const rev=(price.services||[]).find(s=>s.service==='리뷰마케팅');
+  const extras=(price.services||[]).filter(s=>s.service&&s.service!=='리뷰마케팅');
+  if(!rev) return {text:'—', badge:''};
+  const a=fmtN(rev.t1.price), b=fmtN(rev.t2.price), d=fmtN(rev.t3.price);
+  const text=rev.sameT12?(a+'(1·2 동일) / '+d):(a+' / '+b+' / '+d);
+  return {text, badge:payExtraBadge(extras)};
+}
+function payKstParts(iso){
+  if(!iso) return null;
+  const d=new Date(iso);
+  if(isNaN(d.getTime())) return null;
+  const k=new Date(d.getTime()+9*3600*1000);
+  const p=n=>String(n).padStart(2,'0');
+  return {mm:p(k.getUTCMonth()+1), dd:p(k.getUTCDate()), hh:p(k.getUTCHours()), mi:p(k.getUTCMinutes())};
+}
+function payKstStamp(iso){
+  const p=payKstParts(iso);
+  return p?p.mm+'/'+p.dd+' '+p.hh+':'+p.mi:'';
+}
+function payKstMd(iso){
+  const p=payKstParts(iso);
+  return p?p.mm+'/'+p.dd:'';
+}
+function payShortDate(ymd){
+  const m=String(ymd||'').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(!m) return ymd||'';
+  return m[1].slice(2)+'.'+m[2]+'.'+m[3];
+}
+function payTypeLabel(type){
+  if(type==='route') return '결제경로';
+  if(type==='mode') return '결제방식';
+  if(type==='price') return '단가';
+  if(type==='tax') return '계산서';
+  if(type==='inflow') return '유입';
+  return type||'';
+}
+function payReviewOf(price){
+  return (payNormPrice(price).services||[]).find(s=>s.service==='리뷰마케팅')||null;
+}
+function payPriceBrief(price){
+  const p=payNormPrice(price);
+  const rev=payReviewOf(p);
+  if(!rev) return '—';
+  let s=rev.sameT12
+    ? ('유형1·2 '+fmtN(rev.t1.price))
+    : ('유형1 '+rev.t1.label+' '+fmtN(rev.t1.price)+', 유형2 '+rev.t2.label+' '+fmtN(rev.t2.price));
+  s+=', 택배대행 '+fmtN(rev.t3.price);
+  (p.services||[]).filter(x=>x.service!=='리뷰마케팅').forEach(x=>{ s+=', '+x.service+' '+fmtN(x.price); });
+  return s;
+}
+function payPhrases(type, prev, next){
+  if(type==='route'){
+    const n=payNormRoute(next);
+    if(!prev) return ['최초 설정 · '+(n.route||'—')+(n.routeMemo?' ('+n.routeMemo+')':'')];
+    const p=payNormRoute(prev);
+    const out=[];
+    if(p.route!==n.route) out.push((p.route||'—')+' → '+(n.route||'—'));
+    if(p.routeMemo!==n.routeMemo) out.push('메모 '+(p.routeMemo||'없음')+' → '+(n.routeMemo||'없음'));
+    return out.length?out:['변경 없음'];
+  }
+  if(type==='mode'){
+    const n=payNormMode(next);
+    if(!prev) return ['최초 설정 · '+payModeLabel(n.mode)+(n.modeMemo?' ('+n.modeMemo+')':'')];
+    const p=payNormMode(prev);
+    const out=[];
+    if(p.mode!==n.mode) out.push(payModeLabel(p.mode)+' → '+payModeLabel(n.mode));
+    if(p.modeMemo!==n.modeMemo) out.push('메모 '+(p.modeMemo||'없음')+' → '+(n.modeMemo||'없음'));
+    return out.length?out:['변경 없음'];
+  }
+  if(type==='tax'){
+    const n=payNormTax(next);
+    const yn=v=>v?'Y':'N';
+    if(!prev) return ['최초 설정 · 진행비 '+yn(n.fee)+', 택배비 '+yn(n.delivery)+', 상품금액 '+yn(n.product)+', 발행 가능 '+yn(n.taxYn)];
+    const p=payNormTax(prev);
+    const out=[];
+    if(p.fee!==n.fee) out.push('진행비 '+yn(p.fee)+' → '+yn(n.fee));
+    if(p.delivery!==n.delivery) out.push('택배비 '+yn(p.delivery)+' → '+yn(n.delivery));
+    if(p.product!==n.product) out.push('상품금액 '+yn(p.product)+' → '+yn(n.product));
+    if(p.taxYn!==n.taxYn) out.push('발행 가능 '+yn(p.taxYn)+' → '+yn(n.taxYn));
+    return out.length?out:['변경 없음'];
+  }
+  if(type==='inflow'){
+    const n=payNormInflow(next);
+    const who=n.route==='지인소개'?(n.referrerName||'이름 없음'):'';
+    if(!prev) return ['최초 설정 · '+(n.route||'—')+(who?' · '+who:'')+(n.firstContractDate?' · '+n.firstContractDate:'')+(n.memo?' · '+n.memo:'')];
+    const p=payNormInflow(prev);
+    const out=[];
+    if(p.route!==n.route) out.push((p.route||'—')+' → '+(n.route||'—'));
+    if(p.referrerClientId!==n.referrerClientId||p.referrerName!==n.referrerName) out.push('소개 '+(p.referrerName||'없음')+' → '+(n.referrerName||'없음'));
+    if(p.memo!==n.memo) out.push('메모 '+(p.memo||'없음')+' → '+(n.memo||'없음'));
+    if(p.firstContractDate!==n.firstContractDate) out.push('첫 계약일 '+(p.firstContractDate||'없음')+' → '+(n.firstContractDate||'없음'));
+    return out.length?out:['변경 없음'];
+  }
+  const n=payNormPrice(next);
+  if(!prev) return ['최초 설정 · '+payPriceBrief(n)];
+  const p=payNormPrice(prev);
+  const a=payReviewOf(p), b=payReviewOf(n);
+  const out=[];
+  if(a&&b){
+    if(a.t1.label!==b.t1.label) out.push('유형1 '+a.t1.label+' → '+b.t1.label);
+    if(!!a.sameT12!==!!b.sameT12) out.push(b.sameT12?'유형1·2 동일 단가로 변경':'유형1·2 단가 분리');
+    if(a.sameT12&&b.sameT12){
+      if(a.t1.price!==b.t1.price) out.push('유형1·2 '+fmtN(a.t1.price)+' → '+fmtN(b.t1.price));
+    }else{
+      if(a.t1.price!==b.t1.price) out.push('유형1 '+(b.t1.label||a.t1.label)+' '+fmtN(a.t1.price)+' → '+fmtN(b.t1.price));
+      if(a.t2.label!==b.t2.label&&a.t2.price===b.t2.price) out.push('유형2 '+a.t2.label+' → '+b.t2.label);
+      else if(a.t2.price!==b.t2.price&&a.t2.label===b.t2.label) out.push('유형2 '+b.t2.label+' '+fmtN(a.t2.price)+' → '+fmtN(b.t2.price));
+      else if(a.t2.label!==b.t2.label||a.t2.price!==b.t2.price) out.push('유형2 '+a.t2.label+' '+fmtN(a.t2.price)+' → '+b.t2.label+' '+fmtN(b.t2.price));
+    }
+    if(a.t3.price!==b.t3.price) out.push('택배대행 '+fmtN(a.t3.price)+' → '+fmtN(b.t3.price));
+  }
+  const pm=new Map(), nm=new Map();
+  (p.services||[]).forEach(s=>{ if(s.service!=='리뷰마케팅') pm.set(s.service, s.price); });
+  (n.services||[]).forEach(s=>{ if(s.service!=='리뷰마케팅') nm.set(s.service, s.price); });
+  nm.forEach((price, name)=>{
+    if(!pm.has(name)) out.push(name+' 추가 '+fmtN(price));
+    else if(pm.get(name)!==price) out.push(name+' '+fmtN(pm.get(name))+' → '+fmtN(price));
+  });
+  pm.forEach((price, name)=>{ if(!nm.has(name)) out.push(name+' 삭제'); });
+  return out.length?out:['변경 없음'];
+}
+function payPrevSame(doc, history){
+  const list=(history||[]).filter(h=>h&&h.type===doc.type&&(!h.deleted||h.id===doc.id));
+  list.sort(payHistAsc);
+  const i=list.findIndex(h=>h.id===doc.id);
+  return i>0?list[i-1]:null;
+}
+function payEarliestStart(clientId){
+  let best='';
+  payClientProjects(clientId).forEach(p=>{
+    const y=payNormYmd(p.startDate, '');
+    if(!y) return;
+    if(!best||y<best) best=y;
+  });
+  return best;
+}
+function schedulePrepaidDoneCache(clientId){
+  if(!clientId) return;
+  const c=payClient(clientId);
+  if(!c||c.payMode!=='prepaid') return;
+  if(_prepaidDoneTimer) clearTimeout(_prepaidDoneTimer);
+  _prepaidDoneTimer=setTimeout(function(){
+    _prepaidDoneTimer=null;
+    if(RECORDS_CLIENT_ID!==clientId||!_recordsChunksReady) return;
+    flushPrepaidDoneCache(clientId, RECORDS_CACHE).catch(function(e){ console.error('prepaidDoneCache', e); });
+  }, 1000);
+}
+async function flushPrepaidDoneCache(clientId, records){
+  const c=payClient(clientId);
+  if(!c||c.payMode!=='prepaid') return false;
+  const done=countPrepaidPurchaseDone(clientId, records);
+  if(c.prepaidDoneCache!=null&&c.prepaidDoneCache!==''&&Number(c.prepaidDoneCache)===done) return false;
+  const latest=payClient(clientId)||c;
+  await sv('cl', [Object.assign({}, latest, {prepaidDoneCache:done, prepaidDoneAt:new Date().toISOString()})]);
+  return true;
+}
+async function payLoadRecordsOnce(clientId){
+  if(RECORDS_CLIENT_ID===clientId&&_recordsChunksReady&&Array.isArray(RECORDS_CACHE)) return RECORDS_CACHE;
+  if(typeof fetchClientRecordsOnce!=='function'||typeof db==='undefined') return [];
+  fsBegin('결제 현황 구매완료');
+  try{
+    return await fetchClientRecordsOnce(clientId);
+  }finally{
+    fsEnd('결제 현황 구매완료');
+  }
+}
+function payBlankForm(){
+  return {
+    date:getKSTDate(), route:'', routeMemo:'', mode:'', modeMemo:'',
+    price:payNormPrice(payPriceValue(null)),
+    taxYn:false, fee:false, delivery:false, product:false, memo:'',
+    inflowRoute:'', referrerClientId:'', referrerName:'', referrerQuery:'', inflowMemo:'', firstContractDate:'',
+  };
+}
+function payFormFromCurrent(clientId, history){
+  const c=payClient(clientId);
+  const snap=payCurrentSnapshot(c, history||[]);
+  const inf=snap.inflow||payNormInflow({});
+  let refQuery=inf.referrerName||'';
+  if(inf.referrerClientId){
+    const rc=payClient(inf.referrerClientId);
+    if(rc&&rc.name) refQuery=rc.name;
+  }
+  return {
+    date:getKSTDate(),
+    route:snap.route.route, routeMemo:snap.route.routeMemo,
+    mode:snap.mode.mode, modeMemo:snap.mode.modeMemo,
+    price:snap.price,
+    taxYn:!!snap.tax.taxYn, fee:!!snap.tax.fee, delivery:!!snap.tax.delivery, product:!!snap.tax.product,
+    memo:'',
+    inflowRoute:inf.route, referrerClientId:inf.referrerClientId, referrerName:inf.referrerName,
+    referrerQuery:refQuery, inflowMemo:inf.memo, firstContractDate:inf.firstContractDate||'',
+  };
+}
+function payInflowFromForm(f){
+  let referrerName=payTrim(f.referrerName);
+  if(f.referrerClientId){
+    const rc=payClient(f.referrerClientId);
+    if(rc&&rc.name) referrerName=rc.name;
+  }
+  return payNormInflow({
+    route:f.inflowRoute, referrerClientId:f.referrerClientId, referrerName,
+    memo:f.inflowMemo, firstContractDate:f.firstContractDate,
+  });
+}
+function payFormSnapshot(f){
+  return {
+    route:payNormRoute({route:f.route, routeMemo:f.routeMemo}),
+    mode:payNormMode({mode:f.mode, modeMemo:f.modeMemo}),
+    price:payNormPrice(f.price),
+    tax:payNormTax(f),
+    inflow:payInflowFromForm(f),
+  };
+}
+function payReadNum(id){
+  const el=document.getElementById(id);
+  if(!el) return 0;
+  const raw=String(el.value==null?'':el.value).trim();
+  if(raw==='') return 0;
+  const n=Number(raw);
+  return Number.isFinite(n)?n:0;
+}
+function payReadPrice(prefix, prev){
+  if(!document.getElementById(prefix+'-t1')&&!document.getElementById(prefix+'-t1-label')) return payNormPrice(prev);
+  const same=!!(document.getElementById(prefix+'-same')&&document.getElementById(prefix+'-same').checked);
+  const t1=payReadNum(prefix+'-t1');
+  const t3el=document.getElementById(prefix+'-t3');
+  let t3=DEFAULT_DELIVERY_PRICE;
+  if(t3el){
+    const raw=String(t3el.value==null?'':t3el.value).trim();
+    if(raw!==''){
+      const n=Number(raw);
+      t3=Number.isFinite(n)?n:DEFAULT_DELIVERY_PRICE;
+    }
+  }
+  const services=[{
+    service:'리뷰마케팅', sameT12:same,
+    t1:{label:(document.getElementById(prefix+'-t1-label')||{}).value||'실배송', price:t1},
+    t2:{label:(document.getElementById(prefix+'-t2-label')||{}).value||'빈박스', price:same?t1:payReadNum(prefix+'-t2')},
+    t3:{label:'택배대행', price:t3},
+  }];
+  document.querySelectorAll('[data-pay-extra="'+prefix+'"]').forEach(el=>{
+    const service=el.getAttribute('data-service');
+    const input=el.querySelector('input');
+    const n=Number(input&&input.value);
+    services.push({service, price:Number.isFinite(n)?n:0});
+  });
+  return payNormPrice({services});
+}
+function payReadDetailForm(){
+  if(!PAY_ST_FORM) PAY_ST_FORM=payBlankForm();
+  const f=PAY_ST_FORM;
+  const g=id=>{ const el=document.getElementById(id); return el?el.value:null; };
+  if(g('ps-date')!=null) f.date=g('ps-date');
+  if(g('ps-route-memo')!=null) f.routeMemo=g('ps-route-memo');
+  if(g('ps-mode-memo')!=null) f.modeMemo=g('ps-mode-memo');
+  if(g('ps-memo')!=null) f.memo=g('ps-memo');
+  if(g('ps-in-memo')!=null) f.inflowMemo=g('ps-in-memo');
+  if(g('ps-first-date')!=null) f.firstContractDate=g('ps-first-date');
+  if(document.getElementById('ps-tax-yn')){
+    f.taxYn=document.getElementById('ps-tax-yn').checked;
+    f.fee=document.getElementById('ps-tax-fee').checked;
+    f.delivery=document.getElementById('ps-tax-del').checked;
+    f.product=document.getElementById('ps-tax-prod').checked;
+  }
+  if(document.getElementById('ps-t1')||document.getElementById('ps-t1-label')) f.price=payReadPrice('ps', f.price);
+  const ref=document.getElementById('ps-ref');
+  if(ref){
+    f.referrerQuery=ref.value;
+    const selected=f.referrerClientId?payClient(f.referrerClientId):null;
+    const selectedName=selected?(selected.name||''):(f.referrerName||'');
+    if(ref.value.trim()!==String(selectedName).trim()){
+      f.referrerClientId='';
+      f.referrerName=ref.value.trim();
+    }else if(selected) f.referrerName=selected.name||'';
+  }
+  return f;
+}
+function payReadHistEdit(){
+  if(!PAY_ST_EDIT||!PAY_EDIT||!document.getElementById('ph-date')) return;
+  const doc=(PAY_ST_HIST||[]).find(h=>h&&h.id===PAY_ST_EDIT);
+  if(!doc) return;
+  PAY_EDIT.date=document.getElementById('ph-date').value;
+  const memoEl=document.getElementById('ph-memo');
+  if(memoEl) PAY_EDIT.memo=memoEl.value;
+  if(doc.type==='route'){
+    const memo=document.getElementById('ph-route-memo');
+    PAY_EDIT.value=payNormRoute({route:PAY_EDIT.value&&PAY_EDIT.value.route, routeMemo:memo?memo.value:''});
+  }else if(doc.type==='mode'){
+    const memo=document.getElementById('ph-mode-memo');
+    PAY_EDIT.value=payNormMode({mode:PAY_EDIT.value&&PAY_EDIT.value.mode, modeMemo:memo?memo.value:''});
+  }else if(doc.type==='price'){
+    PAY_EDIT.value=payReadPrice('ph', PAY_EDIT.value);
+  }else if(doc.type==='tax'&&document.getElementById('ph-tax-yn')){
+    PAY_EDIT.value=payNormTax({
+      taxYn:document.getElementById('ph-tax-yn').checked,
+      fee:document.getElementById('ph-tax-fee').checked,
+      delivery:document.getElementById('ph-tax-del').checked,
+      product:document.getElementById('ph-tax-prod').checked,
+    });
+  }else if(doc.type==='inflow'){
+    const ref=document.getElementById('ph-ref');
+    const memo=document.getElementById('ph-in-memo');
+    const dt=document.getElementById('ph-first-date');
+    let referrerClientId=PAY_EDIT._refId||'';
+    let referrerName=PAY_EDIT._refName||'';
+    if(ref){
+      const selected=referrerClientId?payClient(referrerClientId):null;
+      const selectedName=selected?(selected.name||''):referrerName;
+      if(ref.value.trim()!==String(selectedName).trim()){
+        referrerClientId='';
+        referrerName=ref.value.trim();
+      }else if(selected) referrerName=selected.name||'';
+      PAY_EDIT._refId=referrerClientId;
+      PAY_EDIT._refName=referrerName;
+    }
+    PAY_EDIT.value=payNormInflow({
+      route:PAY_EDIT.value&&PAY_EDIT.value.route,
+      referrerClientId, referrerName,
+      memo:memo?memo.value:'',
+      firstContractDate:dt?dt.value:'',
+    });
+  }
+}
+function payPick(kind, value){
+  payReadDetailForm();
+  if(kind==='route') PAY_ST_FORM.route=value;
+  if(kind==='mode') PAY_ST_FORM.mode=value;
+  if(kind==='inflow') PAY_ST_FORM.inflowRoute=value;
+  renderPayStatusDetail();
+}
+function payPickEdit(kind, value){
+  payReadDetailForm();
+  payReadHistEdit();
+  if(!PAY_EDIT) return;
+  if(kind==='route'||kind==='inflow') PAY_EDIT.value=Object.assign({}, PAY_EDIT.value, {route:value});
+  if(kind==='mode') PAY_EDIT.value=Object.assign({}, PAY_EDIT.value, {mode:value});
+  renderPayStatusDetail();
+}
+function payToggleSame(){
+  payReadDetailForm();
+  payReadHistEdit();
+  renderPayStatusDetail();
+}
+function payMutPrice(prefix, fn){
+  payReadDetailForm();
+  payReadHistEdit();
+  const cur=payNormPrice(prefix==='ps'?PAY_ST_FORM.price:(PAY_EDIT&&PAY_EDIT.value));
+  fn(cur);
+  const next=payNormPrice(cur);
+  if(prefix==='ps') PAY_ST_FORM.price=next;
+  else if(PAY_EDIT) PAY_EDIT.value=next;
+  renderPayStatusDetail();
+}
+function payAddExtra(prefix, name){
+  payMutPrice(prefix, cur=>{
+    if(!(cur.services||[]).some(s=>s.service===name)) cur.services.push({service:name, price:0});
+  });
+}
+function payDelExtra(prefix, name){
+  payMutPrice(prefix, cur=>{ cur.services=(cur.services||[]).filter(s=>s.service!==name); });
+}
+function payStFilter(v){
+  payReadDetailForm();
+  payReadHistEdit();
+  PAY_ST_FILTER=v||'all';
+  renderPayStatusDetail();
+}
+function payBeginHistEdit(id){
+  payReadDetailForm();
+  const doc=(PAY_ST_HIST||[]).find(h=>h&&h.id===id&&!h.deleted);
+  if(!doc) return;
+  const value=payNormByType(doc.type, doc.value);
+  PAY_ST_EDIT=id;
+  PAY_EDIT={date:doc.effectiveDate||getKSTDate(), memo:doc.memo||'', value};
+  if(doc.type==='inflow'){
+    PAY_EDIT._refId=value.referrerClientId||'';
+    PAY_EDIT._refName=value.referrerName||'';
+    if(value.referrerClientId){
+      const rc=payClient(value.referrerClientId);
+      if(rc&&rc.name) PAY_EDIT._refName=rc.name;
+    }
+  }
+  renderPayStatusDetail();
+}
+function payCancelHistEdit(){
+  payReadDetailForm();
+  PAY_ST_EDIT='';
+  PAY_EDIT=null;
+  renderPayStatusDetail();
+}
+function payRefInput(prefix){
+  const el=document.getElementById(prefix+'-ref');
+  const box=document.getElementById(prefix+'-ref-box');
+  if(!el||!box) return;
+  const q=el.value.trim().toLowerCase();
+  if(prefix==='ps'&&PAY_ST_FORM){
+    PAY_ST_FORM.referrerClientId='';
+    PAY_ST_FORM.referrerName=el.value.trim();
+    PAY_ST_FORM.referrerQuery=el.value;
+  }
+  if(prefix==='ph'&&PAY_EDIT){
+    PAY_EDIT._refId='';
+    PAY_EDIT._refName=el.value.trim();
+  }
+  if(!q){ box.innerHTML=''; return; }
+  const hits=(CLIENTS_CACHE||[]).filter(c=>c&&c.id!==PAY_ST_ID&&String(c.name||'').toLowerCase().indexOf(q)>=0).slice(0,8);
+  if(!hits.length){
+    box.innerHTML='<div style="font-size:11px;color:var(--text3);padding:4px 0">일치하는 거래처 없음. 입력한 이름으로 저장됩니다.</div>';
+    return;
+  }
+  box.innerHTML=hits.map(c=>'<button type="button" class="btn btn-xs btn-gray" style="margin:2px" onclick="payPickRef(\''+prefix+'\',\''+payJs(c.id)+'\')">'+escHtml(c.name||'')+'</button>').join('');
+}
+function payPickRef(prefix, id){
+  const c=payClient(id);
+  if(!c) return;
+  const el=document.getElementById(prefix+'-ref');
+  if(el) el.value=c.name||'';
+  const box=document.getElementById(prefix+'-ref-box');
+  if(box) box.innerHTML='';
+  if(prefix==='ps'&&PAY_ST_FORM){
+    PAY_ST_FORM.referrerClientId=c.id;
+    PAY_ST_FORM.referrerName=c.name||'';
+    PAY_ST_FORM.referrerQuery=c.name||'';
+  }
+  if(prefix==='ph'&&PAY_EDIT){
+    PAY_EDIT._refId=c.id;
+    PAY_EDIT._refName=c.name||'';
+  }
+}
+function payChipBtn(edit, kind, value, label, current){
+  const fn=edit?'payPickEdit':'payPick';
+  return '<button type="button" class="btn btn-xs '+(value===current?'btn-blue':'btn-gray')+'" onclick="'+fn+'(\''+payJs(kind)+'\',\''+payJs(value)+'\')">'+escHtml(label)+'</button>';
+}
+function payChipRow(edit, kind, current, pairs){
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap">'+pairs.map(p=>payChipBtn(edit, kind, p[0], p[1], current)).join('')+'</div>';
+}
+function payPriceFields(prefix, price){
+  const norm=payNormPrice(price);
+  const rev=(norm.services||[]).find(s=>s.service==='리뷰마케팅')||{sameT12:false,t1:{label:'실배송',price:0},t2:{label:'빈박스',price:0},t3:{label:'택배대행',price:DEFAULT_DELIVERY_PRICE}};
+  const extras=(norm.services||[]).filter(s=>s.service&&s.service!=='리뷰마케팅');
+  const opt=(cur, vals)=>vals.map(v=>'<option value="'+escHtml(v)+'"'+(v===cur?' selected':'')+'>'+escHtml(v)+'</option>').join('');
+  let html='<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end">';
+  html+='<label style="font-size:11px;font-weight:700">유형1<select id="'+prefix+'-t1-label" class="fs" style="display:block;margin-top:4px">'+opt(rev.t1.label,['실배송','별점리뷰'])+'</select></label>';
+  html+='<label style="font-size:11px;font-weight:700">유형2<select id="'+prefix+'-t2-label" class="fs" style="display:block;margin-top:4px">'+opt(rev.t2.label,['빈박스','텍스트/포토리뷰'])+'</select></label>';
+  html+='<label style="font-size:11px;font-weight:700;display:flex;align-items:center;gap:4px;padding-bottom:8px"><input type="checkbox" id="'+prefix+'-same"'+(rev.sameT12?' checked':'')+' onchange="payToggleSame()"> 유형1·2 동일 단가</label>';
+  html+='</div><div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">';
+  if(rev.sameT12){
+    html+='<label style="font-size:11px;font-weight:700">유형1·2 단가<input id="'+prefix+'-t1" class="fi" type="number" value="'+escHtml(rev.t1.price)+'" style="margin-top:4px;width:140px"></label>';
+  }else{
+    html+='<label style="font-size:11px;font-weight:700">유형1 단가<input id="'+prefix+'-t1" class="fi" type="number" value="'+escHtml(rev.t1.price)+'" style="margin-top:4px;width:120px"></label>';
+    html+='<label style="font-size:11px;font-weight:700">유형2 단가<input id="'+prefix+'-t2" class="fi" type="number" value="'+escHtml(rev.t2.price)+'" style="margin-top:4px;width:120px"></label>';
+  }
+  html+='<label style="font-size:11px;font-weight:700">택배대행<input id="'+prefix+'-t3" class="fi" type="number" value="'+escHtml(rev.t3.price)+'" style="margin-top:4px;width:120px"></label></div>';
+  extras.forEach(s=>{
+    html+='<div data-pay-extra="'+prefix+'" data-service="'+escHtml(s.service)+'" style="display:flex;gap:8px;align-items:center;margin-top:8px"><span style="font-size:12px;font-weight:700">'+escHtml(s.service)+'</span><input class="fi" type="number" value="'+escHtml(s.price)+'" style="width:120px"><button type="button" class="btn btn-xs btn-red" onclick="payDelExtra(\''+prefix+'\',\''+payJs(s.service)+'\')">삭제</button></div>';
+  });
+  const have=new Set(extras.map(s=>s.service));
+  html+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">';
+  ['블로그체험단','영수증리뷰'].forEach(name=>{
+    if(have.has(name)) return;
+    html+='<button type="button" class="btn btn-xs btn-gray" onclick="payAddExtra(\''+prefix+'\',\''+payJs(name)+'\')">+ '+escHtml(name)+'</button>';
+  });
+  return html+'</div>';
+}
+function payTaxFields(prefix, tax){
+  const t=payNormTax(tax);
+  const box=(id,label,on)=>'<label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="'+id+'"'+(on?' checked':'')+'>'+label+'</label>';
+  return '<div style="display:flex;gap:12px;flex-wrap:wrap">'+box(prefix+'-tax-yn','발행 가능',t.taxYn)+box(prefix+'-tax-fee','진행비',t.fee)+box(prefix+'-tax-del','택배비',t.delivery)+box(prefix+'-tax-prod','상품금액',t.product)+'</div>';
+}
+function payTaxBadges(c){
+  const t=payTaxValue(c);
+  const bits=[];
+  if(t.fee) bits.push('진행비');
+  if(t.delivery) bits.push('택배비');
+  if(t.product) bits.push('상품금액');
+  if(!bits.length) return '—';
+  return bits.map(b=>'<span style="display:inline-block;font-size:10px;font-weight:800;background:#dcfce7;color:#166534;border-radius:999px;padding:1px 6px;margin-right:3px">'+b+'</span>').join('');
+}
+function payEmph(s){
+  const token=' → ';
+  const i=String(s).lastIndexOf(token);
+  if(i<0) return escHtml(s);
+  return escHtml(s.slice(0,i+token.length))+'<b style="background:#fef3c7;border-radius:3px;padding:0 3px">'+escHtml(s.slice(i+token.length))+'</b>';
+}
+function payOldest(history, type){
+  const list=(history||[]).filter(h=>h&&!h.deleted&&h.type===type);
+  list.sort(payHistAsc);
+  return list[0]||null;
+}
+function payFirstLine(hist){
+  const route=payOldest(hist,'route');
+  const mode=payOldest(hist,'mode');
+  if(!route&&!mode) return '첫 결제 기록 없음';
+  const bits=[];
+  if(route) bits.push(payNormRoute(route.value).route||'—');
+  if(mode) bits.push(payModeLabel(payNormMode(mode.value).mode));
+  const dates=[route&&route.effectiveDate, mode&&mode.effectiveDate].filter(Boolean).sort();
+  return '첫 결제 '+bits.join(' · ')+(dates.length?' ('+payShortDate(dates[0])+')':'');
+}
+function payYn(v){ return v?'Y':'N'; }
+function renderPayStatus(){
+  const tbody=document.getElementById('paystatus-tbody');
+  if(!tbody) return;
+  const q=String((document.getElementById('ps-q')||{}).value||'').trim().toLowerCase();
+  const routeF=String((document.getElementById('ps-route')||{}).value||'');
+  const modeF=String((document.getElementById('ps-mode')||{}).value||'');
+  const sort=String((document.getElementById('ps-sort')||{}).value||'name');
+  let rows=(CLIENTS_CACHE||[]).filter(c=>c&&c.id);
+  if(q) rows=rows.filter(c=>String(c.name||'').toLowerCase().indexOf(q)>=0);
+  if(routeF) rows=rows.filter(c=>payShownRoute(c).route===routeF);
+  if(modeF) rows=rows.filter(c=>payShownMode(c).mode===modeF);
+  rows.sort((a,b)=>{
+    if(sort==='remain'){
+      const ra=payListRemain(a), rb=payListRemain(b);
+      const ka=ra.kind==='ok'?ra.remaining:Infinity;
+      const kb=rb.kind==='ok'?rb.remaining:Infinity;
+      if(ka!==kb) return ka-kb;
+    }
+    return String(a.name||'').localeCompare(String(b.name||''),'ko');
+  });
+  const count=document.getElementById('ps-count');
+  if(count) count.textContent=rows.length+'곳';
+  if(!rows.length){
+    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:28px">표시할 거래처가 없습니다</td></tr>';
+    return;
+  }
+  tbody.innerHTML=rows.map(c=>{
+    const route=payShownRoute(c);
+    const mode=payShownMode(c);
+    const sum=payPriceSummary(c);
+    const rem=payListRemain(c);
+    const routeTitle=route.route==='기타'&&route.routeMemo?' title="'+escHtml(route.routeMemo)+'"':'';
+    const modeTitle=mode.mode==='etc'&&mode.modeMemo?' title="'+escHtml(mode.modeMemo)+'"':'';
+    let remText='—', remTitle='', remStyle='';
+    if(rem.kind==='miss') remText='—(상세에서 갱신)';
+    else if(rem.kind==='ok'){
+      remText='잔여 '+fmtN(rem.remaining)+' / '+fmtN(rem.total);
+      if(rem.at) remTitle=' title="기준: '+escHtml(payKstStamp(rem.at))+'"';
+      if(rem.low) remStyle='color:#dc2626;font-weight:800;';
+    }
+    const badge=sum.badge?' <span style="display:inline-block;font-size:10px;font-weight:800;background:#e0e7ff;color:#3730a3;border-radius:999px;padding:1px 6px">'+escHtml(sum.badge)+'</span>':'';
+    return '<tr><td style="font-weight:700">'+escHtml(c.name||'(이름 없음)')+'</td>'
+      +'<td><button type="button" class="btn btn-xs btn-blue" onclick="openPayStatusDetail(decodeURIComponent(\''+encodeURIComponent(c.id)+'\'))">현황상세 및 업데이트</button></td>'
+      +'<td'+routeTitle+'>'+escHtml(route.route||'—')+'</td>'
+      +'<td'+modeTitle+'>'+escHtml(mode.mode?payModeLabel(mode.mode):'—')+'</td>'
+      +'<td style="white-space:nowrap">'+escHtml(sum.text)+badge+'</td>'
+      +'<td style="white-space:nowrap;'+remStyle+'"'+remTitle+'>'+escHtml(remText)+'</td>'
+      +'<td>'+payTaxBadges(c)+'</td></tr>';
+  }).join('');
+}
+function payHistEditor(doc){
+  if(!PAY_EDIT||PAY_ST_EDIT!==doc.id) return '';
+  const v=PAY_EDIT.value||{};
+  let fields='';
+  if(doc.type==='route'){
+    fields+=payChipRow(true,'route',v.route,[['크몽','크몽'],['계좌이체','계좌이체'],['카드결제','카드결제'],['기타','기타']]);
+    if(v.route==='기타') fields+='<input id="ph-route-memo" class="fi" style="margin-top:8px" placeholder="기타 메모" value="'+escHtml(v.routeMemo||'')+'">';
+  }else if(doc.type==='mode'){
+    fields+=payChipRow(true,'mode',v.mode,[['perItem','건별결제'],['prepaid','선결제 후 차감'],['etc','기타']]);
+    if(v.mode==='etc') fields+='<input id="ph-mode-memo" class="fi" style="margin-top:8px" placeholder="기타 메모" value="'+escHtml(v.modeMemo||'')+'">';
+  }else if(doc.type==='price'){
+    fields+=payPriceFields('ph', v);
+  }else if(doc.type==='tax'){
+    fields+=payTaxFields('ph', v);
+  }else if(doc.type==='inflow'){
+    fields+=payChipRow(true,'inflow',v.route,[['크몽','크몽'],['임반장','임반장'],['지인소개','지인소개'],['홈페이지','홈페이지'],['기타','기타']]);
+    if(v.route==='지인소개'){
+      const refShown=PAY_EDIT._refName||v.referrerName||'';
+      fields+='<div style="margin-top:8px"><input id="ph-ref" class="fi" placeholder="소개해 준 곳" value="'+escHtml(refShown)+'" oninput="payRefInput(\'ph\')"><div id="ph-ref-box"></div></div>';
+    }
+    if(v.route==='기타') fields+='<input id="ph-in-memo" class="fi" style="margin-top:8px" placeholder="기타 메모" value="'+escHtml(v.memo||'')+'">';
+    fields+='<label style="display:block;margin-top:8px;font-size:11px;font-weight:700">첫 계약일<input id="ph-first-date" class="fi" type="date" style="margin-top:4px" value="'+escHtml(v.firstContractDate||'')+'"></label>';
+  }
+  return '<div style="margin-top:8px;padding:10px;border:1px dashed var(--border);border-radius:8px;background:#fff">'
+    +'<label style="font-size:11px;font-weight:700">적용일<input id="ph-date" class="fi" type="date" style="margin-top:4px" value="'+escHtml(PAY_EDIT.date||'')+'"></label>'
+    +'<div style="margin-top:8px">'+fields+'</div>'
+    +'<label style="display:block;margin-top:8px;font-size:11px;font-weight:700">메모<textarea id="ph-memo" class="fta" style="margin-top:4px">'+escHtml(PAY_EDIT.memo||'')+'</textarea></label>'
+    +'<div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px"><button type="button" class="btn btn-xs btn-gray" onclick="payCancelHistEdit()">취소</button><button type="button" class="btn btn-xs btn-blue" onclick="savePayHistoryEdit()">기록 저장</button></div></div>';
+}
+function payTimelineHtml(hist){
+  const items=[['all','전체'],['route','결제경로'],['mode','결제방식'],['price','단가'],['tax','계산서'],['inflow','유입']];
+  let html=payTrashToggle()+'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'+items.map(it=>'<button type="button" class="btn btn-xs '+(PAY_ST_FILTER===it[0]?'btn-blue':'btn-gray')+'" onclick="payStFilter(\''+it[0]+'\')">'+it[1]+'</button>').join('')+'</div>';
+  const rows=(hist||[]).filter(h=>h&&(PAY_ST_TRASH||!h.deleted)&&(PAY_ST_FILTER==='all'||h.type===PAY_ST_FILTER));
+  rows.sort((a,b)=>payHistAsc(b,a));
+  if(!rows.length) return html+'<div style="font-size:12px;color:var(--text3)">기록이 없습니다</div>';
+  html+=rows.map(doc=>{
+    const prev=payPrevSame(doc, hist);
+    const phrases=payPhrases(doc.type, prev?prev.value:null, doc.value);
+    const edited=doc.updatedAt&&doc.createdAt&&String(doc.updatedAt)!==String(doc.createdAt);
+    const editNote=edited?'<div style="font-size:10px;color:#b45309;margin-top:2px">수정됨 · '+escHtml(doc.updatedBy||'—')+' '+escHtml(payKstMd(doc.updatedAt))+'</div>':'';
+    const memo=doc.type==='inflow'?'':payTrim(doc.memo);
+    const faded=doc.deleted?'opacity:.45;':'';
+    const actions=doc.deleted
+      ? '<button type="button" class="btn btn-xs btn-gray" onclick="payRestoreHistory(\''+payJs(doc.id)+'\')">복구</button>'
+      : '<button type="button" class="btn btn-xs btn-gray" onclick="payBeginHistEdit(\''+payJs(doc.id)+'\')">수정</button> <button type="button" class="btn btn-xs btn-red" onclick="deletePayHistory(\''+payJs(doc.id)+'\')">삭제</button>';
+    return '<div style="border-top:1px solid var(--border);padding:8px 0;'+faded+'"><div style="font-size:12px"><b>'+escHtml(payShortDate(doc.effectiveDate))+'</b> '+escHtml(payTypeLabel(doc.type))+': '+phrases.map(payEmph).join(', ')+'</div>'
+      +(memo?'<div style="font-size:11px;color:var(--text2);margin-top:2px">'+escHtml(memo)+'</div>':'')
+      +'<div style="font-size:10px;color:var(--text3);margin-top:2px">'+escHtml(doc.createdBy||'—')+' · '+escHtml(payKstStamp(doc.createdAt)||'—')+'</div>'
+      +editNote
+      +'<div style="margin-top:4px">'+actions+'</div>'
+      +(doc.deleted?'':payHistEditor(doc))+'</div>';
+  }).join('');
+  return html;
+}
+function payRefreshDash(){
+  if(CUR_CLIENT&&CUR_CLIENT===PAY_ST_ID){
+    try{ renderDetDash(); renderDetProjView(); }catch(e){}
+  }
+}
+function payRefreshScreens(){
+  renderPayStatusDetail();
+  renderPayStatus();
+  payRefreshDash();
+}
+function payTrashToggle(){
+  return '<label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:8px"><input type="checkbox" '+(PAY_ST_TRASH?'checked':'')+' onchange="payToggleTrash(this.checked)"> 삭제된 항목 보기</label>';
+}
+function payToggleTrash(on){
+  payReadDetailForm();
+  payReadHistEdit();
+  payReadRecForm();
+  PAY_ST_TRASH=!!on;
+  renderPayStatusDetail();
+}
+function payRecsFor(clientId){
+  return (PAY_RECORDS_CACHE||[]).filter(r=>r&&r.clientId===clientId);
+}
+function payPrepaidQty(list){
+  return (list||[]).filter(r=>r&&!r.deleted&&r.kind==='prepaid').reduce((a,r)=>a+(Number(r.qty)||0),0);
+}
+function payKindLabel(k){ return k==='prepaid'?'선결제 충전':'건별 결제'; }
+function payApplyRecordTotals(c, list){
+  const prepaidTotal=payPrepaidQty(list);
+  const mode=(c&&(c.payMode==='prepaid'||c.payMode==='perItem'||c.payMode==='etc'))?c.payMode:'perItem';
+  return Object.assign({}, c, {
+    prepaidTotal,
+    contractTotal:prepaidTotal,
+    contractType:mode==='prepaid'?'숫자입력':'건별결제',
+  });
+}
+function payBlankRecForm(c){
+  const snap=payCurrentSnapshot(c, PAY_ST_HIST);
+  const rev=payReviewOf(snap.price);
+  return {
+    kind:(snap.mode&&snap.mode.mode==='prepaid')?'prepaid':'perItem',
+    route:(snap.route&&snap.route.route)||'계좌이체',
+    routeMemo:(snap.route&&snap.route.routeMemo)||'',
+    date:getKSTDate(),
+    qty:'',
+    unitPrice:rev?rev.t1.price:0,
+    amount:'',
+    amountTouched:false,
+    memo:'',
+  };
+}
+function payReadRecForm(){
+  if(!PAY_REC_FORM) PAY_REC_FORM=payBlankRecForm(payClient(PAY_ST_ID));
+  const f=PAY_REC_FORM;
+  const g=id=>{ const el=document.getElementById(id); return el?el.value:null; };
+  if(g('pr-date')!=null) f.date=g('pr-date');
+  if(g('pr-qty')!=null) f.qty=g('pr-qty');
+  if(g('pr-unit')!=null) f.unitPrice=g('pr-unit');
+  if(g('pr-amt')!=null) f.amount=g('pr-amt');
+  if(g('pr-memo')!=null) f.memo=g('pr-memo');
+  if(g('pr-route-memo')!=null) f.routeMemo=g('pr-route-memo');
+  return f;
+}
+function payPickRec(kind, value){
+  payReadDetailForm();
+  payReadHistEdit();
+  payReadRecForm();
+  if(kind==='kind') PAY_REC_FORM.kind=value;
+  if(kind==='route') PAY_REC_FORM.route=value;
+  renderPayStatusDetail();
+}
+function payRecQtyInput(){
+  const f=payReadRecForm();
+  if(f.amountTouched) return;
+  const q=Number(f.qty)||0;
+  const u=Number(f.unitPrice)||0;
+  f.amount=(String(f.qty).trim()===''||String(f.unitPrice).trim()==='')?'':String(q*u);
+  const el=document.getElementById('pr-amt');
+  if(el) el.value=f.amount;
+}
+function payRecAmtInput(){
+  const f=payReadRecForm();
+  f.amountTouched=true;
+}
+function payRecChips(kind, current, pairs){
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap">'+pairs.map(p=>{
+    const on=String(p[0])===String(current);
+    return '<button type="button" class="btn btn-xs '+(on?'btn-blue':'btn-gray')+'" onclick="payPickRec(\''+kind+'\',\''+payJs(p[0])+'\')">'+escHtml(p[1])+'</button>';
+  }).join('')+'</div>';
+}
+function paySumCell(label, val){
+  return '<div><div style="font-size:10px;color:var(--text3)">'+label+'</div><div style="font-size:16px;font-weight:800">'+val+'</div></div>';
+}
+function payRecordsSection(c, snap){
+  const showSum=(snap.mode&&snap.mode.mode==='prepaid')||(PAY_ST_PAY||[]).some(r=>r&&!r.deleted&&r.kind==='prepaid');
+  let sum='';
+  if(showSum){
+    const total=payPrepaidQty(PAY_ST_PAY);
+    const prev=Number(c.prevPurchaseDone)||0;
+    const done=PAY_ST_RECS?countPrepaidPurchaseDone(c.id, PAY_ST_RECS):null;
+    const remain=done==null?'—':fmtN(Math.max(0, total-(prev+done)));
+    const by=c.prevPurchaseDoneBy?('<div style="font-size:10px;color:var(--text3);margin-top:2px">'+escHtml(c.prevPurchaseDoneBy)+' '+escHtml(payKstStamp(c.prevPurchaseDoneAt))+'</div>'):'';
+    sum='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:10px">'
+      +paySumCell('선결제 합계', fmtN(total))
+      +'<div><div style="font-size:10px;color:var(--text3)">기존 구매완료</div><div style="display:flex;gap:4px;align-items:center;margin-top:2px"><input id="ps-prev-done" class="fi" type="number" min="0" value="'+escHtml(prev)+'" style="width:88px"><button type="button" class="btn btn-xs btn-gray" onclick="savePayPrevDone()">저장</button></div>'+by+'</div>'
+      +paySumCell('구매완료', done==null?'—':fmtN(done))
+      +paySumCell('잔여', remain)
+      +'</div>';
+  }
+  const f=PAY_REC_FORM||payBlankRecForm(c);
+  const routeMemo=f.route==='기타'?'<input id="pr-route-memo" class="fi" style="margin-top:6px" placeholder="기타 메모" value="'+escHtml(f.routeMemo||'')+'">':'';
+  const editing=!!PAY_REC_EDIT;
+  const form='<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">'
+    +'<div style="font-size:12px;font-weight:800;margin-bottom:8px">'+(editing?'결제 기록 수정':'결제 기록 추가')+'</div>'
+    +'<div class="fl">구분</div>'+payRecChips('kind', f.kind, [['prepaid','선결제 충전'],['perItem','건별 결제']])
+    +'<div class="fl" style="margin-top:8px">결제경로</div>'+payRecChips('route', f.route, [['크몽','크몽'],['계좌이체','계좌이체'],['카드결제','카드결제'],['기타','기타']])+routeMemo
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:8px">'
+    +'<label style="font-size:11px;font-weight:700">결제일<input id="pr-date" class="fi" type="date" style="margin-top:4px" value="'+escHtml(f.date||'')+'"></label>'
+    +'<label style="font-size:11px;font-weight:700">건수<input id="pr-qty" class="fi" type="number" min="0" style="margin-top:4px" value="'+escHtml(f.qty)+'" oninput="payRecQtyInput()"></label>'
+    +'<label style="font-size:11px;font-weight:700">건당 단가<input id="pr-unit" class="fi" type="number" min="0" style="margin-top:4px" value="'+escHtml(f.unitPrice)+'" oninput="payRecQtyInput()"></label>'
+    +'<label style="font-size:11px;font-weight:700">금액<input id="pr-amt" class="fi" type="number" min="0" style="margin-top:4px" value="'+escHtml(f.amount)+'" oninput="payRecAmtInput()"></label>'
+    +'</div>'
+    +'<label style="display:block;margin-top:8px;font-size:11px;font-weight:700">메모<textarea id="pr-memo" class="fta" style="margin-top:4px">'+escHtml(f.memo||'')+'</textarea></label>'
+    +'<div style="text-align:right;margin-top:8px">'+(editing?'<button type="button" class="btn btn-xs btn-gray" onclick="payCancelRecEdit()">취소</button> ':'')+'<button type="button" class="btn btn-sm btn-blue" onclick="savePayRecord()">저장</button></div></div>';
+  const rows=(PAY_ST_PAY||[]).filter(r=>r&&(PAY_ST_TRASH||!r.deleted)).slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||''))||String(b.createdAt||'').localeCompare(String(a.createdAt||'')));
+  const table=rows.length?('<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>'
+    +['구분','결제일','결제경로','건수','건당 단가','금액','메모','작성자',''].map(h=>'<th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--border);white-space:nowrap">'+h+'</th>').join('')
+    +'</tr></thead><tbody>'+rows.map(r=>{
+      const route=(r.route||'')+(r.route==='기타'&&r.routeMemo?' ('+r.routeMemo+')':'');
+      const actions=r.deleted
+        ? '<button type="button" class="btn btn-xs btn-gray" onclick="payRestoreRecord(\''+payJs(r.id)+'\')">복구</button>'
+        : '<button type="button" class="btn btn-xs btn-gray" onclick="payBeginRecEdit(\''+payJs(r.id)+'\')">수정</button> <button type="button" class="btn btn-xs btn-red" onclick="deletePayRecord(\''+payJs(r.id)+'\')">삭제</button>';
+      return '<tr style="'+(r.deleted?'opacity:.45;':'')+'">'
+        +'<td style="padding:6px 4px;white-space:nowrap">'+escHtml(payKindLabel(r.kind))+'</td>'
+        +'<td style="padding:6px 4px;white-space:nowrap">'+escHtml(payShortDate(r.date))+'</td>'
+        +'<td style="padding:6px 4px">'+escHtml(route)+'</td>'
+        +'<td style="padding:6px 4px;text-align:right">'+fmtN(r.qty||0)+'</td>'
+        +'<td style="padding:6px 4px;text-align:right">'+fmtN(r.unitPrice||0)+'</td>'
+        +'<td style="padding:6px 4px;text-align:right">'+fmtN(r.amount||0)+'</td>'
+        +'<td style="padding:6px 4px">'+escHtml(r.memo||'')+'</td>'
+        +'<td style="padding:6px 4px;white-space:nowrap">'+escHtml(r.createdBy||'—')+'</td>'
+        +'<td style="padding:6px 4px;white-space:nowrap">'+actions+'</td></tr>';
+    }).join('')+'</tbody></table></div>'):'<div style="font-size:12px;color:var(--text3)">결제 기록이 없습니다</div>';
+  const box='style="border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:12px"';
+  return '<div '+box+'><div style="font-size:13px;font-weight:800;margin-bottom:8px">결제 기록</div>'+payTrashToggle()+sum+table+form+'</div>';
+}
+function payProjectSection(c){
+  const projs=payClientProjects(c.id).slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ko'));
+  const box='style="border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:12px"';
+  if(!projs.length) return '<div '+box+'><div style="font-size:13px;font-weight:800">프로젝트 결제 구분</div><div style="font-size:12px;color:var(--text3);margin-top:6px">프로젝트가 없습니다</div></div>';
+  const rows=projs.map(p=>{
+    const done=(PAY_ST_RECS||[]).filter(r=>r&&r.projectId===p.id&&recordIsPurchaseDone(r)).length;
+    const mode=p.payMode==='prepaid'?'prepaid':'separate';
+    const btn=(val,label)=>'<button type="button" class="btn btn-xs '+(mode===val?'btn-blue':'btn-gray')+'" onclick="paySetProjMode(\''+payJs(p.id)+'\',\''+val+'\')">'+label+'</button>';
+    return '<tr><td style="padding:6px 4px">'+escHtml(p.name||'')+'</td><td style="padding:6px 4px">'+escHtml(p.status||'')+'</td><td style="padding:6px 4px;text-align:right">'+fmtN(done)+'</td><td style="padding:6px 4px;white-space:nowrap">'+btn('prepaid','선결제 차감')+' '+btn('separate','별도 결제')+'</td></tr>';
+  }).join('');
+  return '<div '+box+'><div style="font-size:13px;font-weight:800;margin-bottom:8px">프로젝트 결제 구분</div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>'
+    +['프로젝트명','상태','구매완료','구분'].map(h=>'<th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--border)">'+h+'</th>').join('')
+    +'</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+}
+async function payCommitRecords(c, list, doc, okMsg){
+  const merged=payApplyRecordTotals(payClient(c.id)||c, list);
+  const group='payrec_'+c.id;
+  await commitSvOps([
+    {key:'pay', id:doc.id, data:doc, group},
+    {key:'cl', id:c.id, data:merged, group},
+  ]);
+  PAY_ST_PAY=payRecsFor(c.id);
+  PAY_REC_EDIT='';
+  PAY_REC_FORM=payBlankRecForm(payClient(c.id)||merged);
+  payRefreshScreens();
+  toast(okMsg||'결제 기록을 저장했습니다');
+}
+async function savePayRecord(){
+  if(PAY_ST_BUSY) return;
+  payReadRecForm();
+  const c=payClient(PAY_ST_ID);
+  const f=PAY_REC_FORM;
+  if(!c||!f) return;
+  if(!f.date){ toast('결제일을 입력하세요','error'); return; }
+  const qty=Number(f.qty);
+  if(!Number.isFinite(qty)||qty<=0){ toast('건수를 입력하세요','error'); return; }
+  const unit=Number(f.unitPrice);
+  const unitPrice=Number.isFinite(unit)?unit:0;
+  const amountRaw=String(f.amount==null?'':f.amount).trim();
+  const amount=amountRaw===''?qty*unitPrice:(Number(amountRaw)||0);
+  const iso=new Date().toISOString();
+  const value={
+    kind:f.kind==='prepaid'?'prepaid':'perItem',
+    route:f.route||'계좌이체',
+    routeMemo:f.route==='기타'?payTrim(f.routeMemo):'',
+    date:f.date,
+    qty, unitPrice, amount,
+    memo:payTrim(f.memo),
+  };
+  let doc;
+  if(PAY_REC_EDIT){
+    const old=(PAY_ST_PAY||[]).find(r=>r&&r.id===PAY_REC_EDIT);
+    if(!old) return;
+    doc=Object.assign({}, old, value, {updatedBy:payWho(), updatedAt:iso, deleted:false});
+  }else{
+    doc=Object.assign({id:gid(), clientId:c.id}, value, payAuditStamp(iso));
+  }
+  const list=PAY_REC_EDIT?(PAY_ST_PAY||[]).map(r=>r&&r.id===doc.id?doc:r):(PAY_ST_PAY||[]).concat([doc]);
+  PAY_ST_BUSY=true;
+  try{
+    await payCommitRecords(c, list, doc);
+  }catch(e){
+    console.error(e);
+    toast('저장에 실패했습니다','error');
+  }finally{ PAY_ST_BUSY=false; }
+}
+function payBeginRecEdit(id){
+  payReadDetailForm();
+  payReadHistEdit();
+  const rec=(PAY_ST_PAY||[]).find(r=>r&&r.id===id&&!r.deleted);
+  if(!rec) return;
+  PAY_REC_EDIT=id;
+  PAY_REC_FORM={
+    kind:rec.kind==='prepaid'?'prepaid':'perItem',
+    route:rec.route||'계좌이체',
+    routeMemo:rec.routeMemo||'',
+    date:rec.date||'',
+    qty:rec.qty,
+    unitPrice:rec.unitPrice,
+    amount:rec.amount,
+    amountTouched:true,
+    memo:rec.memo||'',
+  };
+  renderPayStatusDetail();
+}
+function payCancelRecEdit(){
+  PAY_REC_EDIT='';
+  PAY_REC_FORM=payBlankRecForm(payClient(PAY_ST_ID));
+  renderPayStatusDetail();
+}
+async function deletePayRecord(id){
+  if(PAY_ST_BUSY) return;
+  if(!confirm('이 결제 기록을 삭제 표시할까요? 문서는 남고 합계에서만 빠집니다.')) return;
+  const old=(PAY_ST_PAY||[]).find(r=>r&&r.id===id&&!r.deleted);
+  const c=payClient(PAY_ST_ID);
+  if(!old||!c) return;
+  const doc=Object.assign({}, old, {deleted:true, updatedBy:payWho(), updatedAt:new Date().toISOString()});
+  const list=(PAY_ST_PAY||[]).map(r=>r&&r.id===id?doc:r);
+  PAY_ST_BUSY=true;
+  try{
+    await payCommitRecords(c, list, doc, '결제 기록을 삭제 표시했습니다');
+  }catch(e){
+    console.error(e);
+    toast('삭제에 실패했습니다','error');
+  }finally{ PAY_ST_BUSY=false; }
+}
+async function payRestoreRecord(id){
+  if(PAY_ST_BUSY) return;
+  const old=(PAY_ST_PAY||[]).find(r=>r&&r.id===id);
+  const c=payClient(PAY_ST_ID);
+  if(!old||!c) return;
+  const doc=Object.assign({}, old, {deleted:false, updatedBy:payWho(), updatedAt:new Date().toISOString()});
+  const list=(PAY_ST_PAY||[]).map(r=>r&&r.id===id?doc:r);
+  PAY_ST_BUSY=true;
+  try{
+    await payCommitRecords(c, list, doc, '결제 기록을 복구했습니다');
+  }catch(e){
+    console.error(e);
+    toast('복구에 실패했습니다','error');
+  }finally{ PAY_ST_BUSY=false; }
+}
+async function savePayPrevDone(){
+  if(PAY_ST_BUSY) return;
+  const el=document.getElementById('ps-prev-done');
+  const n=parseInt(el&&el.value,10);
+  const num=isNaN(n)||n<0?0:n;
+  const c=payClient(PAY_ST_ID);
+  if(!c) return;
+  if((Number(c.prevPurchaseDone)||0)===num){ toast('변경사항이 없습니다','error'); return; }
+  const next=Object.assign({}, c, {prevPurchaseDone:num, prevPurchaseDoneBy:payWho(), prevPurchaseDoneAt:new Date().toISOString()});
+  PAY_ST_BUSY=true;
+  try{
+    await sv('cl', [next]);
+    payRefreshScreens();
+    toast('기존 구매완료를 저장했습니다');
+  }catch(e){
+    console.error(e);
+    toast('저장에 실패했습니다','error');
+  }finally{ PAY_ST_BUSY=false; }
+}
+async function paySetProjMode(projId, mode){
+  if(PAY_ST_BUSY) return;
+  if(mode!=='prepaid'&&mode!=='separate') return;
+  const p=(PROJECTS_CACHE||[]).find(x=>x&&x.id===projId);
+  if(!p||p.payMode===mode) return;
+  const next=Object.assign({}, p, {payMode:mode});
+  PAY_ST_BUSY=true;
+  try{
+    await sv('pr', [next]);
+    const c=payClient(PAY_ST_ID);
+    if(c&&c.payMode==='prepaid'){
+      if(!PAY_ST_RECS) PAY_ST_RECS=await payLoadRecordsOnce(c.id);
+      await flushPrepaidDoneCache(c.id, PAY_ST_RECS||[]);
+    }
+    payRefreshScreens();
+    toast('프로젝트 구분을 저장했습니다');
+  }catch(e){
+    console.error(e);
+    toast('저장에 실패했습니다','error');
+  }finally{ PAY_ST_BUSY=false; }
+}
+async function payRestoreHistory(id){
+  if(PAY_ST_BUSY) return;
+  const doc=(PAY_ST_HIST||[]).find(h=>h&&h.id===id);
+  const c=payClient(PAY_ST_ID);
+  if(!doc||!c) return;
+  const next=Object.assign({}, doc, {deleted:false, updatedBy:payWho(), updatedAt:new Date().toISOString()});
+  const hist=(PAY_ST_HIST||[]).map(h=>h&&h.id===id?next:h);
+  PAY_ST_BUSY=true;
+  try{
+    await payCommitClient(c, hist, [{key:'payh', id:next.id, data:next}]);
+    PAY_ST_FORM=payFormFromCurrent(c.id, PAY_ST_HIST);
+    payRefreshScreens();
+    toast('기록을 복구했습니다');
+  }catch(e){
+    console.error(e);
+    toast('복구에 실패했습니다','error');
+  }finally{ PAY_ST_BUSY=false; }
+}
+function paySeedDocs(c, iso, ymd){
+  const memo='거래처 생성 시 값';
+  const stamp=payAuditStamp(iso);
+  function doc(type, value){
+    return Object.assign({id:gid(), clientId:c.id, type, effectiveDate:ymd, value, memo}, stamp);
+  }
+  return [
+    doc('route', {route:'계좌이체', routeMemo:''}),
+    doc('mode', {mode:'perItem', modeMemo:''}),
+    doc('price', payPriceValue(c)),
+    doc('tax', payTaxValue(c)),
+  ];
+}
+async function payCreateClientWithSeed(c){
+  const iso=new Date().toISOString();
+  const client=Object.assign({}, c, {
+    payRoute:'계좌이체', payRouteMemo:'',
+    payMode:'perItem', payModeMemo:'',
+    prepaidTotal:0,
+    payMigratedAt:iso,
+    paymentMethod:'계좌이체',
+    contractType:'건별결제',
+    payPrice:payPriceValue(c),
+  });
+  const docs=paySeedDocs(client, iso, getKSTDate());
+  const group='payseed_'+client.id;
+  const ops=docs.map(doc=>({key:'payh', id:doc.id, data:doc, group}));
+  ops.push({key:'cl', id:client.id, data:client, group});
+  await commitSvOps(ops);
+  return client;
+}
+function renderPayStatusDetail(){
+  const body=document.getElementById('paystatus-detail');
+  const c=payClient(PAY_ST_ID);
+  if(!body||!c||!PAY_ST_FORM) return;
+  const f=PAY_ST_FORM;
+  const snap=payCurrentSnapshot(c, PAY_ST_HIST);
+  const suggest=payEarliestStart(c.id);
+  const suggestHtml=(!f.firstContractDate&&suggest)?'<div style="font-size:11px;color:#94a3b8;margin-top:4px">프로젝트 시작일 기준 제안: '+escHtml(suggest)+'</div>':'';
+  const tax=snap.tax||payNormTax({});
+  const card='<div style="font-size:12px;line-height:1.7"><div>결제경로 <b>'+escHtml(snap.route.route||'—')+'</b>'+(snap.route.routeMemo?' · '+escHtml(snap.route.routeMemo):'')+'</div>'
+    +'<div>결제방식 <b>'+escHtml(payModeLabel(snap.mode.mode))+'</b>'+(snap.mode.modeMemo?' · '+escHtml(snap.mode.modeMemo):'')+'</div>'
+    +'<div>계산서 진행비 '+payYn(tax.fee)+' · 택배비 '+payYn(tax.delivery)+' · 상품금액 '+payYn(tax.product)+' · 발행 가능 '+payYn(tax.taxYn)+'</div>'
+    +'<div>단가표 '+escHtml(payPriceBrief(snap.price))+'</div>'
+    +'<div style="font-size:11px;color:var(--text3);margin-top:4px">'+escHtml(payFirstLine(PAY_ST_HIST))+'</div></div>';
+  const refBlock=f.inflowRoute==='지인소개'
+    ? '<div style="margin-top:8px"><div class="fl">소개해 준 곳</div><input id="ps-ref" class="fi" placeholder="거래처 검색 또는 이름 직접 입력" value="'+escHtml(f.referrerQuery||'')+'" oninput="payRefInput(\'ps\')"><div id="ps-ref-box"></div></div>'
+    : '';
+  const inMemo=f.inflowRoute==='기타'
+    ? '<input id="ps-in-memo" class="fi" style="margin-top:8px" placeholder="기타 메모" value="'+escHtml(f.inflowMemo||'')+'">'
+    : '';
+  const routeMemo=f.route==='기타'?'<input id="ps-route-memo" class="fi" style="margin-top:8px" placeholder="기타 메모" value="'+escHtml(f.routeMemo||'')+'">':'';
+  const modeMemo=f.mode==='etc'?'<input id="ps-mode-memo" class="fi" style="margin-top:8px" placeholder="기타 메모" value="'+escHtml(f.modeMemo||'')+'">':'';
+  const box='style="border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:12px"';
+  body.innerHTML=''
+    +'<div '+box+'><div style="font-size:13px;font-weight:800;margin-bottom:8px">'+escHtml(c.name||'거래처')+'</div>'
+    +'<div class="fl">첫 유입경로</div>'+payChipRow(false,'inflow',f.inflowRoute,[['크몽','크몽'],['임반장','임반장'],['지인소개','지인소개'],['홈페이지','홈페이지'],['기타','기타']])
+    +refBlock+inMemo
+    +'<label style="display:block;margin-top:10px;font-size:11px;font-weight:700">첫 계약일<input id="ps-first-date" class="fi" type="date" style="margin-top:4px" value="'+escHtml(f.firstContractDate||'')+'"></label>'
+    +suggestHtml
+    +'<div style="text-align:right;margin-top:10px"><button type="button" class="btn btn-sm btn-blue" onclick="savePayInflow()">유입경로 저장</button></div></div>'
+    +'<div '+box+'><div style="font-size:13px;font-weight:800;margin-bottom:8px">현재 상태</div>'+card+'</div>'
+    +'<div '+box+'><div style="font-size:13px;font-weight:800;margin-bottom:8px">업데이트</div>'
+    +'<label style="font-size:11px;font-weight:700">적용일<input id="ps-date" class="fi" type="date" style="margin-top:4px" value="'+escHtml(f.date||'')+'"></label>'
+    +'<div class="fl" style="margin-top:10px">결제경로</div>'+payChipRow(false,'route',f.route,[['크몽','크몽'],['계좌이체','계좌이체'],['카드결제','카드결제'],['기타','기타']])+routeMemo
+    +'<div class="fl" style="margin-top:10px">결제방식</div>'+payChipRow(false,'mode',f.mode,[['perItem','건별결제'],['prepaid','선결제 후 차감'],['etc','기타']])+modeMemo
+    +'<div class="fl" style="margin-top:10px">단가표</div>'+payPriceFields('ps', f.price)
+    +'<div class="fl" style="margin-top:10px">계산서</div>'+payTaxFields('ps', f)
+    +'<label style="display:block;margin-top:10px;font-size:11px;font-weight:700">메모<textarea id="ps-memo" class="fta" style="margin-top:4px" placeholder="이번 변경 메모">'+escHtml(f.memo||'')+'</textarea></label>'
+    +'<div style="text-align:right;margin-top:10px"><button type="button" class="btn btn-sm btn-blue" onclick="savePayStatusUpdate()">저장</button></div></div>'
+    +payRecordsSection(c, snap)
+    +payProjectSection(c)
+    +'<div '+box+'><div style="font-size:13px;font-weight:800;margin-bottom:8px">연대기</div>'+payTimelineHtml(PAY_ST_HIST)+'</div>';
+}
+async function openPayStatusDetail(clientId){
+  const c=payClient(clientId);
+  if(!c){ toast('거래처를 찾지 못했습니다','error'); return; }
+  const token=++PAY_ST_TOKEN;
+  PAY_ST_ID=clientId;
+  PAY_ST_EDIT='';
+  PAY_EDIT=null;
+  PAY_ST_FILTER='all';
+    PAY_ST_HIST=[];
+    PAY_ST_PAY=[];
+    PAY_ST_RECS=null;
+    PAY_ST_FORM=null;
+    PAY_REC_FORM=null;
+    PAY_REC_EDIT='';
+    PAY_ST_TRASH=false;
+  openMd('paystatus');
+  const title=document.getElementById('paystatus-title');
+  if(title) title.textContent=(c.name||'거래처')+' 결제 현황';
+  const body=document.getElementById('paystatus-detail');
+  if(body) body.innerHTML='<div style="padding:20px;color:var(--text3)">불러오는 중…</div>';
+  try{
+    const loaded=await loadPayForClient(clientId);
+    if(token!==PAY_ST_TOKEN) return;
+    PAY_ST_HIST=(loaded&&loaded.history)||[];
+    PAY_ST_PAY=(loaded&&loaded.records)||[];
+    const snap=payCurrentSnapshot(payClient(clientId)||c, PAY_ST_HIST);
+    const records=await payLoadRecordsOnce(clientId);
+    if(token!==PAY_ST_TOKEN) return;
+    PAY_ST_RECS=records;
+    if((payClient(clientId)||c).payMode==='prepaid'||(snap.mode&&snap.mode.mode==='prepaid')) await flushPrepaidDoneCache(clientId, records);
+    if(token!==PAY_ST_TOKEN) return;
+    PAY_ST_FORM=payFormFromCurrent(clientId, PAY_ST_HIST);
+    PAY_REC_FORM=payBlankRecForm(payClient(clientId)||c);
+    renderPayStatusDetail();
+    renderPayStatus();
+    payRefreshDash();
+  }catch(e){
+    console.error(e);
+    if(token!==PAY_ST_TOKEN) return;
+    if(body) body.innerHTML='<div style="padding:16px;color:#dc2626">불러오지 못했습니다. '+escHtml(e&&e.message?e.message:'')+'</div>';
+  }
+}
+async function payCommitClient(c, hist, extraOps){
+  const merged=payClientPatch(c, hist);
+  const group='payst_'+c.id;
+  const ops=(extraOps||[]).map(op=>Object.assign({group}, op));
+  ops.push({key:'cl', id:c.id, data:merged, group});
+  await commitSvOps(ops);
+  PAY_ST_HIST=payHistFor(c.id);
+  return merged;
+}
+async function savePayInflow(){
+  if(PAY_ST_BUSY) return;
+  payReadDetailForm();
+  const c=payClient(PAY_ST_ID);
+  if(!c) return;
+  const value=payInflowFromForm(PAY_ST_FORM);
+  if(!value.route){ toast('유입경로를 선택하세요','error'); return; }
+  const cur=payCurrentSnapshot(c, PAY_ST_HIST).inflow;
+  if(cur&&JSON.stringify(cur)===JSON.stringify(value)){ toast('변경사항이 없습니다','error'); return; }
+  const iso=new Date().toISOString();
+  const who=payWho();
+  const existing=(PAY_ST_HIST||[]).filter(h=>h&&!h.deleted&&h.type==='inflow').sort((a,b)=>payHistAsc(b,a))[0];
+  let doc;
+  if(existing){
+    doc=Object.assign({}, existing, {
+      effectiveDate:value.firstContractDate||existing.effectiveDate||getKSTDate(),
+      value, memo:'', updatedBy:who, updatedAt:iso,
+    });
+  }else{
+    doc=Object.assign({
+      id:gid(), clientId:c.id, type:'inflow',
+      effectiveDate:value.firstContractDate||getKSTDate(),
+      value, memo:'',
+    }, payAuditStamp(iso));
+  }
+  const hist=existing?PAY_ST_HIST.map(h=>h.id===doc.id?doc:h):PAY_ST_HIST.concat([doc]);
+  PAY_ST_BUSY=true;
+  try{
+    await payCommitClient(c, hist, [{key:'payh', id:doc.id, data:doc}]);
+    PAY_ST_FORM=payFormFromCurrent(c.id, PAY_ST_HIST);
+    renderPayStatusDetail();
+    renderPayStatus();
+    payRefreshDash();
+    toast('유입경로를 저장했습니다');
+  }catch(e){
+    console.error(e);
+    toast('저장에 실패했습니다','error');
+  }finally{ PAY_ST_BUSY=false; }
+}
+async function savePayStatusUpdate(){
+  if(PAY_ST_BUSY) return;
+  payReadDetailForm();
+  const c=payClient(PAY_ST_ID);
+  if(!c) return;
+  if(!PAY_ST_FORM.date){ toast('적용일을 입력하세요','error'); return; }
+  const cur=payCurrentSnapshot(c, PAY_ST_HIST);
+  const next=payFormSnapshot(PAY_ST_FORM);
+  const types=payChangedTypes(cur, next);
+  if(!types.length){ toast('변경사항이 없습니다','error'); return; }
+  if(cur.mode&&cur.mode.mode==='prepaid'&&next.mode.mode==='perItem'){
+    const rem=payRemainingCount(c, PAY_ST_RECS);
+    if(rem>0&&!confirm('잔여 '+rem+'건이 남아 있습니다. 이월/정산 여부를 메모에 남겨주세요')) return;
+  }
+  const iso=new Date().toISOString();
+  const memo=payTrim(PAY_ST_FORM.memo);
+  const docs=types.map(type=>Object.assign({
+    id:gid()+type, clientId:c.id, type, effectiveDate:PAY_ST_FORM.date,
+    value:next[type], memo,
+  }, payAuditStamp(iso)));
+  const hist=PAY_ST_HIST.concat(docs);
+  PAY_ST_BUSY=true;
+  try{
+    await payCommitClient(c, hist, docs.map(doc=>({key:'payh', id:doc.id, data:doc})));
+    PAY_ST_EDIT='';
+    PAY_EDIT=null;
+    PAY_ST_FORM=payFormFromCurrent(c.id, PAY_ST_HIST);
+    renderPayStatusDetail();
+    renderPayStatus();
+    payRefreshDash();
+    toast('저장했습니다');
+  }catch(e){
+    console.error(e);
+    toast('저장에 실패했습니다','error');
+  }finally{ PAY_ST_BUSY=false; }
+}
+async function savePayHistoryEdit(){
+  if(PAY_ST_BUSY) return;
+  payReadDetailForm();
+  payReadHistEdit();
+  const doc=(PAY_ST_HIST||[]).find(h=>h&&h.id===PAY_ST_EDIT);
+  const c=payClient(PAY_ST_ID);
+  if(!doc||!c||!PAY_EDIT) return;
+  if(!PAY_EDIT.date){ toast('적용일을 입력하세요','error'); return; }
+  const iso=new Date().toISOString();
+  const next=Object.assign({}, doc, {
+    effectiveDate:PAY_EDIT.date,
+    value:payNormByType(doc.type, PAY_EDIT.value),
+    memo:payTrim(PAY_EDIT.memo),
+    updatedBy:payWho(),
+    updatedAt:iso,
+  });
+  const hist=PAY_ST_HIST.map(h=>h.id===doc.id?next:h);
+  PAY_ST_BUSY=true;
+  try{
+    await payCommitClient(c, hist, [{key:'payh', id:next.id, data:next}]);
+    PAY_ST_EDIT='';
+    PAY_EDIT=null;
+    PAY_ST_FORM=payFormFromCurrent(c.id, PAY_ST_HIST);
+    renderPayStatusDetail();
+    renderPayStatus();
+    payRefreshDash();
+    toast('기록을 수정했습니다');
+  }catch(e){
+    console.error(e);
+    toast('저장에 실패했습니다','error');
+  }finally{ PAY_ST_BUSY=false; }
+}
+async function deletePayHistory(id){
+  if(PAY_ST_BUSY) return;
+  const doc=(PAY_ST_HIST||[]).find(h=>h&&h.id===id&&!h.deleted);
+  const c=payClient(PAY_ST_ID);
+  if(!doc||!c) return;
+  if(!confirm('이 기록을 삭제 표시할까요? 문서는 남고 화면에서만 빠집니다.')) return;
+  const iso=new Date().toISOString();
+  const next=Object.assign({}, doc, {deleted:true, updatedBy:payWho(), updatedAt:iso});
+  const hist=PAY_ST_HIST.map(h=>h.id===doc.id?next:h);
+  PAY_ST_BUSY=true;
+  try{
+    await payCommitClient(c, hist, [{key:'payh', id:next.id, data:next}]);
+    if(PAY_ST_EDIT===id){ PAY_ST_EDIT=''; PAY_EDIT=null; }
+    PAY_ST_FORM=payFormFromCurrent(c.id, PAY_ST_HIST);
+    renderPayStatusDetail();
+    renderPayStatus();
+    payRefreshDash();
+    toast('기록을 삭제 표시했습니다');
+  }catch(e){
+    console.error(e);
+    toast('저장에 실패했습니다','error');
+  }finally{ PAY_ST_BUSY=false; }
+}
+
 function setClientMemoEmoji(em){
   const el=document.getElementById('cl-memo-emoji');
   if(el)el.textContent=em;
@@ -11340,13 +12791,8 @@ function saveClientMemo(){
 }
 // 선계약수량 수정 팝업 (하위호환)
 function openContractEdit(){
-  const d=ld(),c=d.clients.find(x=>x.id===CUR_CLIENT);if(!c)return;
-  const projs=d.projects.filter(p=>p.clientId===CUR_CLIENT);
-  const cur=(c.contractTotal!==undefined&&c.contractTotal!==null)?Number(c.contractTotal):projs.reduce((a,p)=>a+(p.contractTotal||p.total||0),0);
-  const val=prompt('선계약 수량 입력 (현재: '+fmtN(cur)+'건)',String(cur));
-  if(val===null)return;
-  saveContractTotal(val);
-  renderDetDash();renderDetProjView();
+  if(!CUR_CLIENT) return;
+  openPayStatusDetail(CUR_CLIENT);
 }
 
 function renderDetProjView(){
@@ -11399,7 +12845,7 @@ function renderDetProjView(){
       <div style="padding:12px 18px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);cursor:pointer" onclick="showProjDetailModal('${p.id}')">
         <div style="display:flex;align-items:center;gap:10px">
           <div style="display:flex;flex-direction:column">
-          <div style="font-size:14px;font-weight:700">${p.name}</div>
+          <div style="font-size:14px;font-weight:700">${p.name}${(p.payMode==='separate'&&(d.clients.find(x=>x.id===CUR_CLIENT)||{}).payMode==='prepaid')?'<span style="margin-left:6px;font-size:10px;font-weight:800;background:#e0e7ff;color:#3730a3;border-radius:999px;padding:1px 6px">별도결제</span>':''}</div>
           <div style="font-size:11px;color:var(--text2);margin-top:1px;display:flex;align-items:center;gap:6px;flex-wrap:wrap" onclick="event.stopPropagation()">
             <span>플랫폼</span>
             <select style="font-size:11px;padding:2px 6px;border-radius:6px;border:1px solid var(--border);background:var(--card);cursor:pointer" onchange="changeProjPlatform('${p.id}',this.value)" onclick="event.stopPropagation()">
@@ -13597,6 +15043,25 @@ function openAddClientModal(){
   }
   openMd('add-client');
 }
+function payStatusEditBtn(clientId){
+  if(!clientId) return '';
+  return '<button type="button" class="btn btn-xs btn-blue" onclick="openPayStatusDetail(decodeURIComponent(\''+encodeURIComponent(clientId)+'\'))">결제 현황에서 수정</button>';
+}
+function payLockedPriceHtml(c){
+  const t=payTaxValue(c);
+  return `<div style="background:#fffbeb;border:2px solid #fcd34d;border-radius:14px;padding:18px;box-shadow:var(--sh)">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px">
+      <div style="font-size:13px;font-weight:800;color:#92400e">💰 기본 단가</div>
+      ${payStatusEditBtn(c&&c.id)}
+    </div>
+    <div style="font-size:12px;color:#78350f;line-height:1.7">
+      <div>유형1 · ${escHtml((c&&c.price1Type)||'실배송')} ${fmtN((c&&c.price1)||0)}원</div>
+      <div>유형2 · ${escHtml((c&&c.price2Type)||'빈박스')} ${fmtN((c&&c.price2)||0)}원</div>
+      <div>택배대행 ${fmtN(deliveryPriceOf(c))}원</div>
+      <div style="margin-top:6px">계산서 발행 가능 ${t.taxYn?'Y':'N'} · 진행비 ${t.fee?'Y':'N'} · 택배비 ${t.delivery?'Y':'N'} · 상품금액 ${t.product?'Y':'N'}</div>
+    </div>
+  </div>`;
+}
 function renderInfoForm(c){
   const bizList=c.bizInfoList||[];
   document.getElementById('dp-info-form').innerHTML=`
@@ -13632,7 +15097,7 @@ function renderInfoForm(c){
       </div>
       <div class="grid-2">
         <div class="fg"><label class="fl">사업자번호 (대표)</label><input class="fi" id="ci-biz" value="${c.biz||''}"></div>
-        <div class="fg"><label class="fl">선계약 수량 (건)</label><input class="fi" type="number" id="ci-contractTotal" value="${c.contractTotal||0}" placeholder="0"></div>
+        <div class="fg"><label class="fl">선계약 수량 (건)</label><div class="fi" style="background:var(--bg2);color:var(--text2);display:flex;justify-content:space-between;align-items:center;gap:8px"><span>${(c.payMode==='prepaid'||(!c.payMode&&c.contractType!=='건별결제'))?fmtN(c.prepaidTotal!=null&&c.prepaidTotal!==''?c.prepaidTotal:(c.contractTotal||0))+'건':'건별결제'}</span>${payStatusEditBtn(c.id)}</div></div>
       </div>
       <div class="fg"><label class="fl">작업요청서 접수 URL</label>
         <input class="fi" id="ci-requestUrl" value="${c.requestUrl||''}" placeholder="예: https://...">
@@ -13640,7 +15105,7 @@ function renderInfoForm(c){
       <div class="fg"><label class="fl">메모</label><textarea class="fta" id="ci-memo" style="min-height:72px">${c.memo||''}</textarea></div>
     </div>
 
-    ${renderDefaultPriceSection(c,'ci',true)}
+    ${payLockedPriceHtml(c)}
     </div><!-- /상단 2컬럼 그리드 -->
 
     <!-- ━━━ 박스 3: 세금계산서 ━━━ -->
@@ -13652,31 +15117,10 @@ function renderInfoForm(c){
         </div>
         <button class="btn btn-blue btn-sm" onclick="addBizRow()">+ 사업자 추가</button>
       </div>
-      <div style="margin-bottom:14px">
-        <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;cursor:pointer;padding:10px 14px;background:${c.taxYn?'#d1fae5':'var(--bg2)'};border:2px solid ${c.taxYn?'#059669':'var(--border)'};border-radius:10px">
-          <input type="checkbox" id="ci-taxYn" ${c.taxYn?'checked':''} onchange="toggleCiTaxItems()">
-          <span>세금계산서 발행 가능 <span style="font-size:11px;font-weight:400;color:var(--text2)">(체크 시 발행 항목 선택)</span></span>
-        </label>
+      <div style="margin-bottom:14px;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;font-size:12px;line-height:1.7">
+        <div>발행 가능 <b>${c.taxYn?'Y':'N'}</b> · 진행비 <b>${c.taxItems?.fee?'Y':'N'}</b> · 택배비 <b>${c.taxItems?.delivery?'Y':'N'}</b> · 상품금액 <b>${c.taxItems?.product?'Y':'N'}</b></div>
+        <div style="margin-top:6px">${payStatusEditBtn(c.id)}</div>
       </div>
-      <div id="ci-tax-items-wrap" style="${c.taxYn?'':'display:none'}">
-        <div style="font-size:11px;font-weight:700;color:#065f46;margin-bottom:8px">발행 항목 선택 (중복 선택 가능)</div>
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 12px;border-radius:8px;background:${(c.taxItems?.fee)?'#dcfce7':'var(--bg2)'};border:2px solid ${(c.taxItems?.fee)?'#16a34a':'var(--border)'}" id="ci-tax-fee-box">
-            <input type="checkbox" id="ci-tax-fee" ${c.taxItems?.fee?'checked':''} onchange="toggleCiTaxBox('fee')">
-            <span><div style="font-size:12px;font-weight:700">① 진행비</div><div style="font-size:10px;color:var(--text2)">공급가+부가세 10%</div></span>
-          </label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 12px;border-radius:8px;background:${(c.taxItems?.delivery)?'#dcfce7':'var(--bg2)'};border:2px solid ${(c.taxItems?.delivery)?'#16a34a':'var(--border)'}" id="ci-tax-del-box">
-            <input type="checkbox" id="ci-tax-del" ${c.taxItems?.delivery?'checked':''} onchange="toggleCiTaxBox('del')">
-            <span><div style="font-size:12px;font-weight:700">② 택배비</div><div style="font-size:10px;color:var(--text2)">공급가+부가세 10%</div></span>
-          </label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 12px;border-radius:8px;background:${(c.taxItems?.product)?'#fef9c3':'var(--bg2)'};border:2px solid ${(c.taxItems?.product)?'#ca8a04':'var(--border)'}" id="ci-tax-prod-box">
-            <input type="checkbox" id="ci-tax-prod" ${c.taxItems?.product?'checked':''} onchange="toggleCiTaxBox('prod')">
-            <span><div style="font-size:12px;font-weight:700">③ 상품금액</div><div style="font-size:10px;color:var(--text2)">{상품값+수수료%}+부가세 10%</div></span>
-          </label>
-        </div>
-      </div>
-    <!-- 기본 발행 항목 (전역 세팅) 라벨 -->
-    <div style="font-size:10px;color:#065f46;font-weight:700;margin-bottom:6px;margin-top:4px">📌 (기본세팅) 발행 항목 선택</div>
     <div id="biz-list-container">
       ${bizList.length===0
         ? `<div style="font-size:12px;color:var(--text3);padding:16px;text-align:center;border:1px dashed var(--border);border-radius:8px">등록된 사업자 없음. "사업자 추가" 버튼을 눌러주세요.</div>`
@@ -13841,17 +15285,9 @@ function saveClientInfo(){
     biz:document.getElementById('ci-biz').value.trim(),
     status:document.getElementById('ci-status').value,
     memo:document.getElementById('ci-memo').value.trim(),
-    ...readDefaultPriceFields('ci'),
-    contractTotal:parseInt(document.getElementById('ci-contractTotal')?.value)||0,
     depositName:document.getElementById('ci-depositName')?.value.trim()||'',
     requestUrl:document.getElementById('ci-requestUrl')?.value.trim()||'',
-    taxYn:document.getElementById('ci-taxYn')?.checked||false,
-    taxItems:{
-      fee:document.getElementById('ci-tax-fee')?.checked||false,
-      delivery:document.getElementById('ci-tax-del')?.checked||false,
-      product:document.getElementById('ci-tax-prod')?.checked||false,
-    },
-    // bizInfoList는 addBizRow/delBizRow에서 직접 관리
+    // 단가·계산서·선계약은 결제 현황에서만 저장한다. bizInfoList는 아래 함수에서 관리.
   };
   sv('cl',d.clients);
   // 거래처 정보 변경 이력 기록
@@ -13925,7 +15361,7 @@ function createNewProject(){
   const name=document.getElementById('np-name').value.trim();
   if(!name){toast('프로젝트명을 입력하세요','error');return;}
   const d=ld();
-  const proj={id:gid(),name,clientId:CUR_CLIENT,platform:document.getElementById('np-platform').value,product:'',startDate:document.getElementById('np-start').value,total:parseInt(document.getElementById('np-total').value)||0,status:document.getElementById('np-status').value,memo:'',quote:null,createdAt:new Date().toISOString()};
+  const proj={id:gid(),name,clientId:CUR_CLIENT,platform:document.getElementById('np-platform').value,product:'',startDate:document.getElementById('np-start').value,total:parseInt(document.getElementById('np-total').value)||0,status:document.getElementById('np-status').value,memo:'',quote:null,payMode:(payClient(CUR_CLIENT)&&payClient(CUR_CLIENT).payMode==='prepaid')?'prepaid':'separate',createdAt:new Date().toISOString()};
   d.projects.push(proj);sv('pr',d.projects);
   // 새 프로젝트 생성 이력
   const changes={created:{before:null,after:proj}};
@@ -15320,11 +16756,8 @@ async function saveClient(){
   if(!defaultPriceFieldsFilled('c')) return;
   const prices=readDefaultPriceFields('c');
   const d=ld();
-  const c={id:gid(),name,manager:document.getElementById('c-mgr').value.trim(),phone:document.getElementById('c-phone').value.trim(),email:document.getElementById('c-email').value.trim(),biz:document.getElementById('c-biz').value.trim(),memo:document.getElementById('c-memo').value.trim(),status:document.getElementById('c-status').value,code:gcode(),quote:'',price1Type:prices.price1Type,price1:prices.price1,price2Type:prices.price2Type,price2:prices.price2,price3:prices.price3,taxYn:false,bizInfoList:[],createdAt:new Date().toISOString()};
-  d.clients.push(c);
-  console.log('저장 전 clients 수:', d.clients.length);
-  await sv('cl',d.clients);
-  console.log('sv 완료');
+  const c={id:gid(),name,manager:document.getElementById('c-mgr').value.trim(),phone:document.getElementById('c-phone').value.trim(),email:document.getElementById('c-email').value.trim(),biz:document.getElementById('c-biz').value.trim(),memo:document.getElementById('c-memo').value.trim(),status:document.getElementById('c-status').value,code:gcode(),quote:'',price1Type:prices.price1Type,price1:prices.price1,price2Type:prices.price2Type,price2:prices.price2,price3:prices.price3,taxYn:false,taxItems:{fee:false,delivery:false,product:false},bizInfoList:[],createdAt:new Date().toISOString()};
+  await payCreateClientWithSeed(c);
   closeMd('add-client');renderClients();renderOverview();toast('거래처 추가 완료');
   document.querySelectorAll('#modal-add-client input,#modal-add-client textarea').forEach(el=>el.value='');
   const priceBox=document.getElementById('c-price-fields');
@@ -15643,7 +17076,7 @@ function previewBulkUpload(input){
   }
 }
 
-function confirmBulkUpload(){
+async function confirmBulkUpload(){
   const clientName=document.getElementById('bu-client-name').value.trim();
   if(!clientName){toast('거래처명을 입력하세요','error');return;}
   if(!BU_DATA||BU_DATA.length===0){toast('먼저 엑셀 파일을 선택해 미리보기가 나오면 업로드할 수 있습니다.','error');return;}
@@ -15671,8 +17104,7 @@ function confirmBulkUpload(){
       const buDelivery=parseInt(buDeliveryRaw,10);
       client.price3=Number.isFinite(buDelivery)?buDelivery:0;
     }
-    d.clients.push(client);
-    sv('cl',d.clients);
+    client=await payCreateClientWithSeed(client);
   }
 
   // 프로젝트별 레코드 추가
@@ -15685,6 +17117,7 @@ function confirmBulkUpload(){
         id:gid(), clientId:client.id, name:group.projName,
         platform:'', startDate:startDates[0]||'',
         total:group.records.length, status:'완료',
+        payMode:(client.payMode==='prepaid')?'prepaid':'separate',
         createdAt:new Date().toISOString()
       };
       d.projects.push(proj);
@@ -19295,6 +20728,16 @@ installPerfProbes();
       <button class="btn btn-gray" onclick="closeMd('qt-link-check')">닫기</button>
       <button class="btn btn-blue" id="qt-link-check-run" onclick="runQuoteLinkRepair()">복구 실행</button>
     </div>
+  </div>
+</div>
+
+<div class="mo hidden" id="modal-paystatus">
+  <div class="md md-lg" style="max-width:980px">
+    <div class="mt" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <span id="paystatus-title">결제 현황</span>
+      <button type="button" class="btn btn-xs btn-gray" onclick="closeMd('paystatus')">닫기</button>
+    </div>
+    <div id="paystatus-detail"></div>
   </div>
 </div>
 
