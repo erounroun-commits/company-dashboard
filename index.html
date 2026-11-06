@@ -10870,11 +10870,6 @@ function inferPayRoute(c){
   if(m==='기타플랫폼') return {payRoute:'크몽', payRouteMemo:''};
   return {payRoute:'계좌이체', payRouteMemo:''};
 }
-function payRemainingsDiffer(before, after){
-  if(before==null) return Number(after)!==0;
-  if(!Number.isFinite(Number(before))||!Number.isFinite(Number(after))) return true;
-  return Math.abs(Number(before)-Number(after))>1e-6;
-}
 function payMigDocId(clientId, suffix){
   return ('mig_'+String(clientId)+'_'+suffix).replace(/\//g,'_');
 }
@@ -10942,14 +10937,15 @@ function payHistoryDocs(c, mode, route, iso, ymd){
     doc('h_price','price', payPriceValue(c)),
   ];
 }
-function buildPayMigrationPlan(c, projs, doneByProject, now){
+function payMigNumbersMatch(a, b){
+  return Number.isFinite(Number(a))&&Number.isFinite(Number(b))&&Math.abs(Number(a)-Number(b))<1e-6;
+}
+function buildPayMigrationPlan(c, projs, now){
   const iso=now.iso;
   const ymd=now.ymd;
   const contractTotal=effectiveContractTotal(c, projs);
   const mode=inferPayMode(c, contractTotal);
   const route=inferPayRoute(c);
-  const doneAuto=sumProjectDone(projs, doneByProject, false);
-  const beforeRemaining=screenContractRemaining(c, projs, doneAuto);
   const oldMode=(c&&c.contractType)?String(c.contractType):'(없음)';
   const oldRoute=(c&&c.paymentMethod!=null&&String(c.paymentMethod).trim()!=='')?String(c.paymentMethod).trim():'(없음)';
   const base={
@@ -10957,15 +10953,14 @@ function buildPayMigrationPlan(c, projs, doneByProject, now){
     oldMode, payMode:mode.payMode, oldRoute, payRoute:route.payRoute,
     estimated:mode.estimated, already:false, needCheck:false, mismatch:false, include:false,
     kmongCount:0, adjustQty:0, adjustLabel:'0',
-    beforeRemaining, afterRemaining:null, status:'정상', ops:[],
+    contractQty:contractTotal, prepaidAfter:null, status:'정상', ops:[],
   };
   if(c.payMigratedAt){
-    const after=getPrepaidSummary(c.id,{clients:[c], projects:projs, doneByProject});
     return Object.assign(base,{
       already:true,
       payMode:c.payMode||mode.payMode,
       payRoute:c.payRoute||route.payRoute,
-      afterRemaining:after.remaining,
+      prepaidAfter:Number(c.prepaidTotal)||0,
       kmongCount:(Array.isArray(c.payments)?c.payments:[]).filter(p=>p&&(p.platform||p.requestDate||p.qty||p.amount||p.memo)).length,
       adjustLabel:'—',
       status:'이미 이관',
@@ -10982,15 +10977,15 @@ function buildPayMigrationPlan(c, projs, doneByProject, now){
   }
   const prepaidTotal=(mode.payMode==='prepaid'&&Number.isFinite(contractTotal))?contractTotal:0;
   const projPayMode=mode.payMode==='prepaid'?'prepaid':'separate';
-  const simClient=Object.assign({}, c, {prepaidTotal:prepaidTotal, payMode:mode.payMode});
-  const simProjects=projs.map(p=>Object.assign({}, p, {payMode:projPayMode}));
-  const after=getPrepaidSummary(c.id,{clients:[simClient], projects:simProjects, doneByProject});
-  const mismatch=payRemainingsDiffer(beforeRemaining, after.remaining);
+  const totalOk=mode.payMode!=='prepaid'||payMigNumbersMatch(prepaidTotal, contractTotal);
+  const projModes=(projs||[]).map(p=>(p&&p.id)?projPayMode:null);
+  const projOk=projModes.every(m=>m===projPayMode);
+  const mismatch=!totalOk||!projOk;
   let status='정상';
   if(needCheck&&mode.estimated) status='추정 · 확인 필요';
   else if(needCheck) status='확인 필요';
   else if(mode.estimated) status='추정';
-  if(mismatch) status+=' · 잔여 불일치';
+  if(mismatch) status+=' · 검증 불일치';
   const include=!needCheck&&!mismatch;
   let adjustLabel='0';
   if(mode.payMode!=='prepaid') adjustLabel='—';
@@ -10998,7 +10993,7 @@ function buildPayMigrationPlan(c, projs, doneByProject, now){
   else if(adjustQty) adjustLabel='+'+adjustQty;
   const plan=Object.assign(base,{
     needCheck, mismatch, include, kmongCount:copied.length,
-    adjustQty, adjustLabel, afterRemaining:after.remaining, status,
+    adjustQty, adjustLabel, prepaidAfter:prepaidTotal, status,
   });
   if(!include) return plan;
   const records=copied.slice();
@@ -11037,34 +11032,9 @@ function buildPayMigrationPlan(c, projs, doneByProject, now){
   plan.ops=ops;
   return plan;
 }
-async function fetchPurchaseDoneByProject(){
-  if(typeof db==='undefined') throw new Error('Firestore가 준비되지 않았습니다');
-  const ids=[];
-  const seen=new Set();
-  (PROJECTS_CACHE||[]).forEach(p=>{
-    if(!p||!p.id||seen.has(p.id)) return;
-    seen.add(p.id);
-    ids.push(p.id);
-  });
-  const counts=new Map();
-  fsBegin('결제 이관 집계');
-  try{
-    for(let i=0;i<ids.length;i+=30){
-      const chunk=ids.slice(i,i+30);
-      const snap=await db.collection('records').where('projectId','in',chunk).get();
-      snap.docs.forEach(doc=>{
-        const r=doc.data()||{};
-        if(!r.projectId||!recordIsPurchaseDone(r)) return;
-        counts.set(r.projectId,(counts.get(r.projectId)||0)+1);
-      });
-    }
-  }finally{
-    fsEnd('결제 이관 집계');
-  }
-  return counts;
-}
 let PAY_MIG_PLANS=[];
-let PAY_MIG_DONE=null;
+let PAY_MIG_READS=0;
+let PAY_MIG_READY=false;
 let PAY_MIG_RUNNING=false;
 function payMigRank(p){
   if(p.mismatch) return 0;
@@ -11074,17 +11044,24 @@ function payMigRank(p){
   if(p.already) return 5;
   return 4;
 }
-async function buildPayMigrationPlans(doneByProject){
-  const done=doneByProject||await fetchPurchaseDoneByProject();
-  PAY_MIG_DONE=done;
-  const now={iso:new Date().toISOString(), ymd:getKSTDate()};
-  const byClient=new Map();
-  (PROJECTS_CACHE||[]).forEach(p=>{
-    if(!p||!p.clientId) return;
-    if(!byClient.has(p.clientId)) byClient.set(p.clientId,[]);
-    byClient.get(p.clientId).push(p);
-  });
-  const plans=(CLIENTS_CACHE||[]).filter(c=>c&&c.id).map(c=>buildPayMigrationPlan(c, byClient.get(c.id)||[], done, now));
+function buildPayMigrationPlans(){
+  fsBegin('결제 이관 미리보기');
+  let reads=0;
+  let plans=[];
+  try{
+    const now={iso:new Date().toISOString(), ymd:getKSTDate()};
+    const byClient=new Map();
+    (PROJECTS_CACHE||[]).forEach(p=>{
+      if(!p||!p.clientId) return;
+      if(!byClient.has(p.clientId)) byClient.set(p.clientId,[]);
+      byClient.get(p.clientId).push(p);
+    });
+    plans=(CLIENTS_CACHE||[]).filter(c=>c&&c.id).map(c=>buildPayMigrationPlan(c, byClient.get(c.id)||[], now));
+  }finally{
+    const bucket=fsEnd('결제 이관 미리보기');
+    reads=bucket?((bucket.serverReads||0)+(bucket.cacheReads||0)):0;
+  }
+  PAY_MIG_READS=reads;
   plans.sort((a,b)=>{
     const d=payMigRank(a)-payMigRank(b);
     if(d) return d;
@@ -11109,15 +11086,18 @@ function renderPayMigrationPreview(plans){
   const bad=list.filter(p=>p.mismatch).length;
   const doneN=list.filter(p=>p.already).length;
   if(sum){
+    const readNote=PAY_MIG_READS===0?'Firestore 추가 읽기 0건':'Firestore 추가 읽기 '+PAY_MIG_READS+'건';
     sum.innerHTML='실행 대상 <b>'+inc+'</b>곳'
       +(est?' (그중 추정 '+est+')':'')
       +' · 확인 필요 '+chk
-      +' · 잔여 불일치 '+bad
+      +' · 검증 불일치 '+bad
       +' · 이미 이관 '+doneN
-      +' · 전체 '+list.length;
+      +' · 전체 '+list.length
+      +' · <span style="'+(PAY_MIG_READS?'color:#dc2626;':'')+'">'+readNote+'</span>';
   }
   if(btn){
-    btn.disabled=!inc||PAY_MIG_RUNNING;
+    const canRun=PAY_MIG_READY&&!PAY_MIG_RUNNING&&inc>0;
+    btn.disabled=!canRun;
     btn.textContent=inc?('이관 실행 ('+inc+'곳)'):'이관 실행';
   }
   if(!body) return;
@@ -11125,7 +11105,7 @@ function renderPayMigrationPreview(plans){
     body.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3)">거래처가 없습니다</div>';
     return;
   }
-  const headers=['거래처명','기존 결제방식 → 새 payMode','기존 결제수단 → 새 payRoute','크몽 기록 수','보정 기록','이관 전 잔여','이관 후 잔여','상태'];
+  const headers=['거래처명','기존 결제방식 → 새 payMode','기존 결제수단 → 새 payRoute','크몽 기록 수','보정 기록','기존 선계약 수량','이관 후 선결제 합계','상태'];
   let html='<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>'
     +headers.map(h=>'<th style="position:sticky;top:0;background:#f8fafc;text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap">'+h+'</th>').join('')
     +'</tr></thead><tbody>';
@@ -11140,38 +11120,43 @@ function renderPayMigrationPreview(plans){
       +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap">'+escHtml(p.oldRoute)+' → '+escHtml(p.payRoute||'')+'</td>'
       +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);text-align:right">'+p.kmongCount+'</td>'
       +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);text-align:right">'+escHtml(String(p.adjustLabel))+'</td>'
-      +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);text-align:right;'+rc+'">'+escHtml(payMigRemainText(p.beforeRemaining))+'</td>'
-      +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);text-align:right;'+rc+'">'+escHtml(payMigRemainText(p.afterRemaining))+'</td>'
+      +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);text-align:right;'+rc+'">'+escHtml(payMigRemainText(p.contractQty))+'</td>'
+      +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);text-align:right;'+rc+'">'+escHtml(payMigRemainText(p.prepaidAfter))+'</td>'
       +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap;'+statusColor+'">'+escHtml(p.status)+'</td>'
       +'</tr>';
   });
   body.innerHTML=html+'</tbody></table>';
 }
-async function openPayMigration(){
+function openPayMigration(){
   if(!CUR_ADMIN||CUR_ADMIN.role!=='admin'){toast('관리자만 실행할 수 있습니다','error');return;}
-  if(typeof db==='undefined'){toast('Firestore가 아직 준비되지 않았습니다','error');return;}
   if(!_svLoaded.cl||!_svLoaded.pr){toast('거래처·프로젝트 로드가 끝난 뒤 다시 실행하세요','error');return;}
+  PAY_MIG_READY=false;
+  PAY_MIG_PLANS=[];
   openMd('pay-migration');
   const body=document.getElementById('pay-mig-body');
   const sum=document.getElementById('pay-mig-summary');
   const btn=document.getElementById('pay-mig-run');
-  if(body) body.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3)">명단을 읽어 잔여를 계산하는 중입니다. 저장하지 않습니다.</div>';
+  if(body) body.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3)">캐시에 있는 거래처·프로젝트로 계산하는 중입니다. 저장하지 않습니다.</div>';
   if(sum) sum.textContent='';
-  if(btn){btn.disabled=true;btn.textContent='이관 실행';}
+  if(btn){btn.disabled=true;btn.textContent='계산 중…';}
   try{
-    renderPayMigrationPreview(await buildPayMigrationPlans());
+    const plans=buildPayMigrationPlans();
+    PAY_MIG_READY=true;
+    renderPayMigrationPreview(plans);
   }catch(e){
+    PAY_MIG_READY=false;
     console.error(e);
-    if(body) body.innerHTML='<div style="padding:16px;color:#dc2626">집계 실패: '+escHtml(e&&e.message?e.message:String(e))+'</div>';
-    toast('미리보기 집계에 실패했습니다','error');
+    if(body) body.innerHTML='<div style="padding:16px;color:#dc2626">미리보기 실패: '+escHtml(e&&e.message?e.message:String(e))+'</div>';
+    if(btn) btn.disabled=true;
+    toast('미리보기 계산에 실패했습니다','error');
   }
 }
 async function runPayMigration(){
   if(!CUR_ADMIN||CUR_ADMIN.role!=='admin'){toast('관리자만 실행할 수 있습니다','error');return;}
-  if(PAY_MIG_RUNNING) return;
+  if(!PAY_MIG_READY||PAY_MIG_RUNNING) return;
   const targets=(PAY_MIG_PLANS||[]).filter(p=>p.include&&p.ops&&p.ops.length);
   if(!targets.length){toast('이관할 거래처가 없습니다','error');return;}
-  if(!confirm(targets.length+'곳의 결제 데이터를 이관합니다.\n확인 필요, 잔여 불일치, 이미 이관된 거래처는 저장하지 않습니다.')) return;
+  if(!confirm(targets.length+'곳의 결제 데이터를 이관합니다.\n확인 필요, 검증 불일치, 이미 이관된 거래처는 저장하지 않습니다.')) return;
   PAY_MIG_RUNNING=true;
   const btn=document.getElementById('pay-mig-run');
   if(btn) btn.disabled=true;
@@ -11183,7 +11168,7 @@ async function runPayMigration(){
       ok++;
     }
     toast(ok+'곳 이관을 저장했습니다');
-    renderPayMigrationPreview(await buildPayMigrationPlans(PAY_MIG_DONE));
+    renderPayMigrationPreview(buildPayMigrationPlans());
   }catch(e){
     console.error(e);
     toast('이관 실패 ('+ok+'곳 반영): '+(e&&e.message?e.message:e),'error');
@@ -19196,8 +19181,8 @@ installPerfProbes();
     </div>
     <div style="font-size:11px;color:var(--text3);margin-bottom:8px;line-height:1.6">
       추정 = 결제방식이 비어 있어 선계약 수량으로 정한 값. 확인 필요 = 선결제 기록 건수 합이 선계약보다 많아 자동 보정하지 않음.
-      잔여가 다르면 빨간색이며 실행에서 빠집니다. 건별결제는 화면 잔여가 없어(—) 이관 후 선결제 잔여가 0이면 정상입니다.
-      명단은 잔여 계산을 위해 미리보기에서 한 번 읽습니다.
+      선결제인데 이관 후 합계가 기존 선계약과 다르거나, 프로젝트 결제방식이 한 값으로 모이지 않으면 빨간색이며 실행에서 빠집니다.
+      미리보기는 이미 불러온 거래처·프로젝트만 사용합니다.
     </div>
     <div id="pay-mig-summary" style="font-size:12px;font-weight:700;margin-bottom:8px"></div>
     <div id="pay-mig-body" style="max-height:60vh;overflow:auto;border:1px solid var(--border);border-radius:8px"></div>
