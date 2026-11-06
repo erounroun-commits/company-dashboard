@@ -10940,6 +10940,126 @@ function payHistoryDocs(c, mode, route, iso, ymd){
 function payMigNumbersMatch(a, b){
   return Number.isFinite(Number(a))&&Number.isFinite(Number(b))&&Math.abs(Number(a)-Number(b))<1e-6;
 }
+function payExceptionYmd(s, fallback){
+  const raw=s==null?'':String(s).trim();
+  const md=raw.match(/^(\d{1,2})\/(\d{1,2})$/);
+  if(md){
+    const mo=Number(md[1]), day=Number(md[2]);
+    if(mo>=1&&mo<=12&&day>=1&&day<=31) return '2026-'+String(mo).padStart(2,'0')+'-'+String(day).padStart(2,'0');
+  }
+  return payNormYmd(raw, fallback);
+}
+function payMigExceptionKind(c){
+  const name=String(c&&c.name||'').trim();
+  if(name==='코즈모') return 'cosmo';
+  if(name==='주식회사 에스제이씨') return 'sjc';
+  return '';
+}
+function payMigExceptionNameError(){
+  const msgs=[];
+  ['코즈모','주식회사 에스제이씨'].forEach(name=>{
+    const n=(CLIENTS_CACHE||[]).filter(c=>c&&String(c.name||'').trim()===name).length;
+    if(n>1) msgs.push(name+' 동명 거래처가 '+n+'곳입니다. 이관을 중단했습니다.');
+    else if(n===0) msgs.push(name+' 거래처를 찾지 못했습니다. 이관을 중단했습니다.');
+  });
+  return msgs.join('\n');
+}
+function payExceptionRecords(c, kind, iso, ymd, roundUnit){
+  const out=[];
+  (Array.isArray(c.payments)?c.payments:[]).forEach((p,i)=>{
+    if(!p||typeof p!=='object') return;
+    const platform=String(p.platform||'').trim();
+    const requestDate=String(p.requestDate||'').trim();
+    const qtyN=Number.isFinite(Number(p.qty))?Number(p.qty):0;
+    const amountN=Number.isFinite(Number(p.amount))?Number(p.amount):0;
+    const memo=p.memo==null?'':String(p.memo);
+    if(!platform&&!requestDate&&!qtyN&&!amountN&&!String(memo).trim()) return;
+    out.push(Object.assign({
+      id:payMigDocId(c.id,'p_'+i+'_'+(p.id?String(p.id):'x')),
+      clientId:c.id,
+      kind, route:'크몽', routeMemo:'',
+      date:payExceptionYmd(requestDate, ymd),
+      qty:qtyN,
+      unitPrice:qtyN?(roundUnit?Math.round(amountN/qtyN):(amountN/qtyN)):0,
+      amount:amountN,
+      memo,
+    }, payAuditStamp(iso)));
+  });
+  return out;
+}
+function buildPayExceptionPlan(c, projs, now, base){
+  const iso=now.iso;
+  const ymd=now.ymd;
+  const kind=payMigExceptionKind(c);
+  const oldContract=base.contractQty;
+  const isCosmo=kind==='cosmo';
+  const copied=payExceptionRecords(c, isCosmo?'prepaid':'perItem', iso, ymd, isCosmo);
+  const qtySum=payQtySum(copied);
+  const clientPayMode=isCosmo?'prepaid':'perItem';
+  const payRoute=isCosmo?'크몽':inferPayRoute(c).payRoute;
+  const projPayMode=isCosmo?'prepaid':'separate';
+  const prepaidTotal=isCosmo?qtySum:0;
+  const writtenContract=isCosmo?qtySum:oldContract;
+  const projModes=(projs||[]).map(p=>(p&&p.id)?projPayMode:null);
+  const projOk=projModes.every(m=>m===projPayMode);
+  const totalOk=clientPayMode!=='prepaid'||payMigNumbersMatch(prepaidTotal, writtenContract);
+  let dataOk=true;
+  let dataMsg='';
+  if(isCosmo){
+    if(copied.length!==6){ dataOk=false; dataMsg='결제 '+copied.length+'건'; }
+    else if(!payMigNumbersMatch(qtySum, 201)){ dataOk=false; dataMsg='합계 '+qtySum; }
+  }else if(copied.length!==1){
+    dataOk=false;
+    dataMsg='결제 '+copied.length+'건';
+  }
+  const mismatch=!totalOk||!projOk||!dataOk;
+  const modeMemo=isCosmo
+    ?'이관: 크몽 결제 기록 기준으로 선계약 121 → 201 조정'
+    :'이관: 현재 건별결제. 기존 선계약 70건 기록 있음';
+  const plan=Object.assign(base,{
+    exception:true,
+    estimated:false,
+    needCheck:false,
+    mismatch,
+    include:!mismatch,
+    payMode:clientPayMode,
+    payRoute,
+    kmongCount:copied.length,
+    adjustQty:0,
+    adjustLabel:'없음',
+    prepaidAfter:prepaidTotal,
+    status:mismatch?('예외 처리 · '+(dataMsg||'검증 불일치')):'예외 처리',
+  });
+  if(!plan.include) return plan;
+  const histories=payHistoryDocs(c, {payMode:clientPayMode}, {payRoute}, iso, ymd);
+  const modeDoc=histories.find(h=>h.type==='mode');
+  if(modeDoc) modeDoc.memo=modeMemo;
+  const group=String(c.id);
+  const ops=[];
+  copied.forEach(rec=>ops.push({key:'pay', id:rec.id, data:rec, group}));
+  histories.forEach(h=>ops.push({key:'payh', id:h.id, data:h, group}));
+  projs.forEach(p=>{
+    if(!p||!p.id) return;
+    ops.push({key:'pr', id:p.id, data:Object.assign({}, p, {payMode:projPayMode}), group});
+  });
+  const clientPatch={
+    payRoute,
+    payRouteMemo:'',
+    payMode:clientPayMode,
+    payModeMemo:'',
+    prepaidTotal,
+    payMigratedAt:iso,
+  };
+  if(isCosmo){
+    clientPatch.contractTotal=qtySum;
+    clientPatch.contractType='숫자입력';
+  }else{
+    clientPatch.contractType='건별결제';
+  }
+  ops.push({key:'cl', id:c.id, data:Object.assign({}, c, clientPatch), group});
+  plan.ops=ops;
+  return plan;
+}
 function buildPayMigrationPlan(c, projs, now){
   const iso=now.iso;
   const ymd=now.ymd;
@@ -10952,7 +11072,7 @@ function buildPayMigrationPlan(c, projs, now){
     clientId:c.id, name:c.name||'(이름 없음)',
     oldMode, payMode:mode.payMode, oldRoute, payRoute:route.payRoute,
     estimated:mode.estimated, already:false, needCheck:false, mismatch:false, include:false,
-    kmongCount:0, adjustQty:0, adjustLabel:'0',
+    kmongCount:0, adjustQty:0, adjustLabel:'0', exception:false,
     contractQty:contractTotal, prepaidAfter:null, status:'정상', ops:[],
   };
   if(c.payMigratedAt){
@@ -10966,6 +11086,7 @@ function buildPayMigrationPlan(c, projs, now){
       status:'이미 이관',
     });
   }
+  if(payMigExceptionKind(c)) return buildPayExceptionPlan(c, projs, now, base);
   const kind=mode.payMode==='prepaid'?'prepaid':'perItem';
   const copied=payCopiedRecords(c, kind, iso, ymd);
   const S=kind==='prepaid'?payQtySum(copied):0;
@@ -11039,12 +11160,15 @@ let PAY_MIG_RUNNING=false;
 function payMigRank(p){
   if(p.mismatch) return 0;
   if(p.needCheck) return 1;
-  if(p.include&&p.estimated) return 2;
-  if(p.include) return 3;
-  if(p.already) return 5;
-  return 4;
+  if(p.include&&p.exception) return 2;
+  if(p.include&&p.estimated) return 3;
+  if(p.include) return 4;
+  if(p.already) return 6;
+  return 5;
 }
 function buildPayMigrationPlans(){
+  const nameErr=payMigExceptionNameError();
+  if(nameErr) throw new Error(nameErr);
   fsBegin('결제 이관 미리보기');
   let reads=0;
   let plans=[];
@@ -11082,12 +11206,14 @@ function renderPayMigrationPreview(plans){
   const list=plans||[];
   const inc=list.filter(p=>p.include).length;
   const est=list.filter(p=>p.include&&p.estimated).length;
+  const exn=list.filter(p=>p.include&&p.exception).length;
   const chk=list.filter(p=>p.needCheck).length;
   const bad=list.filter(p=>p.mismatch).length;
   const doneN=list.filter(p=>p.already).length;
   if(sum){
     const readNote=PAY_MIG_READS===0?'Firestore 추가 읽기 0건':'Firestore 추가 읽기 '+PAY_MIG_READS+'건';
     sum.innerHTML='실행 대상 <b>'+inc+'</b>곳'
+      +(exn?' (예외 처리 '+exn+')':'')
       +(est?' (그중 추정 '+est+')':'')
       +' · 확인 필요 '+chk
       +' · 검증 불일치 '+bad
@@ -11113,7 +11239,7 @@ function renderPayMigrationPreview(plans){
     const red=!!p.mismatch;
     const rc=red?'color:#dc2626;font-weight:800;':'';
     const modeLabel=p.payMode==='prepaid'?'선결제(prepaid)':(p.payMode==='perItem'?'건별결제(perItem)':(p.payMode==='etc'?'기타(etc)':String(p.payMode||'')));
-    const statusColor=red||p.needCheck?'color:#dc2626;font-weight:800;':(p.estimated?'color:#b45309;font-weight:700;':'');
+    const statusColor=red||p.needCheck?'color:#dc2626;font-weight:800;':(p.exception?'color:#1d4ed8;font-weight:800;':(p.estimated?'color:#b45309;font-weight:700;':''));
     html+='<tr>'
       +'<td style="padding:6px 8px;border-bottom:1px solid var(--border)">'+escHtml(p.name)+'</td>'
       +'<td style="padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap">'+escHtml(p.oldMode)+' → '+escHtml(modeLabel)+'</td>'
@@ -19181,7 +19307,8 @@ installPerfProbes();
     </div>
     <div style="font-size:11px;color:var(--text3);margin-bottom:8px;line-height:1.6">
       추정 = 결제방식이 비어 있어 선계약 수량으로 정한 값. 확인 필요 = 선결제 기록 건수 합이 선계약보다 많아 자동 보정하지 않음.
-      선결제인데 이관 후 합계가 기존 선계약과 다르거나, 프로젝트 결제방식이 한 값으로 모이지 않으면 빨간색이며 실행에서 빠집니다.
+      선결제인데 이관 후 합계가 저장할 선계약과 다르거나, 프로젝트 결제방식이 한 값으로 모이지 않으면 빨간색이며 실행에서 빠집니다.
+      코즈모, 주식회사 에스제이씨는 예외 처리로 실행 대상에 포함됩니다. 같은 이름이 둘 이상이면 미리보기를 중단합니다.
       미리보기는 이미 불러온 거래처·프로젝트만 사용합니다.
     </div>
     <div id="pay-mig-summary" style="font-size:12px;font-weight:700;margin-bottom:8px"></div>
