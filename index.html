@@ -1060,7 +1060,6 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
         <div style="display:flex;gap:8px;align-items:center">
           <button class="btn btn-sm btn-gray" onclick="refreshAllData()" title="최신 데이터로 새로고침">🔄 새로고침</button>
           <button class="btn btn-blue btn-sm" onclick="openMd('settle-import')">📥 과거 정산 업로드</button>
-          <button class="btn btn-green btn-sm" onclick="exportSettleExcel()">📥 엑셀 다운로드</button>
         </div>
       </div>
       <div id="settle-all-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px"></div>
@@ -1109,6 +1108,13 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
             <option value="n">N (미발행)</option>
           </select>
           <button class="btn btn-sm btn-blue" id="settle-bulk-tax-btn" onclick="bulkSetTaxIssued()" disabled style="margin-left:8px">선택 항목 세금계산서 발행 Y로 변경</button>
+        </div>
+        <div style="display:flex;justify-content:flex-end;align-items:center;gap:6px;margin:-4px 0 12px">
+          <select id="settle-excel-scope" title="엑셀에 넣을 범위" style="background:var(--bg2);border:1px solid var(--border);padding:5px 8px;border-radius:6px;font-size:12px;font-family:var(--font)">
+            <option value="filtered">현재 필터 결과</option>
+            <option value="all">전체</option>
+          </select>
+          <button type="button" class="btn btn-green btn-sm" onclick="exportSettleExcel()">📥 엑셀 다운로드</button>
         </div>
         <div class="tw" id="settle-all-table"></div>
       </div>
@@ -7673,43 +7679,14 @@ function renderSettleAll(){
   }
   const paintToken=++_settlePaintToken;
   const settles=_settleJoinCache.rows;
-  const search=(document.getElementById('settle-search')?.value||'').toLowerCase();
-  const filter=document.getElementById('settle-filter')?.value||'';
-  const dateFrom=(document.getElementById('settle-filter-date-from')?.value||'').trim();
-  const dateTo=(document.getElementById('settle-filter-date-to')?.value||'').trim();
-  const amtFilter=document.getElementById('settle-filter-amt')?.value||'';
-  const taxFilter=document.getElementById('settle-filter-tax')?.value||'';
-  const taxIssuedFilter=document.getElementById('settle-filter-taxissued')?.value||'';
-  const supplierFilter=document.getElementById('settle-supplier-key')?.value||'';
-  const filterKey=[search,filter,dateFrom,dateTo,amtFilter,taxFilter,taxIssuedFilter,supplierFilter].join('\u0001');
+  const settleFilter=readSettleAllFilter();
+  const filterKey=settleAllFilterKey(settleFilter);
   if(filterKey!==_settleFilterKey){
     _settleFilterKey=filterKey;
     _settlePage=1;
   }
 
-  const filtered=[...settles.filter(s=>{
-    const cname=(s._clientName||'').toLowerCase();
-    if(search&&!cname.includes(search)&&!(s.toName||'').toLowerCase().includes(search))return false;
-    if(filter==='대기'&&s.settled)return false;
-    if(filter==='완료'&&!s.settled)return false;
-    const settleDate=String(s.date||'').slice(0,10);
-    const outside=(dateFrom && settleDate.localeCompare(dateFrom)<0) || (dateTo && settleDate.localeCompare(dateTo)>0);
-    if(outside && s.settled) return false;
-    s._carry=!s.settled && !!dateFrom && /^\d{4}-\d{2}-\d{2}$/.test(settleDate) && settleDate<dateFrom;
-    if(amtFilter){
-      const t=Number(s.total)||0;
-      if(amtFilter==='0'&&t!==0)return false;
-      if(amtFilter==='1-10'&&(t<10000||t>100000))return false;
-      if(amtFilter==='10-50'&&(t<100000||t>500000))return false;
-      if(amtFilter==='50-999'&&t<500000)return false;
-    }
-    if(taxFilter==='y'&&!s.taxYn)return false;
-    if(taxFilter==='n'&&s.taxYn)return false;
-    if(taxIssuedFilter==='y'){ if(!s.taxYn||!s.taxIssued)return false; }
-    if(taxIssuedFilter==='n'){ if(s.taxYn&&s.taxIssued)return false; }
-    if(supplierFilter && (s._supplierKey||'')!==supplierFilter) return false;
-    return true;
-  })];
+  const filtered=settles.filter(s=>rowPassesSettleAllFilter(s, settleFilter));
   filtered.sort(compareSettleAllRows);
   const pageCount=Math.max(1, Math.ceil(filtered.length/SETTLE_PAGE_SIZE)||1);
   if(_settlePage>pageCount) _settlePage=pageCount;
@@ -7723,16 +7700,12 @@ function renderSettleAll(){
     if(paintToken!==_settlePaintToken) return;
     const el=document.getElementById('settle-all-stats');
     if(!el) return;
-    const totalAmt=filtered.reduce((s,x)=>s+(Number(x.total)||0),0);
-    const settledRows=filtered.filter(x=>x.settled);
-    const settledAmt=settledRows.reduce((s,x)=>s+(Number(x.total)||0),0);
-    const pendingAmt=totalAmt-settledAmt;
-    const pendingCount=filtered.filter(x=>!x.settled).length;
+    const totals=settleAllTotals(filtered);
     el.innerHTML=`
-      ${sCard('전체 견적 건수','var(--accent)',filtered.length+'건',carryCount?('이월 미정산 '+carryCount+'건 포함'):'')}
-      ${sCard('총 견적 금액','#0891b2',fmtN(totalAmt)+'원','')}
-      ${sCard('정산 완료','var(--green)',fmtN(settledAmt)+'원',settledRows.length+'건')}
-      ${sCard('미정산','var(--red)',fmtN(pendingAmt)+'원',pendingCount+'건'+(carryCount?(' · 이월 '+carryCount+'건 포함'):''))}`;
+      ${sCard('전체 견적 건수','var(--accent)',totals.count+'건',carryCount?('이월 미정산 '+carryCount+'건 포함'):'')}
+      ${sCard('총 견적 금액','#0891b2',fmtN(totals.totalAmt)+'원','')}
+      ${sCard('정산 완료','var(--green)',fmtN(totals.settledAmt)+'원',totals.settledCount+'건')}
+      ${sCard('미정산','var(--red)',fmtN(totals.pendingAmt)+'원',totals.pendingCount+'건'+(carryCount?(' · 이월 '+carryCount+'건 포함'):''))}`;
     perfSettleDone('화면 '+pageRows.length+'/'+filtered.length+'행 · 이월 '+carryCount+' · 합계');
   }, 0);
 
@@ -9846,26 +9819,374 @@ function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').
 
 
 
-function exportSettleExcel(){
-  const settles=[...stLd()];
-  const d=ld();
-  const clientMap={};
-  d.clients.forEach(cl=>{clientMap[cl.id]=cl.name;});
-  const rows=[['#','견적일자','거래처명','수신처','견적번호','항목요약','합계금액','세금계산서','정산상태','등록일시']];
-  settles.sort((a,b)=>b.date.localeCompare(a.date)).forEach((s,i)=>{
-    rows.push([
-      i+1, s.date, clientMap[s.clientId]||'', s.toName||'', s.no||'',
-      s.itemSummary||'', s.total, s.taxYn?'발행':'미발행', s.settled?'정산완료':'대기중',
-      s.createdAt?s.createdAt.slice(0,16).replace('T',' '):'',
+function readSettleAllFilter(){
+  return {
+    search:(document.getElementById('settle-search')?.value||'').toLowerCase(),
+    status:document.getElementById('settle-filter')?.value||'',
+    dateFrom:(document.getElementById('settle-filter-date-from')?.value||'').trim(),
+    dateTo:(document.getElementById('settle-filter-date-to')?.value||'').trim(),
+    amt:document.getElementById('settle-filter-amt')?.value||'',
+    tax:document.getElementById('settle-filter-tax')?.value||'',
+    taxIssued:document.getElementById('settle-filter-taxissued')?.value||'',
+    supplier:document.getElementById('settle-supplier-key')?.value||''
+  };
+}
+function settleAllFilterKey(f){
+  return [f.search,f.status,f.dateFrom,f.dateTo,f.amt,f.tax,f.taxIssued,f.supplier].join('\u0001');
+}
+function settleAllFilterActive(f){
+  return !!(f&&(f.search||f.status||f.dateFrom||f.dateTo||f.amt||f.tax||f.taxIssued||f.supplier));
+}
+function rowPassesSettleAllFilter(s, f){
+  const cname=(s._clientName||'').toLowerCase();
+  if(f.search&&!cname.includes(f.search)&&!(s.toName||'').toLowerCase().includes(f.search))return false;
+  if(f.status==='대기'&&s.settled)return false;
+  if(f.status==='완료'&&!s.settled)return false;
+  const settleDate=String(s.date||'').slice(0,10);
+  const outside=(f.dateFrom && settleDate.localeCompare(f.dateFrom)<0) || (f.dateTo && settleDate.localeCompare(f.dateTo)>0);
+  if(outside && s.settled) return false;
+  s._carry=!s.settled && !!f.dateFrom && /^\d{4}-\d{2}-\d{2}$/.test(settleDate) && settleDate<f.dateFrom;
+  if(f.amt){
+    const t=Number(s.total)||0;
+    if(f.amt==='0'&&t!==0)return false;
+    if(f.amt==='1-10'&&(t<10000||t>100000))return false;
+    if(f.amt==='10-50'&&(t<100000||t>500000))return false;
+    if(f.amt==='50-999'&&t<500000)return false;
+  }
+  if(f.tax==='y'&&!s.taxYn)return false;
+  if(f.tax==='n'&&s.taxYn)return false;
+  if(f.taxIssued==='y'){ if(!s.taxYn||!s.taxIssued)return false; }
+  if(f.taxIssued==='n'){ if(s.taxYn&&s.taxIssued)return false; }
+  if(f.supplier && (s._supplierKey||'')!==f.supplier) return false;
+  return true;
+}
+function settleAllTotals(rows){
+  let totalAmt=0, settledAmt=0, settledCount=0, pendingCount=0;
+  (rows||[]).forEach(x=>{
+    const t=Number(x.total)||0;
+    totalAmt+=t;
+    if(x.settled){ settledAmt+=t; settledCount++; }
+    else pendingCount++;
+  });
+  return {count:(rows||[]).length, totalAmt, settledAmt, pendingAmt:totalAmt-settledAmt, settledCount, pendingCount};
+}
+function settleAllSourceRows(){
+  if(!_settleJoinDirty && _settleJoinCache && Array.isArray(_settleJoinCache.rows)) return _settleJoinCache.rows;
+  return listSettleRowsForView();
+}
+function settleExcelYmd(v){
+  const s=normalizeYMD(v);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const ms=settleQuoteDateMs(v);
+  if(ms==null) return '';
+  const dt=new Date(ms);
+  return dt.getUTCFullYear()+'-'+String(dt.getUTCMonth()+1).padStart(2,'0')+'-'+String(dt.getUTCDate()).padStart(2,'0');
+}
+function settleExcelStatus(s, useCarry){
+  const parts=[s.settled?'정산완료':'대기중'];
+  if(s._linkMismatch) parts.push('연동 불일치');
+  if(useCarry && s._carry) parts.push('이월 미정산');
+  return parts.join(' · ');
+}
+function settleExcelDisplayWidth(v){
+  if(v==null || v==='') return 0;
+  const s=typeof v==='number' ? Math.round(v).toLocaleString('en-US') : String(v);
+  let w=0;
+  for(let i=0;i<s.length;i++) w+=s.charCodeAt(i)>255?2:1;
+  return w;
+}
+function settleExcelColWidths(aoa){
+  const cols=[];
+  aoa.forEach(row=>{
+    row.forEach((cell,i)=>{
+      const w=settleExcelDisplayWidth(cell);
+      if(!cols[i] || w>cols[i]) cols[i]=w;
+    });
+  });
+  return cols.map(w=>({wch:Math.min(42, Math.max(8, (w||8)+2))}));
+}
+function settleExcelSheet(aoa, amountCols){
+  const ws=XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols']=settleExcelColWidths(aoa);
+  const freeze={state:'frozen', xSplit:0, ySplit:1, topLeftCell:'A2', activePane:'bottomLeft'};
+  ws['!views']=[freeze];
+  ws['!freeze']=freeze;
+  if(ws['!ref'] && amountCols && amountCols.length){
+    const range=XLSX.utils.decode_range(ws['!ref']);
+    amountCols.forEach(c=>{
+      for(let r=1; r<=range.e.r; r++){
+        const cell=ws[XLSX.utils.encode_cell({r,c})];
+        if(cell && typeof cell.v==='number'){ cell.t='n'; cell.z='#,##0'; }
+      }
+    });
+  }
+  return ws;
+}
+function settleSummarySheetRows(rows){
+  const groups=new Map();
+  rows.forEach(s=>{
+    const key=s.clientId||('name:'+(s._clientName||'—'));
+    let g=groups.get(key);
+    if(!g){
+      g={name:s._clientName||'—', count:0, totalAmt:0, settledAmt:0, settledCount:0, pendingAmt:0, pendingCount:0, lastQuote:'', lastQuoteMs:null, lastDeposit:'', lastDepositMs:null};
+      groups.set(key, g);
+    }
+    const t=Number(s.total)||0;
+    g.count++;
+    g.totalAmt+=t;
+    if(s.settled){ g.settledAmt+=t; g.settledCount++; }
+    else { g.pendingAmt+=t; g.pendingCount++; }
+    const qms=settleQuoteDateMs(s.date);
+    if(qms!=null && (g.lastQuoteMs==null || qms>g.lastQuoteMs)){
+      g.lastQuoteMs=qms;
+      g.lastQuote=settleExcelYmd(s.date);
+    }
+    if(s.depositDate||s.depositor){
+      const dms=settleQuoteDateMs(s.depositDate);
+      if(dms!=null && (g.lastDepositMs==null || dms>g.lastDepositMs)){
+        g.lastDepositMs=dms;
+        g.lastDeposit=settleExcelYmd(s.depositDate);
+      }
+    }
+  });
+  const list=[...groups.values()].sort((a,b)=>String(a.name).localeCompare(String(b.name),'ko'));
+  const header=['거래처명','견적 건수','총 견적 금액','정산 완료 금액','정산 완료 건수','미정산 금액','미정산 건수','최근 견적일','최근 입금일'];
+  const aoa=[header];
+  list.forEach(g=>{
+    aoa.push([g.name, g.count, g.totalAmt, g.settledAmt, g.settledCount, g.pendingAmt, g.pendingCount, g.lastQuote, g.lastDeposit]);
+  });
+  const totals=settleAllTotals(rows);
+  aoa.push(['합계', totals.count, totals.totalAmt, totals.settledAmt, totals.settledCount, totals.pendingAmt, totals.pendingCount, '', '']);
+  return aoa;
+}
+function settleDetailSheetRows(rows, useCarry){
+  const header=['견적일자','거래처','수신처','견적번호','사업자등록번호','합계금액','세금계산서','발행여부','발행 메모','입금일','입금자','입금액','정산상태'];
+  const aoa=[header];
+  rows.forEach(s=>{
+    const hasDep=!!(s.depositDate||s.depositor);
+    const depAmt=hasDep && s.depositAmt ? (Number(s.depositAmt)||0) : '';
+    aoa.push([
+      settleExcelYmd(s.date),
+      s._clientName||'—',
+      s.toName||'—',
+      s.no||'—',
+      s._bizNo||'—',
+      Number(s.total)||0,
+      s.taxYn?'발행':'미발행',
+      s.taxYn?(s.taxIssued?'Y':'N'):'—',
+      s.taxYn?(s.taxMemo||''):'-',
+      hasDep?settleExcelYmd(s.depositDate):'',
+      hasDep?(s.depositor||'—'):'—',
+      depAmt,
+      settleExcelStatus(s, useCarry)
     ]);
   });
-  const wb=XLSX.utils.book_new();
-  const ws=XLSX.utils.aoa_to_sheet(rows);
-  // 열 너비
-  ws['!cols']=[{wch:4},{wch:12},{wch:16},{wch:16},{wch:18},{wch:36},{wch:14},{wch:10},{wch:10},{wch:18}];
-  XLSX.utils.book_append_sheet(wb,ws,'거래처정산');
-  XLSX.writeFile(wb,`WAVE_거래처정산_${new Date().toISOString().slice(0,10)}.xlsx`);
-  toast('엑셀 다운로드 완료');
+  return aoa;
+}
+function settleU16(b,o){ return b[o]|(b[o+1]<<8); }
+function settleU32(b,o){ return (b[o]|(b[o+1]<<8)|(b[o+2]<<16)|(b[o+3]<<24))>>>0; }
+function settlePutU16(b,o,v){ b[o]=v&255; b[o+1]=(v>>>8)&255; }
+function settlePutU32(b,o,v){ b[o]=v&255; b[o+1]=(v>>>8)&255; b[o+2]=(v>>>16)&255; b[o+3]=(v>>>24)&255; }
+function settleCrc32(u8){
+  let c=~0;
+  for(let i=0;i<u8.length;i++){
+    c^=u8[i];
+    for(let k=0;k<8;k++) c=(c>>>1)^(0xEDB88320&-(c&1));
+  }
+  return (~c)>>>0;
+}
+function settleReadStoredZip(u8){
+  const entries=[];
+  let o=0;
+  while(o+30<=u8.length){
+    const sig=settleU32(u8,o);
+    if(sig===0x02014b50||sig===0x06054b50) break;
+    if(sig!==0x04034b50) throw new Error('zip 형식 아님');
+    const flags=settleU16(u8,o+6);
+    const method=settleU16(u8,o+8);
+    if(flags&8) throw new Error('zip data descriptor');
+    if(method!==0) throw new Error('zip deflate');
+    const size=settleU32(u8,o+18);
+    const nameLen=settleU16(u8,o+26);
+    const extraLen=settleU16(u8,o+28);
+    const name=new TextDecoder().decode(u8.subarray(o+30,o+30+nameLen));
+    const start=o+30+nameLen+extraLen;
+    entries.push({name, data:u8.slice(start, start+size)});
+    o=start+size;
+  }
+  if(!entries.length) throw new Error('zip 항목 없음');
+  return entries;
+}
+function settleWriteStoredZip(entries){
+  const parts=[];
+  const central=[];
+  let offset=0;
+  entries.forEach(e=>{
+    const nameBytes=new TextEncoder().encode(e.name);
+    const data=e.data;
+    const crc=settleCrc32(data);
+    const local=new Uint8Array(30+nameBytes.length);
+    settlePutU32(local,0,0x04034b50);
+    settlePutU16(local,4,20);
+    settlePutU32(local,14,crc);
+    settlePutU32(local,18,data.length);
+    settlePutU32(local,22,data.length);
+    settlePutU16(local,26,nameBytes.length);
+    local.set(nameBytes,30);
+    const cen=new Uint8Array(46+nameBytes.length);
+    settlePutU32(cen,0,0x02014b50);
+    settlePutU16(cen,4,20);
+    settlePutU16(cen,6,20);
+    settlePutU32(cen,16,crc);
+    settlePutU32(cen,20,data.length);
+    settlePutU32(cen,24,data.length);
+    settlePutU16(cen,28,nameBytes.length);
+    settlePutU32(cen,42,offset);
+    cen.set(nameBytes,46);
+    parts.push(local, data);
+    central.push(cen);
+    offset+=local.length+data.length;
+  });
+  const centralSize=central.reduce((s,c)=>s+c.length,0);
+  const end=new Uint8Array(22);
+  settlePutU32(end,0,0x06054b50);
+  settlePutU16(end,8,entries.length);
+  settlePutU16(end,10,entries.length);
+  settlePutU32(end,12,centralSize);
+  settlePutU32(end,16,offset);
+  const chunks=parts.concat(central,[end]);
+  const out=new Uint8Array(chunks.reduce((s,c)=>s+c.length,0));
+  let p=0;
+  chunks.forEach(c=>{ out.set(c,p); p+=c.length; });
+  return out;
+}
+function settleSetCellStyle(tag, style){
+  if(/\ss="\d+"/.test(tag)) return tag.replace(/\ss="\d+"/, ' s="'+style+'"');
+  return tag.replace(/<c\b/, '<c s="'+style+'"');
+}
+function settlePatchStylesXml(xml){
+  const fontCount=Number((xml.match(/<fonts count="(\d+)">/)||[])[1]||0);
+  const fillCount=Number((xml.match(/<fills count="(\d+)">/)||[])[1]||0);
+  const xfCount=Number((xml.match(/<cellXfs count="(\d+)">/)||[])[1]||0);
+  if(!fontCount||!fillCount||!xfCount) throw new Error('styles');
+  const xfBody=(xml.match(/<cellXfs count="\d+">([\s\S]*?)<\/cellXfs>/)||[])[1]||'';
+  const num=(xfBody.match(/<xf\b[^>]*\/>/g)||[]).findIndex(t=>/numFmtId="3"/.test(t));
+  xml=xml.replace(/<fonts count="\d+">/, '<fonts count="'+(fontCount+1)+'">');
+  xml=xml.replace('</fonts>', '<font><b/><sz val="12"/><color theme="1"/><name val="Calibri"/><family val="2"/><scheme val="minor"/></font></fonts>');
+  xml=xml.replace(/<fills count="\d+">/, '<fills count="'+(fillCount+1)+'">');
+  xml=xml.replace('</fills>', '<fill><patternFill patternType="solid"><fgColor rgb="FFFEE2E2"/><bgColor indexed="64"/></patternFill></fill></fills>');
+  const add=[
+    '<xf numFmtId="0" fontId="'+fontCount+'" fillId="0" borderId="0" xfId="0" applyFont="1"/>',
+    '<xf numFmtId="0" fontId="0" fillId="'+fillCount+'" borderId="0" xfId="0" applyFill="1"/>',
+    '<xf numFmtId="3" fontId="0" fillId="'+fillCount+'" borderId="0" xfId="0" applyNumberFormat="1" applyFill="1"/>'
+  ].join('');
+  xml=xml.replace(/<cellXfs count="\d+">/, '<cellXfs count="'+(xfCount+3)+'">');
+  xml=xml.replace('</cellXfs>', add+'</cellXfs>');
+  return {xml, bold:xfCount, red:xfCount+1, redNum:xfCount+2, num};
+}
+function settleCellValue(inner, col, row){
+  const m=inner.match(new RegExp('<c r="'+col+row+'"[^>]*>\\s*<v>([^<]*)</v>'));
+  return m?m[1]:'';
+}
+function settleDecorateSheetXml(xml, styles){
+  xml=xml.replace(/<sheetViews>\s*<sheetView\b([^>/]*)\/>\s*<\/sheetViews>/,
+    '<sheetViews><sheetView$1><pane xSplit="0" ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A2" sqref="A2"/></sheetView></sheetViews>');
+  const headerF=settleCellValue(xml, 'F', 1);
+  const summary=headerF.indexOf('미정산')>=0;
+  xml=xml.replace(/<row r="1"([^>]*)>([\s\S]*?)<\/row>/, function(_full, attrs, inner){
+    return '<row r="1"'+attrs+'>'+inner.replace(/<c\b[^>]*>/g, tag=>settleSetCellStyle(tag, styles.bold))+'</row>';
+  });
+  xml=xml.replace(/<row r="(\d+)"([^>]*)>([\s\S]*?)<\/row>/g, function(full, r, attrs, inner){
+    const n=Number(r);
+    if(n===1) return full;
+    const amt=Number(settleCellValue(inner, 'F', n));
+    let red=false;
+    if(summary) red=amt>0;
+    else {
+      const status=settleCellValue(inner, 'M', n);
+      red=amt>0 && status.indexOf('대기중')===0;
+    }
+    if(!red) return full;
+    const next=inner.replace(/<c\b[^>]*>/g, tag=>{
+      const isNum=styles.num>=0 && new RegExp('\\ss="'+styles.num+'"').test(tag);
+      return settleSetCellStyle(tag, isNum?styles.redNum:styles.red);
+    });
+    return '<row r="'+r+'"'+attrs+'>'+next+'</row>';
+  });
+  return xml;
+}
+function settlePatchXlsx(u8){
+  const entries=settleReadStoredZip(u8);
+  let styles=null;
+  entries.forEach(e=>{
+    if(e.name!=='xl/styles.xml') return;
+    const decoded=new TextDecoder().decode(e.data);
+    styles=settlePatchStylesXml(decoded);
+    e.data=new TextEncoder().encode(styles.xml);
+  });
+  if(!styles) throw new Error('styles 없음');
+  entries.forEach(e=>{
+    if(!/^xl\/worksheets\/sheet\d+\.xml$/.test(e.name)) return;
+    const xml=new TextDecoder().decode(e.data);
+    e.data=new TextEncoder().encode(settleDecorateSheetXml(xml, styles));
+  });
+  return settleWriteStoredZip(entries);
+}
+function settleDownloadBytes(bytes, fileName){
+  const blob=new Blob([bytes], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1500);
+}
+function settleExcelSave(wb, fileName){
+  try{
+    const raw=XLSX.write(wb, {bookType:'xlsx', type:'array', compression:false});
+    settleDownloadBytes(settlePatchXlsx(new Uint8Array(raw)), fileName);
+  }catch(e){
+    console.warn('엑셀 서식 보정 생략', e);
+    XLSX.writeFile(wb, fileName);
+  }
+}
+function exportSettleExcel(){
+  try{
+    if(document.body.classList.contains('client-view-link')) return;
+    const app=document.getElementById('app');
+    if(!app || app.classList.contains('hidden')) return;
+    if(!CUR_ADMIN){ alert('로그인이 필요합니다'); return; }
+    if(typeof XLSX==='undefined'){ toast('XLSX 라이브러리 로딩 중...','error'); return; }
+    if(!_svLoaded.st || !_svLoaded.qt){
+      alert('정산 데이터를 불러오는 중입니다. 잠시 후 다시 시도하세요');
+      return;
+    }
+    const scope=document.getElementById('settle-excel-scope')?.value||'filtered';
+    const useFilter=scope!=='all';
+    const filter=readSettleAllFilter();
+    let rows=settleAllSourceRows();
+    if(useFilter) rows=rows.filter(s=>rowPassesSettleAllFilter(s, filter));
+    else rows=rows.slice();
+    rows.sort(compareSettleAllRows);
+    if(!rows.length){
+      alert('추출할 데이터가 없습니다');
+      return;
+    }
+    const summary=settleSummarySheetRows(rows);
+    const detail=settleDetailSheetRows(rows, useFilter);
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, settleExcelSheet(summary, [2,3,5]), '정산요약');
+    XLSX.utils.book_append_sheet(wb, settleExcelSheet(detail, [5,11]), '견적내역');
+    const day=String(getKSTDate()||'').replace(/-/g,'');
+    const narrowed=useFilter && settleAllFilterActive(filter);
+    const fileName='웨이프로젝트_거래처정산_'+day+(narrowed?'_필터적용':'')+'.xlsx';
+    settleExcelSave(wb, fileName);
+    toast('엑셀 다운로드 완료');
+  }catch(e){
+    console.error(e);
+    toast('엑셀 다운로드 실패: '+(e&&e.message?e.message:e),'error');
+  }
 }
 
 function sCard(label,color,val,sub){
