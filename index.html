@@ -7517,6 +7517,115 @@ function settleStatsPlaceholder(){
     +sCard('정산 완료','var(--green)','…','집계 중')
     +sCard('미정산','var(--red)','…','집계 중');
 }
+// 견적일자(date) 비교용. 문자열 비교 없이 달력 날짜의 UTC 자정(ms)으로 맞춘다. 실패 시 null.
+function settleQuoteDateMs(input){
+  if(input==null || input==='') return null;
+  function dayMs(y,m,d){
+    y=+y; m=+m; d=+d;
+    if(!y || m<1 || m>12 || d<1 || d>31) return null;
+    const ms=Date.UTC(y, m-1, d);
+    const dt=new Date(ms);
+    if(dt.getUTCFullYear()!==y || dt.getUTCMonth()!==m-1 || dt.getUTCDate()!==d) return null;
+    return ms;
+  }
+  function fromInstant(ms){
+    if(ms==null || !isFinite(ms)) return null;
+    const dt=new Date(ms);
+    let y,m,d;
+    try{
+      const s=dt.toLocaleDateString('sv-SE',{timeZone:'Asia/Seoul'});
+      const hit=/^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+      if(!hit) return null;
+      y=+hit[1]; m=+hit[2]; d=+hit[3];
+    }catch(_){
+      y=dt.getFullYear(); m=dt.getMonth()+1; d=dt.getDate();
+    }
+    return dayMs(y,m,d);
+  }
+  if(typeof input==='number'){
+    if(!isFinite(input)) return null;
+    if(input>1e12) return fromInstant(input);
+    if(input>1e9 && input<1e12) return fromInstant(input*1000);
+    return null;
+  }
+  if(typeof input==='object'){
+    if(input instanceof Date) return fromInstant(input.getTime());
+    if(typeof input.toDate==='function'){
+      try{
+        const dt=input.toDate();
+        if(dt instanceof Date) return fromInstant(dt.getTime());
+      }catch(_){}
+    }
+    const sec=typeof input.seconds==='number' ? input.seconds : (typeof input._seconds==='number' ? input._seconds : null);
+    if(sec!=null){
+      const nano=typeof input.nanoseconds==='number' ? input.nanoseconds : (typeof input._nanoseconds==='number' ? input._nanoseconds : 0);
+      return fromInstant(sec*1000+Math.floor(nano/1e6));
+    }
+    return null;
+  }
+  const s=String(input).trim();
+  if(!s) return null;
+  let hit=s.match(/^(\d{4})\s*[.\-\/]\s*(\d{1,2})\s*[.\-\/]\s*(\d{1,2})/);
+  if(hit) return dayMs(hit[1], hit[2], hit[3]);
+  hit=s.match(/^(\d{2})\s*[.\-\/]\s*(\d{1,2})\s*[.\-\/]\s*(\d{1,2})(?:\D|$)/);
+  if(hit){
+    const yy=+hit[1];
+    return dayMs(yy>=50 ? 1900+yy : 2000+yy, hit[2], hit[3]);
+  }
+  hit=s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if(hit) return dayMs(hit[1], hit[2], hit[3]);
+  return null;
+}
+function settleCreatedMs(row){
+  if(!row || typeof row!=='object') return null;
+  const keys=['createdAt','created_at','regDate','registeredAt'];
+  for(let i=0;i<keys.length;i++){
+    const v=row[keys[i]];
+    if(v==null || v==='') continue;
+    if(v instanceof Date) return isNaN(v.getTime()) ? null : v.getTime();
+    if(typeof v==='object'){
+      if(typeof v.toDate==='function'){
+        try{ const dt=v.toDate(); if(dt instanceof Date && !isNaN(dt.getTime())) return dt.getTime(); }catch(_){}
+      }
+      const sec=typeof v.seconds==='number' ? v.seconds : (typeof v._seconds==='number' ? v._seconds : null);
+      if(sec!=null){
+        const nano=typeof v.nanoseconds==='number' ? v.nanoseconds : (typeof v._nanoseconds==='number' ? v._nanoseconds : 0);
+        return sec*1000+Math.floor(nano/1e6);
+      }
+      continue;
+    }
+    if(typeof v==='number' && isFinite(v)){
+      if(v>1e12) return v;
+      if(v>1e9 && v<1e12) return Math.round(v*1000);
+      continue;
+    }
+    const s=String(v).trim();
+    if(!s) continue;
+    const parsed=Date.parse(s);
+    if(!isNaN(parsed)) return parsed;
+    const day=settleQuoteDateMs(s);
+    if(day!=null) return day;
+  }
+  return null;
+}
+function compareSettleAllRows(a,b){
+  const da=settleQuoteDateMs(a&&a.date);
+  const db=settleQuoteDateMs(b&&b.date);
+  if(da==null || db==null){
+    if(da==null && db!=null) return 1;
+    if(da!=null && db==null) return -1;
+  }else if(da!==db){
+    return db-da;
+  }
+  const ca=settleCreatedMs(a);
+  const cb=settleCreatedMs(b);
+  if(ca!=null && cb!=null && ca!==cb) return cb-ca;
+  if(ca!=null && cb==null) return -1;
+  if(ca==null && cb!=null) return 1;
+  const na=String((a&&a._clientName)||'');
+  const nb=String((b&&b._clientName)||'');
+  return na.localeCompare(nb,'ko');
+}
 function renderSettleAll(){
   try{ renderSettleSupplierAccount(); }catch(e){}
   applySettleDefaultRange();
@@ -7566,7 +7675,7 @@ function renderSettleAll(){
     _settlePage=1;
   }
 
-  let filtered=settles.filter(s=>{
+  const filtered=[...settles.filter(s=>{
     const cname=(s._clientName||'').toLowerCase();
     if(search&&!cname.includes(search)&&!(s.toName||'').toLowerCase().includes(search))return false;
     if(filter==='대기'&&s.settled)return false;
@@ -7588,13 +7697,8 @@ function renderSettleAll(){
     if(taxIssuedFilter==='n'){ if(s.taxYn&&s.taxIssued)return false; }
     if(supplierFilter && (s._supplierKey||'')!==supplierFilter) return false;
     return true;
-  }).sort((a,b)=>{
-    const ca=a._carry?1:0, cb=b._carry?1:0;
-    if(ca!==cb) return cb-ca;
-    const oa=a._order!=null?a._order:9999, ob=b._order!=null?b._order:9999;
-    if(oa!==ob)return oa-ob;
-    return (b.date||'').localeCompare(a.date||'');
-  });
+  })];
+  filtered.sort(compareSettleAllRows);
   const pageCount=Math.max(1, Math.ceil(filtered.length/SETTLE_PAGE_SIZE)||1);
   if(_settlePage>pageCount) _settlePage=pageCount;
   if(_settlePage<1) _settlePage=1;
