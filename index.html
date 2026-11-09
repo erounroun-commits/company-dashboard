@@ -139,6 +139,19 @@ tr:last-child td{border-bottom:none;}
 .md-xl{width:min(1150px,98vw);overflow:hidden;display:flex;flex-direction:column;}
 .mt{font-size:16px;font-weight:700;margin-bottom:20px;}
 .mf{display:flex;gap:10px;justify-content:flex-end;margin-top:20px;}
+#modal-paystatus .md{display:flex;flex-direction:column;overflow:hidden;height:92vh;max-height:92vh;}
+#modal-paystatus .mt{flex:none;}
+#paystatus-detail{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;overflow:auto;overflow-wrap:anywhere;}
+#paystatus-top{flex:none;}
+#paystatus-top-body{overflow:visible;}
+#paystatus-scroll{flex:1 1 auto;min-height:180px;overflow:auto;}
+@media (max-width:768px){
+  #modal-paystatus .md{height:100vh;max-height:100vh;border-radius:0;}
+}
+.pay-tabs{display:flex;flex-wrap:wrap;align-items:flex-end;gap:0;border-bottom:2px solid var(--border);margin-top:14px;flex:none;}
+.pay-tab{background:none;border:none;border-bottom:2px solid transparent;margin:0 0 -2px;padding:8px 12px;font-size:13px;font-weight:600;color:var(--text2);cursor:pointer;font-family:var(--font);}
+.pay-tab.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:800;}
+.pay-badge{display:inline-block;max-width:100%;font-size:11px;font-weight:800;border-radius:999px;padding:2px 8px;line-height:1.45;white-space:normal;overflow-wrap:anywhere;}
 
 /* ── TABS ── */
 .dtabs{display:flex;gap:0;margin-bottom:18px;border-bottom:2px solid var(--border);overflow-x:auto;}
@@ -12483,6 +12496,11 @@ let PAY_ST_FORM=null;
 let PAY_EDIT=null;
 let PAY_ST_TOKEN=0;
 let PAY_ST_BUSY=false;
+let PAY_ST_TAB='';
+let PAY_ST_COND=false;
+let PAY_REC_OPEN=false;
+let PAY_PREV_OPEN=false;
+let PAY_PREV_DRAFT=null;
 function payClient(id){
   return (CLIENTS_CACHE||[]).find(c=>c&&c.id===id)||null;
 }
@@ -12973,6 +12991,8 @@ function payReadDetailForm(){
       f.referrerName=ref.value.trim();
     }else if(selected) f.referrerName=selected.name||'';
   }
+  const prevEl=document.getElementById('ps-prev-done');
+  if(prevEl) PAY_PREV_DRAFT=prevEl.value;
   return f;
 }
 function payReadHistEdit(){
@@ -13277,12 +13297,25 @@ function payHistEditor(doc){
     +'<label style="display:block;margin-top:8px;font-size:11px;font-weight:700">메모<textarea id="ph-memo" class="fta" style="margin-top:4px">'+escHtml(PAY_EDIT.memo||'')+'</textarea></label>'
     +'<div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px"><button type="button" class="btn btn-xs btn-gray" onclick="payCancelHistEdit()">취소</button><button type="button" class="btn btn-xs btn-blue" onclick="savePayHistoryEdit()">기록 저장</button></div></div>';
 }
+function payHistVisible(type){
+  const f=PAY_ST_FILTER||'all';
+  if(f==='all') return true;
+  if(f==='routemode'||f==='route'||f==='mode') return type==='route'||type==='mode';
+  return type===f;
+}
+function payFilterKey(){
+  const f=PAY_ST_FILTER||'all';
+  if(f==='route'||f==='mode') return 'routemode';
+  if(f==='price'||f==='tax'||f==='routemode') return f;
+  return 'all';
+}
 function payTimelineHtml(hist){
-  const items=[['all','전체'],['route','결제경로'],['mode','결제방식'],['price','단가'],['tax','계산서'],['inflow','유입']];
-  let html=payTrashToggle()+'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'+items.map(it=>'<button type="button" class="btn btn-xs '+(PAY_ST_FILTER===it[0]?'btn-blue':'btn-gray')+'" onclick="payStFilter(\''+it[0]+'\')">'+it[1]+'</button>').join('')+'</div>';
-  const rows=(hist||[]).filter(h=>h&&(PAY_ST_TRASH||!h.deleted)&&(PAY_ST_FILTER==='all'||h.type===PAY_ST_FILTER));
+  const items=[['all','전체'],['price','단가'],['routemode','결제경로·방식'],['tax','계산서']];
+  const active=payFilterKey();
+  let html='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'+items.map(it=>'<button type="button" class="btn btn-xs '+(active===it[0]?'btn-blue':'btn-gray')+'" onclick="payStFilter(\''+it[0]+'\')">'+it[1]+'</button>').join('')+'</div>';
+  const rows=(hist||[]).filter(h=>h&&(PAY_ST_TRASH||!h.deleted)&&payHistVisible(h.type));
   rows.sort((a,b)=>payHistAsc(b,a));
-  if(!rows.length) return html+'<div style="font-size:12px;color:var(--text3)">기록이 없습니다</div>';
+  if(!rows.length) return html+'<div style="font-size:12px;color:var(--text3)">기록이 없습니다</div>'+payTrashToggle();
   html+=rows.map(doc=>{
     const prev=payPrevSame(doc, hist);
     const phrases=payPhrases(doc.type, prev?prev.value:null, doc.value);
@@ -13300,7 +13333,7 @@ function payTimelineHtml(hist){
       +'<div style="margin-top:4px">'+actions+'</div>'
       +(doc.deleted?'':payHistEditor(doc))+'</div>';
   }).join('');
-  return html;
+  return html+payTrashToggle();
 }
 function payRefreshDash(){
   if(CUR_CLIENT&&CUR_CLIENT===PAY_ST_ID){
@@ -13313,7 +13346,9 @@ function payRefreshScreens(){
   payRefreshDash();
 }
 function payTrashToggle(){
-  return '<label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:8px"><input type="checkbox" '+(PAY_ST_TRASH?'checked':'')+' onchange="payToggleTrash(this.checked)"> 삭제된 항목 보기</label>';
+  const on=!!PAY_ST_TRASH;
+  const label=on?'삭제된 항목 숨기기':'삭제된 항목 보기';
+  return '<div style="margin-top:12px"><button type="button" onclick="payToggleTrash('+(on?'false':'true')+')" style="background:none;border:none;padding:0;font-size:11px;color:var(--text3);text-decoration:underline;cursor:pointer;font-family:var(--font)">'+label+'</button></div>';
 }
 function payToggleTrash(on){
   payReadDetailForm();
@@ -13392,75 +13427,56 @@ function payRecChips(kind, current, pairs){
     return '<button type="button" class="btn btn-xs '+(on?'btn-blue':'btn-gray')+'" onclick="payPickRec(\''+kind+'\',\''+payJs(p[0])+'\')">'+escHtml(p[1])+'</button>';
   }).join('')+'</div>';
 }
-function paySumCell(label, val){
-  return '<div><div style="font-size:10px;color:var(--text3)">'+label+'</div><div style="font-size:16px;font-weight:800">'+val+'</div></div>';
-}
 function payRecordsSection(c, snap){
-  const showSum=(snap.mode&&snap.mode.mode==='prepaid')||(PAY_ST_PAY||[]).some(r=>r&&!r.deleted&&r.kind==='prepaid');
-  let sum='';
-  if(showSum){
-    const total=payPrepaidQty(PAY_ST_PAY);
-    const prev=Number(c.prevPurchaseDone)||0;
-    const done=PAY_ST_RECS?countPrepaidPurchaseDone(c.id, PAY_ST_RECS):null;
-    const remain=done==null?'—':fmtN(Math.max(0, total-(prev+done)));
-    const by=c.prevPurchaseDoneBy?('<div style="font-size:10px;color:var(--text3);margin-top:2px">'+escHtml(c.prevPurchaseDoneBy)+' '+escHtml(payKstStamp(c.prevPurchaseDoneAt))+'</div>'):'';
-    sum='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:10px">'
-      +paySumCell('선결제 합계', fmtN(total))
-      +'<div><div style="font-size:10px;color:var(--text3)">기존 구매완료</div><div style="display:flex;gap:4px;align-items:center;margin-top:2px"><input id="ps-prev-done" class="fi" type="number" min="0" value="'+escHtml(prev)+'" style="width:88px"><button type="button" class="btn btn-xs btn-gray" onclick="savePayPrevDone()">저장</button></div>'+by+'</div>'
-      +paySumCell('구매완료', done==null?'—':fmtN(done))
-      +paySumCell('잔여', remain)
-      +'</div>';
-  }
+  void snap;
+  const showForm=!!(PAY_REC_OPEN||PAY_REC_EDIT);
   const f=PAY_REC_FORM||payBlankRecForm(c);
   const routeMemo=f.route==='기타'?'<input id="pr-route-memo" class="fi" style="margin-top:6px" placeholder="기타 메모" value="'+escHtml(f.routeMemo||'')+'">':'';
   const editing=!!PAY_REC_EDIT;
-  const form='<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">'
+  const form=showForm?('<div style="margin:8px 0;padding:10px;border:1px dashed var(--border);border-radius:10px">'
     +'<div style="font-size:12px;font-weight:800;margin-bottom:8px">'+(editing?'결제 기록 수정':'결제 기록 추가')+'</div>'
     +'<div class="fl">구분</div>'+payRecChips('kind', f.kind, [['prepaid','선결제 충전'],['perItem','건별 결제']])
     +'<div class="fl" style="margin-top:8px">결제경로</div>'+payRecChips('route', f.route, [['크몽','크몽'],['계좌이체','계좌이체'],['카드결제','카드결제'],['기타','기타']])+routeMemo
-    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:8px">'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr));gap:8px;margin-top:8px">'
     +'<label style="font-size:11px;font-weight:700">결제일<input id="pr-date" class="fi" type="date" style="margin-top:4px" value="'+escHtml(f.date||'')+'"></label>'
     +'<label style="font-size:11px;font-weight:700">건수<input id="pr-qty" class="fi" type="number" min="0" style="margin-top:4px" value="'+escHtml(f.qty)+'" oninput="payRecQtyInput()"></label>'
     +'<label style="font-size:11px;font-weight:700">건당 단가<input id="pr-unit" class="fi" type="number" min="0" style="margin-top:4px" value="'+escHtml(f.unitPrice)+'" oninput="payRecQtyInput()"></label>'
     +'<label style="font-size:11px;font-weight:700">금액<input id="pr-amt" class="fi" type="number" min="0" style="margin-top:4px" value="'+escHtml(f.amount)+'" oninput="payRecAmtInput()"></label>'
     +'</div>'
     +'<label style="display:block;margin-top:8px;font-size:11px;font-weight:700">메모<textarea id="pr-memo" class="fta" style="margin-top:4px">'+escHtml(f.memo||'')+'</textarea></label>'
-    +'<div style="text-align:right;margin-top:8px">'+(editing?'<button type="button" class="btn btn-xs btn-gray" onclick="payCancelRecEdit()">취소</button> ':'')+'<button type="button" class="btn btn-sm btn-blue" onclick="savePayRecord()">저장</button></div></div>';
+    +'<div style="text-align:right;margin-top:8px"><button type="button" class="btn btn-xs btn-gray" onclick="payCancelRecEdit()">취소</button> <button type="button" class="btn btn-sm btn-blue" onclick="paySaveRecordUi()">저장</button></div></div>'):'';
   const rows=(PAY_ST_PAY||[]).filter(r=>r&&(PAY_ST_TRASH||!r.deleted)).slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||''))||String(b.createdAt||'').localeCompare(String(a.createdAt||'')));
-  const table=rows.length?('<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>'
-    +['구분','결제일','결제경로','건수','건당 단가','금액','메모','작성자',''].map(h=>'<th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--border);white-space:nowrap">'+h+'</th>').join('')
-    +'</tr></thead><tbody>'+rows.map(r=>{
-      const route=(r.route||'')+(r.route==='기타'&&r.routeMemo?' ('+r.routeMemo+')':'');
-      const actions=r.deleted
-        ? '<button type="button" class="btn btn-xs btn-gray" onclick="payRestoreRecord(\''+payJs(r.id)+'\')">복구</button>'
-        : '<button type="button" class="btn btn-xs btn-gray" onclick="payBeginRecEdit(\''+payJs(r.id)+'\')">수정</button> <button type="button" class="btn btn-xs btn-red" onclick="deletePayRecord(\''+payJs(r.id)+'\')">삭제</button>';
-      return '<tr style="'+(r.deleted?'opacity:.45;':'')+'">'
-        +'<td style="padding:6px 4px;white-space:nowrap">'+escHtml(payKindLabel(r.kind))+'</td>'
-        +'<td style="padding:6px 4px;white-space:nowrap">'+escHtml(payShortDate(r.date))+'</td>'
-        +'<td style="padding:6px 4px">'+escHtml(route)+'</td>'
-        +'<td style="padding:6px 4px;text-align:right">'+fmtN(r.qty||0)+'</td>'
-        +'<td style="padding:6px 4px;text-align:right">'+fmtN(r.unitPrice||0)+'</td>'
-        +'<td style="padding:6px 4px;text-align:right">'+fmtN(r.amount||0)+'</td>'
-        +'<td style="padding:6px 4px">'+escHtml(r.memo||'')+'</td>'
-        +'<td style="padding:6px 4px;white-space:nowrap">'+escHtml(r.createdBy||'—')+'</td>'
-        +'<td style="padding:6px 4px;white-space:nowrap">'+actions+'</td></tr>';
-    }).join('')+'</tbody></table></div>'):'<div style="font-size:12px;color:var(--text3)">결제 기록이 없습니다</div>';
-  const box='style="border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:12px"';
-  return '<div '+box+'><div style="font-size:13px;font-weight:800;margin-bottom:8px">결제 기록</div>'+payTrashToggle()+sum+table+form+'</div>';
+  const list=rows.length?rows.map(r=>{
+    const route=(r.route||'')+(r.route==='기타'&&r.routeMemo?' ('+r.routeMemo+')':'');
+    const actions=r.deleted
+      ? '<button type="button" class="btn btn-xs btn-gray" onclick="payRestoreRecord(\''+payJs(r.id)+'\')">복구</button>'
+      : '<button type="button" class="btn btn-xs btn-gray" onclick="payBeginRecEdit(\''+payJs(r.id)+'\')">수정</button> <button type="button" class="btn btn-xs btn-red" onclick="deletePayRecord(\''+payJs(r.id)+'\')">삭제</button>';
+    const prepaid=r.kind==='prepaid';
+    const badge='<span class="pay-badge" style="background:'+(prepaid?'#dbeafe':'#f3f4f6')+';color:'+(prepaid?'#1d4ed8':'#4b5563')+'">'+escHtml(payKindLabel(r.kind))+'</span>';
+    const memo=payTrim(r.memo);
+    const hi=PAY_REC_EDIT===r.id?'background:#eff6ff;border-radius:8px;':'';
+    return '<div style="padding:8px 0;border-bottom:1px solid var(--border);'+hi+(r.deleted?'opacity:.45;':'')+'">'
+      +'<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:space-between">'
+      +'<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-width:0">'+badge+'<b>'+escHtml(payShortDate(r.date))+'</b><span style="font-size:12px;color:var(--text2)">'+escHtml(route)+'</span></div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:4px">'+actions+'</div></div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:4px;font-size:12px"><span>건수 <b>'+fmtN(r.qty||0)+'</b></span><span>단가 <b>'+fmtN(r.unitPrice||0)+'</b></span><span>금액 <b>'+fmtN(r.amount||0)+'</b></span></div>'
+      +(memo?'<div style="margin-top:2px;font-size:12px;color:var(--text2)">'+escHtml(memo)+'</div>':'')
+      +'<div style="margin-top:2px;font-size:10px;color:var(--text3)">'+escHtml(r.createdBy||'—')+'</div></div>';
+  }).join(''):'<div style="font-size:12px;color:var(--text3);padding:8px 0">결제 기록이 없습니다</div>';
+  return '<div style="display:flex;justify-content:flex-end"><button type="button" class="btn btn-sm btn-blue" onclick="payOpenRecAdd()">+ 결제 추가</button></div>'+form+list+payTrashToggle();
 }
 function payProjectSection(c){
   const projs=payClientProjects(c.id).slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ko'));
-  const box='style="border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:12px"';
-  if(!projs.length) return '<div '+box+'><div style="font-size:13px;font-weight:800">프로젝트 결제 구분</div><div style="font-size:12px;color:var(--text3);margin-top:6px">프로젝트가 없습니다</div></div>';
-  const rows=projs.map(p=>{
+  if(!projs.length) return '<div style="font-size:12px;color:var(--text3)">프로젝트가 없습니다</div>';
+  return projs.map(p=>{
     const done=(PAY_ST_RECS||[]).filter(r=>r&&r.projectId===p.id&&recordIsPurchaseDone(r)).length;
     const mode=p.payMode==='prepaid'?'prepaid':'separate';
     const btn=(val,label)=>'<button type="button" class="btn btn-xs '+(mode===val?'btn-blue':'btn-gray')+'" onclick="paySetProjMode(\''+payJs(p.id)+'\',\''+val+'\')">'+label+'</button>';
-    return '<tr><td style="padding:6px 4px">'+escHtml(p.name||'')+'</td><td style="padding:6px 4px">'+escHtml(p.status||'')+'</td><td style="padding:6px 4px;text-align:right">'+fmtN(done)+'</td><td style="padding:6px 4px;white-space:nowrap">'+btn('prepaid','선결제 차감')+' '+btn('separate','별도 결제')+'</td></tr>';
+    return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'
+      +'<div style="font-weight:700;word-break:break-word">'+escHtml(p.name||'')+'</div>'
+      +'<div style="font-size:12px;color:var(--text2);margin-top:2px">'+(p.status?escHtml(p.status)+' · ':'')+'구매완료 '+fmtN(done)+'</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">'+btn('prepaid','선결제 차감')+btn('separate','별도 결제')+'</div></div>';
   }).join('');
-  return '<div '+box+'><div style="font-size:13px;font-weight:800;margin-bottom:8px">프로젝트 결제 구분</div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>'
-    +['프로젝트명','상태','구매완료','구분'].map(h=>'<th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--border)">'+h+'</th>').join('')
-    +'</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
 }
 async function payCommitRecords(c, list, doc, okMsg){
   const merged=payApplyRecordTotals(payClient(c.id)||c, list);
@@ -13520,6 +13536,9 @@ function payBeginRecEdit(id){
   const rec=(PAY_ST_PAY||[]).find(r=>r&&r.id===id&&!r.deleted);
   if(!rec) return;
   PAY_REC_EDIT=id;
+  PAY_REC_OPEN=true;
+  PAY_ST_TAB='records';
+  payStTabSave('records');
   PAY_REC_FORM={
     kind:rec.kind==='prepaid'?'prepaid':'perItem',
     route:rec.route||'계좌이체',
@@ -13535,6 +13554,7 @@ function payBeginRecEdit(id){
 }
 function payCancelRecEdit(){
   PAY_REC_EDIT='';
+  PAY_REC_OPEN=false;
   PAY_REC_FORM=payBlankRecForm(payClient(PAY_ST_ID));
   renderPayStatusDetail();
 }
@@ -13658,6 +13678,160 @@ async function payCreateClientWithSeed(c){
   await commitSvOps(ops);
   return client;
 }
+function payStTabLoad(){
+  try{
+    const v=localStorage.getItem('payst-detail-tab');
+    if(v==='records'||v==='projects'||v==='history'||v==='inflow') return v;
+  }catch(e){}
+  return 'records';
+}
+function payStTabSave(v){
+  try{ localStorage.setItem('payst-detail-tab', v); }catch(e){}
+}
+function payDetailTab(){
+  if(PAY_ST_TAB!=='records'&&PAY_ST_TAB!=='projects'&&PAY_ST_TAB!=='history'&&PAY_ST_TAB!=='inflow') PAY_ST_TAB=payStTabLoad();
+  return PAY_ST_TAB;
+}
+function paySetDetailTab(tab){
+  payReadDetailForm();
+  payReadHistEdit();
+  payReadRecForm();
+  if(tab!=='records'&&tab!=='projects'&&tab!=='history'&&tab!=='inflow') tab='records';
+  PAY_ST_TAB=tab;
+  payStTabSave(tab);
+  renderPayStatusDetail();
+}
+function payToggleCond(){
+  payReadDetailForm();
+  payReadHistEdit();
+  payReadRecForm();
+  PAY_ST_COND=!PAY_ST_COND;
+  renderPayStatusDetail();
+}
+function payOpenRecAdd(){
+  payReadDetailForm();
+  payReadHistEdit();
+  payReadRecForm();
+  PAY_REC_EDIT='';
+  PAY_REC_FORM=payBlankRecForm(payClient(PAY_ST_ID));
+  PAY_REC_OPEN=true;
+  renderPayStatusDetail();
+}
+async function paySaveRecordUi(){
+  const before=PAY_ST_PAY;
+  PAY_REC_OPEN=false;
+  await savePayRecord();
+  if(PAY_ST_PAY===before) PAY_REC_OPEN=true;
+  renderPayStatusDetail();
+}
+function payBeginPrevEdit(){
+  payReadDetailForm();
+  payReadHistEdit();
+  payReadRecForm();
+  const c=payClient(PAY_ST_ID);
+  PAY_PREV_DRAFT=String(Number(c&&c.prevPurchaseDone)||0);
+  PAY_PREV_OPEN=true;
+  renderPayStatusDetail();
+}
+function payCancelPrevEdit(){
+  PAY_PREV_OPEN=false;
+  PAY_PREV_DRAFT=null;
+  renderPayStatusDetail();
+}
+async function paySavePrevDoneUi(){
+  const c=payClient(PAY_ST_ID);
+  const before=Number(c&&c.prevPurchaseDone)||0;
+  await savePayPrevDone();
+  const now=payClient(PAY_ST_ID);
+  const after=Number(now&&now.prevPurchaseDone)||0;
+  if(after!==before){
+    PAY_PREV_OPEN=false;
+    PAY_PREV_DRAFT=null;
+    renderPayStatusDetail();
+  }
+}
+function payBadge(text, bg, fg){
+  return '<span class="pay-badge" style="background:'+bg+';color:'+fg+'">'+text+'</span>';
+}
+function payPriceTableHtml(price){
+  const p=payNormPrice(price);
+  const rows=[];
+  const rev=(p.services||[]).find(s=>s.service==='리뷰마케팅');
+  if(rev){
+    if(rev.sameT12){
+      if(rev.t1.price) rows.push(['리뷰마케팅 · 유형1·2', rev.t1.price]);
+    }else{
+      if(rev.t1.price) rows.push(['리뷰마케팅 · '+(rev.t1.label||'유형1'), rev.t1.price]);
+      if(rev.t2.price) rows.push(['리뷰마케팅 · '+(rev.t2.label||'유형2'), rev.t2.price]);
+    }
+    if(rev.t3.price) rows.push(['리뷰마케팅 · '+(rev.t3.label||'택배대행'), rev.t3.price]);
+  }
+  (p.services||[]).forEach(s=>{
+    if(!s||s.service==='리뷰마케팅'||!s.price) return;
+    rows.push([s.service, s.price]);
+  });
+  if(!rows.length) return '<div style="font-size:12px;color:var(--text3)">등록된 단가가 없습니다</div>';
+  return '<table style="width:100%;max-width:440px;border-collapse:collapse;font-size:12px"><tbody>'+rows.map(function(row){
+    return '<tr><td style="padding:4px 12px 4px 0;border-bottom:1px solid var(--border);word-break:break-word">'+escHtml(row[0])+'</td><td style="padding:4px 0;border-bottom:1px solid var(--border);text-align:right;font-weight:800;white-space:nowrap">'+fmtN(row[1])+'</td></tr>';
+  }).join('')+'</tbody></table>';
+}
+function payPrevEditorHtml(c){
+  const prev=Number(c.prevPurchaseDone)||0;
+  if(!PAY_PREV_OPEN){
+    return '<b>'+fmtN(prev)+'</b> <button type="button" class="btn btn-xs btn-gray" style="padding:1px 6px;vertical-align:middle" title="기존 구매완료 수정" onclick="payBeginPrevEdit()">✎</button>';
+  }
+  const val=PAY_PREV_DRAFT!=null?PAY_PREV_DRAFT:String(prev);
+  return '<input id="ps-prev-done" class="fi" type="number" min="0" value="'+escHtml(val)+'" style="width:76px;max-width:42%;padding:4px 8px;display:inline-block;vertical-align:middle">'
+    +'<button type="button" class="btn btn-xs btn-blue" style="margin-left:4px;vertical-align:middle" onclick="paySavePrevDoneUi()">저장</button>'
+    +'<button type="button" class="btn btn-xs btn-gray" style="margin-left:4px;vertical-align:middle" onclick="payCancelPrevEdit()">취소</button>';
+}
+function payKeyNumbersHtml(c, snap){
+  const prepaid=!!(snap.mode&&snap.mode.mode==='prepaid');
+  if(prepaid){
+    const total=payPrepaidQty(PAY_ST_PAY);
+    const prev=Number(c.prevPurchaseDone)||0;
+    const done=PAY_ST_RECS?countPrepaidPurchaseDone(c.id, PAY_ST_RECS):null;
+    const used=done==null?null:prev+done;
+    const remain=used==null?null:total-used;
+    let remColor='var(--text)';
+    if(remain!=null&&remain<=0) remColor='#dc2626';
+    else if(remain!=null&&remain<=5) remColor='#ea580c';
+    const usedText=used==null?'—':fmtN(used);
+    const remText=remain==null?'—':fmtN(remain);
+    const by=c.prevPurchaseDoneBy?('<div style="font-size:10px;color:var(--text3);margin-top:2px">'+escHtml(c.prevPurchaseDoneBy)+' '+escHtml(payKstStamp(c.prevPurchaseDoneAt))+'</div>'):'';
+    let bar='';
+    if(used!=null){
+      const pct=total>0?used/total*100:(used>0?100:0);
+      const width=Math.max(0, Math.min(100, pct));
+      const barColor=remain<=0?'#dc2626':(remain<=5?'#ea580c':'#2563eb');
+      bar='<div style="margin-top:8px;height:8px;border-radius:99px;background:#e7e5e4;overflow:hidden"><div style="height:100%;width:'+width.toFixed(1)+'%;background:'+barColor+';border-radius:99px"></div></div>'
+        +'<div style="margin-top:4px;font-size:10px;color:var(--text3);text-align:right">사용 '+Math.round(pct)+'%</div>';
+    }
+    return '<div style="margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--card2)">'
+      +'<div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;font-size:20px;font-weight:800;line-height:1.35">'
+      +'<span>충전 '+fmtN(total)+'</span><span style="color:var(--text3);font-weight:700">−</span>'
+      +'<span>사용 '+usedText+'</span><span style="color:var(--text3);font-weight:700">=</span>'
+      +'<span style="color:'+remColor+'">잔여 '+remText+'</span></div>'
+      +'<div style="margin-top:6px;font-size:12px;color:var(--text2);line-height:1.7">기존 구매완료 '+payPrevEditorHtml(c)+' + 선결제 차감 프로젝트 <b>'+(done==null?'—':fmtN(done))+'</b></div>'
+      +by+bar+'</div>';
+  }
+  const live=(PAY_ST_PAY||[]).filter(r=>r&&!r.deleted);
+  let latest='';
+  live.forEach(r=>{ if(r.date&&String(r.date)>latest) latest=String(r.date); });
+  const month=String(getKSTDate()||'').slice(0,7);
+  let n=0, sum=0;
+  live.forEach(r=>{
+    if(String(r.date||'').slice(0,7)!==month) return;
+    n++;
+    sum+=Number(r.amount)||0;
+  });
+  return '<div style="margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--card2)">'
+    +'<div style="font-size:16px;font-weight:800;line-height:1.5">최근 결제일 '+(latest?escHtml(latest):'없음')+' · 이번 달 결제 '+fmtN(n)+'건 / '+fmtN(sum)+'</div></div>';
+}
+function payTabBtn(id, label){
+  const on=payDetailTab()===id;
+  return '<button type="button" class="pay-tab'+(on?' on':'')+'" onclick="paySetDetailTab(\''+id+'\')">'+label+'</button>';
+}
 function renderPayStatusDetail(){
   const body=document.getElementById('paystatus-detail');
   const c=payClient(PAY_ST_ID);
@@ -13666,12 +13840,6 @@ function renderPayStatusDetail(){
   const snap=payCurrentSnapshot(c, PAY_ST_HIST);
   const suggest=payEarliestStart(c.id);
   const suggestHtml=(!f.firstContractDate&&suggest)?'<div style="font-size:11px;color:#94a3b8;margin-top:4px">프로젝트 시작일 기준 제안: '+escHtml(suggest)+'</div>':'';
-  const tax=snap.tax||payNormTax({});
-  const card='<div style="font-size:12px;line-height:1.7"><div>결제경로 <b>'+escHtml(snap.route.route||'—')+'</b>'+(snap.route.routeMemo?' · '+escHtml(snap.route.routeMemo):'')+'</div>'
-    +'<div>결제방식 <b>'+escHtml(payModeLabel(snap.mode.mode))+'</b>'+(snap.mode.modeMemo?' · '+escHtml(snap.mode.modeMemo):'')+'</div>'
-    +'<div>계산서 진행비 '+payYn(tax.fee)+' · 택배비 '+payYn(tax.delivery)+' · 상품금액 '+payYn(tax.product)+' · 발행 가능 '+payYn(tax.taxYn)+'</div>'
-    +'<div>단가표 '+escHtml(payPriceBrief(snap.price))+'</div>'
-    +'<div style="font-size:11px;color:var(--text3);margin-top:4px">'+escHtml(payFirstLine(PAY_ST_HIST))+'</div></div>';
   const refBlock=f.inflowRoute==='지인소개'
     ? '<div style="margin-top:8px"><div class="fl">소개해 준 곳</div><input id="ps-ref" class="fi" placeholder="거래처 검색 또는 이름 직접 입력" value="'+escHtml(f.referrerQuery||'')+'" oninput="payRefInput(\'ps\')"><div id="ps-ref-box"></div></div>'
     : '';
@@ -13680,26 +13848,53 @@ function renderPayStatusDetail(){
     : '';
   const routeMemo=f.route==='기타'?'<input id="ps-route-memo" class="fi" style="margin-top:8px" placeholder="기타 메모" value="'+escHtml(f.routeMemo||'')+'">':'';
   const modeMemo=f.mode==='etc'?'<input id="ps-mode-memo" class="fi" style="margin-top:8px" placeholder="기타 메모" value="'+escHtml(f.modeMemo||'')+'">':'';
-  const box='style="border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:12px"';
-  body.innerHTML=''
-    +'<div '+box+'><div style="font-size:13px;font-weight:800;margin-bottom:8px">'+escHtml(c.name||'거래처')+'</div>'
-    +'<div class="fl">첫 유입경로</div>'+payChipRow(false,'inflow',f.inflowRoute,inflowRoutePairs(f.inflowRoute))
-    +refBlock+inMemo
-    +'<label style="display:block;margin-top:10px;font-size:11px;font-weight:700">첫 계약일<input id="ps-first-date" class="fi" type="date" style="margin-top:4px" value="'+escHtml(f.firstContractDate||'')+'"></label>'
-    +suggestHtml
-    +'<div style="text-align:right;margin-top:10px"><button type="button" class="btn btn-sm btn-blue" onclick="savePayInflow()">유입경로 저장</button></div></div>'
-    +'<div '+box+'><div style="font-size:13px;font-weight:800;margin-bottom:8px">현재 상태</div>'+card+'</div>'
-    +'<div '+box+'><div style="font-size:13px;font-weight:800;margin-bottom:8px">업데이트</div>'
+  const tax=snap.tax||payNormTax({});
+  const issued=[];
+  if(tax.fee) issued.push('진행비');
+  if(tax.delivery) issued.push('택배비');
+  if(tax.product) issued.push('상품금액');
+  const taxText=issued.length?issued.join('·'):'미발행';
+  const routeText=(snap.route.route||'미입력')+(snap.route.routeMemo?' · '+snap.route.routeMemo:'');
+  const modeText=snap.mode.mode?(payModeLabel(snap.mode.mode)+(snap.mode.modeMemo?' · '+snap.mode.modeMemo:'')):'미입력';
+  const cond=PAY_ST_COND?('<div style="margin-top:10px;padding:12px;border:1px dashed var(--border);border-radius:10px;background:#fff">'
     +'<label style="font-size:11px;font-weight:700">적용일<input id="ps-date" class="fi" type="date" style="margin-top:4px" value="'+escHtml(f.date||'')+'"></label>'
     +'<div class="fl" style="margin-top:10px">결제경로</div>'+payChipRow(false,'route',f.route,[['크몽','크몽'],['계좌이체','계좌이체'],['카드결제','카드결제'],['기타','기타']])+routeMemo
     +'<div class="fl" style="margin-top:10px">결제방식</div>'+payChipRow(false,'mode',f.mode,[['perItem','건별결제'],['prepaid','선결제 후 차감'],['etc','기타']])+modeMemo
     +'<div class="fl" style="margin-top:10px">단가표</div>'+payPriceFields('ps', f.price)
     +'<div class="fl" style="margin-top:10px">계산서</div>'+payTaxFields('ps', f)
     +'<label style="display:block;margin-top:10px;font-size:11px;font-weight:700">메모<textarea id="ps-memo" class="fta" style="margin-top:4px" placeholder="이번 변경 메모">'+escHtml(f.memo||'')+'</textarea></label>'
-    +'<div style="text-align:right;margin-top:10px"><button type="button" class="btn btn-sm btn-blue" onclick="savePayStatusUpdate()">저장</button></div></div>'
-    +payRecordsSection(c, snap)
-    +payProjectSection(c)
-    +'<div '+box+'><div style="font-size:13px;font-weight:800;margin-bottom:8px">연대기</div>'+payTimelineHtml(PAY_ST_HIST)+'</div>';
+    +'<div style="text-align:right;margin-top:10px"><button type="button" class="btn btn-sm btn-blue" onclick="savePayStatusUpdate()">저장</button></div></div>'):'';
+  const tab=payDetailTab();
+  let panel='';
+  if(tab==='projects') panel=payProjectSection(c);
+  else if(tab==='history') panel=payTimelineHtml(PAY_ST_HIST);
+  else if(tab==='inflow'){
+    panel='<div class="fl">첫 유입경로</div>'+payChipRow(false,'inflow',f.inflowRoute,inflowRoutePairs(f.inflowRoute))
+      +refBlock+inMemo
+      +'<label style="display:block;margin-top:10px;font-size:11px;font-weight:700">첫 계약일<input id="ps-first-date" class="fi" type="date" style="margin-top:4px" value="'+escHtml(f.firstContractDate||'')+'"></label>'
+      +suggestHtml
+      +'<div style="text-align:right;margin-top:10px"><button type="button" class="btn btn-sm btn-blue" onclick="savePayInflow()">유입경로 저장</button></div>';
+  }else panel=payRecordsSection(c, snap);
+  body.innerHTML=''
+    +'<div id="paystatus-top"><div id="paystatus-top-body">'
+    +'<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start;justify-content:space-between">'
+    +'<div style="min-width:0;flex:1 1 180px">'
+    +'<div style="font-size:18px;font-weight:800;line-height:1.3;word-break:break-word">'+escHtml(c.name||'거래처')+'</div>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">'
+    +payBadge(escHtml(routeText),'#e0f2fe','#0e7490')
+    +payBadge(escHtml(modeText),'#ede9fe','#5b21b6')
+    +payBadge(escHtml(taxText),issued.length?'#dcfce7':'#f3f4f6',issued.length?'#166534':'#4b5563')
+    +'</div></div>'
+    +'<button type="button" class="btn btn-sm btn-gray" style="flex:none" onclick="payToggleCond()">'+(PAY_ST_COND?'조건 닫기':'조건 변경')+'</button></div>'
+    +cond
+    +payKeyNumbersHtml(c, snap)
+    +'<div style="margin-top:10px"><div style="font-size:11px;font-weight:800;color:var(--text3);margin-bottom:4px">현재 단가</div>'+payPriceTableHtml(snap.price)+'</div>'
+    +'</div></div><div class="pay-tabs">'+payTabBtn('records','결제 기록')+payTabBtn('projects','프로젝트')+payTabBtn('history','변경 이력')+payTabBtn('inflow','유입')+'</div></div>'
+    +'<div id="paystatus-scroll" style="padding-top:10px">'+panel+'</div>';
+  const focus=document.getElementById('pr-date');
+  if((PAY_REC_OPEN||PAY_REC_EDIT)&&focus){
+    try{ focus.scrollIntoView({block:'nearest'}); }catch(e){}
+  }
 }
 async function openPayStatusDetail(clientId){
   const c=payClient(clientId);
@@ -13716,6 +13911,11 @@ async function openPayStatusDetail(clientId){
     PAY_REC_FORM=null;
     PAY_REC_EDIT='';
     PAY_ST_TRASH=false;
+  PAY_ST_COND=false;
+  PAY_REC_OPEN=false;
+  PAY_PREV_OPEN=false;
+  PAY_PREV_DRAFT=null;
+  PAY_ST_TAB=payStTabLoad();
   openMd('paystatus');
   const title=document.getElementById('paystatus-title');
   if(title) title.textContent=(c.name||'거래처')+' 결제 현황';
@@ -22452,7 +22652,7 @@ installPerfProbes();
 </div>
 
 <div class="mo hidden" id="modal-paystatus">
-  <div class="md md-lg" style="max-width:980px">
+  <div class="md md-lg" style="max-width:980px;overflow-x:hidden">
     <div class="mt" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
       <span id="paystatus-title">결제 현황</span>
       <button type="button" class="btn btn-xs btn-gray" onclick="closeMd('paystatus')">닫기</button>
