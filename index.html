@@ -39,7 +39,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 
 /* ── LAYOUT ── */
 #app{display:flex;min-height:100vh;}
-.sidebar{width:220px;background:var(--card);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:20px 0;flex-shrink:0;position:fixed;top:0;left:0;height:100vh;z-index:100;box-shadow:2px 0 8px rgba(0,0,0,.05);}
+.sidebar{width:220px;background:var(--card);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:20px 0;flex-shrink:0;position:fixed;top:0;left:0;height:100vh;z-index:100;box-shadow:2px 0 8px rgba(0,0,0,.05);overflow-y:auto;}
 .sidebar-logo{padding:0 20px 20px;font-size:15px;font-weight:900;letter-spacing:-.04em;color:var(--accent);border-bottom:1px solid var(--border);margin-bottom:12px;}
 .sidebar-logo span{font-size:10px;color:var(--text3);display:block;font-weight:400;margin-top:2px;}
 .nav-item{padding:10px 20px;font-size:13px;cursor:pointer;color:var(--text2);transition:all .15s;display:flex;align-items:center;gap:10px;border-left:3px solid transparent;margin:1px 0;}
@@ -50,6 +50,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
     padding-left:36px !important;
     font-size:12px !important;
   }
+  .nav-group{justify-content:space-between;font-weight:700;color:var(--text);}
+  .nav-sub2{padding-left:48px !important;font-size:12px !important;}
+  .admin-group-body{display:none;}
+  .qt-pay-sticky{position:sticky;top:0;z-index:30;margin:0 0 12px;padding:10px 14px;border-radius:10px;background:#ecfeff;border:1px solid #67e8f9;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;box-shadow:0 2px 8px rgba(0,0,0,.06);}
+  .qt-pay-sticky-empty{cursor:pointer;background:#fff7ed;border-color:#fdba74;color:#9a3412;font-weight:800;width:100%;text-align:left;font-family:var(--font);font-size:13px;}
+  @media print{ .qt-pay-sticky{display:none !important;} }
   .sidebar-footer{margin-top:auto;padding:16px 20px;border-top:1px solid var(--border);font-size:11px;color:var(--text3);}
 .btn-logout{background:none;border:1px solid var(--border);color:var(--text2);padding:6px 12px;border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--font);width:100%;margin-top:8px;transition:all .2s;}
 .btn-logout:hover{border-color:var(--red);color:var(--red);}
@@ -442,15 +448,27 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
       <span id="admin-chevron" style="font-size:10px;transition:transform .2s">▶</span>
     </div>
     <div id="nav-admin-sub" style="display:none;background:rgba(0,0,0,.15);border-left:2px solid var(--accent);margin-left:0">
-      <div class="nav-item nav-sub" onclick="showPage('settle-all')" data-page="settle-all"><span class="nav-icon" style="font-size:12px">💰</span>거래처 정산</div>
-      <div class="nav-item nav-sub" onclick="showPage('deposit')" data-page="deposit"><span class="nav-icon" style="font-size:12px">🏦</span>입금 내역</div>
-      <div class="nav-item nav-sub" onclick="showPage('daily-settle')" data-page="daily-settle"><span class="nav-icon" style="font-size:12px">📒</span>일/월 정산</div>
+      <div class="nav-item nav-sub nav-group" onclick="toggleAdminGroup('settle')">
+        <span>정산</span>
+        <span id="admin-chevron-settle" style="font-size:10px">▶</span>
+      </div>
+      <div class="admin-group-body" id="admin-group-settle" data-group="settle">
+        <div class="nav-item nav-sub nav-sub2" onclick="showPage('settle-all')" data-page="settle-all"><span class="nav-icon" style="font-size:12px">💰</span>거래처 정산</div>
+        <div class="nav-item nav-sub nav-sub2" onclick="showPage('deposit')" data-page="deposit"><span class="nav-icon" style="font-size:12px">🏦</span>입금 내역</div>
+        <div class="nav-item nav-sub nav-sub2" onclick="showPage('daily-settle')" data-page="daily-settle"><span class="nav-icon" style="font-size:12px">📒</span>일/월 정산</div>
+      </div>
       <div class="nav-item nav-sub" onclick="showPage('user-mgmt')" data-page="user-mgmt"><span class="nav-icon" style="font-size:12px">🔐</span>로그인 관리</div>
-      <div class="nav-item nav-sub" onclick="showPage('gsync-settings');renderGsyncSettings()" data-page="gsync-settings"><span class="nav-icon" style="font-size:12px">🔗</span>시트 연동 설정</div>
-      <div class="nav-item nav-sub" onclick="openChangeLogModal()"><span class="nav-icon" style="font-size:12px">📜</span>수정 이력</div>
-      <div class="nav-item nav-sub" onclick="cleanupOrphanSettles()"><span class="nav-icon" style="font-size:12px">🧹</span>고아 정산 정리</div>
-      <div class="nav-item nav-sub" onclick="openQuoteLinkCheck()"><span class="nav-icon" style="font-size:12px">🔎</span>견적-정산 연동 점검</div>
-      <div class="nav-item nav-sub" id="nav-pay-migration" onclick="openPayMigration()"><span class="nav-icon" style="font-size:12px">💳</span>결제 데이터 이관</div>
+      <div class="nav-item nav-sub nav-group" onclick="toggleAdminGroup('code')">
+        <span>코드</span>
+        <span id="admin-chevron-code" style="font-size:10px">▶</span>
+      </div>
+      <div class="admin-group-body" id="admin-group-code" data-group="code">
+        <div class="nav-item nav-sub nav-sub2" onclick="showPage('gsync-settings');renderGsyncSettings()" data-page="gsync-settings"><span class="nav-icon" style="font-size:12px">🔗</span>시트 연동 설정</div>
+        <div class="nav-item nav-sub nav-sub2" onclick="openChangeLogModal()"><span class="nav-icon" style="font-size:12px">📜</span>수정 이력</div>
+        <div class="nav-item nav-sub nav-sub2" onclick="cleanupOrphanSettles()"><span class="nav-icon" style="font-size:12px">🧹</span>고아 정산 정리</div>
+        <div class="nav-item nav-sub nav-sub2" onclick="openQuoteLinkCheck()"><span class="nav-icon" style="font-size:12px">🔎</span>견적-정산 연동 점검</div>
+        <div class="nav-item nav-sub nav-sub2" id="nav-pay-migration" onclick="openPayMigration()"><span class="nav-icon" style="font-size:12px">💳</span>결제 데이터 이관</div>
+      </div>
       <div class="nav-item nav-sub" onclick="openPayAudit()"><span class="nav-icon" style="font-size:12px">🧪</span>결제 데이터 점검</div>
     </div>
     <div class="nav-item" onclick="showPage('export')" data-page="export"><span class="nav-icon">📤</span>엑셀 추출</div>
@@ -924,7 +942,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
     <!-- 거래처 정산 (전체) -->
     <div class="page" id="page-settle-all">
       <div class="page-header">
-        <div><div class="page-title">💰 거래처 정산 현황</div><div class="page-sub">모든 거래처 견적서 발행 및 정산 내역</div></div>
+        <div><div class="page-title">💰 거래처 정산 현황</div><div class="page-sub">기본은 최근 3개월 전체와, 기간과 관계없이 미정산 전체입니다. 기간 이전 미정산은 이월로 표시되고 상단 합계에 포함됩니다.</div></div>
         <div style="display:flex;gap:8px;align-items:center">
           <button class="btn btn-sm btn-gray" onclick="refreshAllData()" title="최신 데이터로 새로고침">🔄 새로고침</button>
           <button class="btn btn-blue btn-sm" onclick="openMd('settle-import')">📥 과거 정산 업로드</button>
@@ -945,6 +963,9 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
           <input type="date" id="settle-filter-date-from" style="background:var(--bg2);border:1px solid var(--border);padding:5px 8px;border-radius:6px;font-size:12px" onchange="renderSettleAll()" title="시작일" />
           <span style="color:var(--text3)">~</span>
           <input type="date" id="settle-filter-date-to" style="background:var(--bg2);border:1px solid var(--border);padding:5px 8px;border-radius:6px;font-size:12px" onchange="renderSettleAll()" title="종료일" />
+          <button type="button" class="btn btn-sm btn-gray" onclick="settleRangePreset('3m')">최근 3개월</button>
+          <button type="button" class="btn btn-sm btn-gray" onclick="settleRangePreset('month')">이번 달</button>
+          <button type="button" class="btn btn-sm btn-gray" onclick="settleRangePreset('all')">전체 기간</button>
           <span style="font-size:11px;font-weight:700;color:var(--text2);margin-left:8px">거래처</span>
           <input style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:6px;font-size:12px;width:140px;" placeholder="검색..." id="settle-search" oninput="renderSettleAll()" />
           <span style="font-size:11px;font-weight:700;color:var(--text2)">합계금액</span>
@@ -1620,6 +1641,80 @@ function perfReport(){
   return {longtask:lt, onSnapshotMs:snap, renderOverview:ov, skipOverview:skip};
 }
 window.perfReport=perfReport;
+// 견적/정산 최초 스냅샷·정산 탭 렌더 측정. DEBUG_PERF가 false면 아무 것도 하지 않는다.
+let _perfLoginAt=0;
+let _perfSnapSeen={qt:false, st:false, qtServer:false, stServer:false};
+let _perfSettleClick=0;
+function perfNow(){
+  return (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+}
+function perfMarkLogin(){
+  if(!DEBUG_PERF) return;
+  _perfLoginAt=perfNow();
+  _perfSnapSeen={qt:false, st:false, qtServer:false, stServer:false};
+  window._perfSnapSummary=null;
+  window._perfSnapEvents=[];
+  console.log('[PERF] 로그인 완료. quotes/settles 최초 onSnapshot 대기 시작');
+}
+function perfNoteFirstSnap(key, snap, firstSnap){
+  if(!DEBUG_PERF || (key!=='qt' && key!=='st')) return;
+  const label=key==='qt'?'quotes':'settles';
+  const n=(snap && typeof snap.size==='number') ? snap.size : 0;
+  const cache=!!(snap && snap.metadata && snap.metadata.fromCache);
+  const ms=_perfLoginAt ? (perfNow()-_perfLoginAt) : 0;
+  const serverKey=key+'Server';
+  window._perfSnapEvents=window._perfSnapEvents||[];
+  if(firstSnap && !_perfSnapSeen[key]){
+    _perfSnapSeen[key]=true;
+    window._perfSnapEvents.push({label:label, kind:'first', ms:Math.round(ms), n:n, cache:cache});
+    console.log('[PERF] 최초 onSnapshot '+label+': '+ms.toFixed(1)+'ms, 문서 '+n+'건, '+(cache?'cache':'server'));
+  }
+  if(!cache && !_perfSnapSeen[serverKey]){
+    _perfSnapSeen[serverKey]=true;
+    window._perfSnapEvents.push({label:label, kind:'server', ms:Math.round(ms), n:n, cache:false});
+    console.log('[PERF] server 확정 '+label+': '+ms.toFixed(1)+'ms, 문서 '+n+'건');
+  }
+  if(_perfSnapSeen.qt && _perfSnapSeen.st && !window._perfSnapSummary) perfLogQuoteSettleSpan();
+}
+function perfCountByAge(rows, dateOf, from){
+  let recent=0, older=0, nodate=0, min='', max='';
+  (rows||[]).forEach(row=>{
+    const d=String(dateOf(row)||'').slice(0,10);
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(d)){ nodate++; return; }
+    if(!min || d<min) min=d;
+    if(!max || d>max) max=d;
+    if(d>=from) recent++; else older++;
+  });
+  return {recent:recent, older:older, nodate:nodate, min:min, max:max, from:from, total:(rows||[]).length};
+}
+function perfLogQuoteSettleSpan(){
+  if(!DEBUG_PERF) return;
+  const from=(typeof settleShiftMonthStart==='function') ? settleShiftMonthStart(-2) : '';
+  const quotes=perfCountByAge(QUOTES_CACHE, function(x){ return x&&x.date; }, from);
+  const settles=perfCountByAge(SETTLES_CACHE, function(x){ return x&&x.date; }, from);
+  let unsettledRecent=0, unsettledOld=0;
+  (SETTLES_CACHE||[]).forEach(row=>{
+    if(!row || row.settled) return;
+    const d=String(row.date||'').slice(0,10);
+    if(from && /^\d{4}-\d{2}-\d{2}$/.test(d) && d<from) unsettledOld++;
+    else unsettledRecent++;
+  });
+  window._perfSnapSummary={quotes:quotes, settles:settles, unsettledRecent:unsettledRecent, unsettledOld:unsettledOld};
+  console.log('[PERF] quotes 분포 '+quotes.min+'~'+quotes.max+' / 최근3개월 '+quotes.recent+' / 이전 '+quotes.older+' / 날짜없음 '+quotes.nodate+' / 합계 '+quotes.total);
+  console.log('[PERF] settles 분포 '+settles.min+'~'+settles.max+' / 최근3개월 '+settles.recent+' / 이전 '+settles.older+' / 날짜없음 '+settles.nodate+' / 합계 '+settles.total+' / 미정산 최근 '+unsettledRecent+' / 미정산 이전 '+unsettledOld);
+}
+function perfMarkSettleClick(){
+  if(!DEBUG_PERF) return;
+  _perfSettleClick=perfNow();
+  console.log('[PERF] 거래처 정산 탭 클릭');
+}
+function perfSettleDone(reason){
+  if(!DEBUG_PERF || !_perfSettleClick) return;
+  const ms=perfNow()-_perfSettleClick;
+  _perfSettleClick=0;
+  console.log('[PERF] renderSettleAll 완료 ('+reason+'): '+ms.toFixed(1)+'ms');
+  window._perfSettleRender={ms:ms, reason:reason};
+}
 
 // ─── KST(한국 표준시) 날짜 유틸 ───────────────────
 function getKSTDate(offsetDays=0){
@@ -2376,6 +2471,7 @@ function renderOpenClientDetail(cols){
   if(hitCl){
     const d=ld(); const c=d.clients.find(x=>x.id===CUR_CLIENT);
     if(c) renderInfoForm(c);
+    try{ refreshQuotePaySticky(); }catch(e){}
   }
   if(hitPr){ try{ refreshDetailProjectSelectors(); }catch(e){} }
 }
@@ -3264,6 +3360,7 @@ function _svSetCache(key, rows){
     case 'payh': PAY_HISTORY_CACHE=next; break;
   }
   _svReindex(key, next);
+  try{ markSettleJoinDirty(key); }catch(e){}
 }
 function _svItemJson(item){
   if(!item||item.id==null||item.id==='') return null;
@@ -3338,6 +3435,8 @@ function _svOnSnap(key, snap){
     try{ _gsyncNoteProjectChanges(changes); }catch(e){}
   }
   if(key==='cl'||key==='pr'){ try{ armAutoSyncOnce(); }catch(e){} }
+  try{ markSettleJoinDirty(key); }catch(e){}
+  if(firstSnap || (key==='qt' || key==='st')){ try{ perfNoteFirstSnap(key, snap, firstSnap); }catch(e){} }
   if(changes.length||firstSnap) scheduleRerender(SV_COL[key]||key);
 }
 function _svRequireLoaded(key){
@@ -3838,6 +3937,7 @@ function doLogout(){
   const ch=document.getElementById('admin-chevron');
   if(sub)sub.style.display='none';
   if(ch)ch.style.transform='rotate(0deg)';
+  closeAdminGroups();
   // 로그인 화면으로
   hide('app');
   show('login-screen');
@@ -5528,6 +5628,7 @@ function _perfReportWhenCoreReady(){
   })();
 }
 function initApp(){
+  perfMarkLogin();
   subscribeStaffCore();
   document.getElementById('ov-date').textContent='업데이트: '+new Date().toLocaleString('ko-KR');
   updateAdminUI();
@@ -7173,6 +7274,18 @@ function pickSettleForQuote(list, qtId){
 }
 function listSettleRowsForView(clientId){
   const d=ld();
+  const clientById={};
+  (d.clients||[]).forEach(cl=>{ if(cl&&cl.id) clientById[cl.id]=cl; });
+  function decorate(row, qt){
+    const client=clientById[row.clientId];
+    row._order=(qt&&qt.order!=null)?qt.order:9999;
+    row._supplierKey=qt?quoteSupplierFilterKey(qt):'';
+    row._clientName=(client&&client.name)||'';
+    const bizIdx=(qt&&qt.taxBizIdx!=null)?qt.taxBizIdx:0;
+    const bizList=client&&client.bizInfoList;
+    row._bizNo=(bizList&&bizList[bizIdx]&&bizList[bizIdx].bizNo)||'—';
+    return row;
+  }
   const byQt=new Map();
   stLd().forEach(s=>{
     if(!s||!s.qtId) return;
@@ -7198,12 +7311,12 @@ function listSettleRowsForView(clientId){
       row._hasSettle=false;
       row._linkMismatch=true;
     }
-    rows.push(row);
+    rows.push(decorate(row, qt));
   });
   stLd().forEach(s=>{
     if(!s||s.qtId) return;
     if(clientId&&s.clientId!==clientId) return;
-    rows.push({...s, _hasSettle:true, _manual:true});
+    rows.push(decorate({...s, _hasSettle:true, _manual:true}, null));
   });
   return rows;
 }
@@ -7212,10 +7325,121 @@ function settleMismatchBadge(s){
   return '<div style="margin-top:3px"><span style="display:inline-block;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:999px;padding:1px 6px;font-size:10px;font-weight:800">⚠ 연동 불일치</span></div>';
 }
 
+let _settlePaintToken=0;
+let _settleJoinCache=null;
+let _settleJoinDirty=true;
+let _settleDateDefaulted=false;
+let _settlePage=1;
+let _settleFilterKey='';
+const SETTLE_PAGE_SIZE=100;
+function settleCarryBadge(s){
+  if(!s||!s._carry) return '';
+  return '<div style="margin-top:3px"><span style="display:inline-block;background:#e0e7ff;color:#3730a3;border:1px solid #a5b4fc;border-radius:999px;padding:1px 6px;font-size:10px;font-weight:800">이월 미정산</span></div>';
+}
+function settlePagerHtml(page, pageCount, total){
+  const fromN=total?((page-1)*SETTLE_PAGE_SIZE+1):0;
+  const toN=Math.min(total, page*SETTLE_PAGE_SIZE);
+  const nums=[];
+  if(pageCount>1){
+    const span=2;
+    let a=Math.max(1, page-span), b=Math.min(pageCount, page+span);
+    if(a>1){ nums.push(1); if(a>2) nums.push(0); }
+    for(let p=a;p<=b;p++) nums.push(p);
+    if(b<pageCount){ if(b<pageCount-1) nums.push(0); nums.push(pageCount); }
+  }
+  const btns=nums.map(p=>{
+    if(!p) return '<span style="padding:0 4px;color:var(--text3)">…</span>';
+    const on=p===page;
+    return `<button type="button" class="btn btn-sm ${on?'btn-blue':'btn-gray'}" onclick="settleGoPage(${p})" ${on?'disabled':''}>${p}</button>`;
+  }).join('');
+  return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:8px 0;flex-wrap:wrap">
+    <span style="font-size:12px;color:var(--text2)">${total.toLocaleString()}건 중 ${fromN.toLocaleString()}–${toN.toLocaleString()}행</span>
+    <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
+      <button type="button" class="btn btn-sm btn-gray" onclick="settleGoPage(${page-1})" ${page<=1?'disabled':''}>이전</button>
+      ${btns}
+      <button type="button" class="btn btn-sm btn-gray" onclick="settleGoPage(${page+1})" ${page>=pageCount?'disabled':''}>다음</button>
+    </div>
+  </div>`;
+}
+function settleGoPage(p){
+  const n=Math.max(1, Number(p)||1);
+  if(n===_settlePage) return;
+  _settlePage=n;
+  renderSettleAll();
+}
+function markSettleJoinDirty(key){
+  if(!key || key==='st' || key==='qt' || key==='cl') _settleJoinDirty=true;
+}
+function settleShiftMonthStart(delta){
+  const p=getKSTDateObj(0);
+  let y=p.y, m=p.m+delta;
+  while(m<1){ m+=12; y--; }
+  while(m>12){ m-=12; y++; }
+  return y+'-'+String(m).padStart(2,'0')+'-01';
+}
+function settleRangePreset(kind){
+  const from=document.getElementById('settle-filter-date-from');
+  const to=document.getElementById('settle-filter-date-to');
+  if(!from||!to) return;
+  _settleDateDefaulted=true;
+  if(kind==='all'){ from.value=''; to.value=''; }
+  else if(kind==='month'){ from.value=settleShiftMonthStart(0); to.value=getKSTDate(); }
+  else { from.value=settleShiftMonthStart(-2); to.value=getKSTDate(); }
+  if(typeof DEBUG_PERF!=='undefined' && DEBUG_PERF) perfMarkSettleClick();
+  renderSettleAll();
+}
+function applySettleDefaultRange(){
+  if(_settleDateDefaulted) return;
+  const from=document.getElementById('settle-filter-date-from');
+  const to=document.getElementById('settle-filter-date-to');
+  if(!from||!to) return;
+  _settleDateDefaulted=true;
+  if(!from.value && !to.value){
+    from.value=settleShiftMonthStart(-2);
+    to.value=getKSTDate();
+  }
+}
+function settleStatsPlaceholder(){
+  return sCard('전체 견적 건수','var(--accent)','…','집계 중')
+    +sCard('총 견적 금액','#0891b2','…','집계 중')
+    +sCard('정산 완료','var(--green)','…','집계 중')
+    +sCard('미정산','var(--red)','…','집계 중');
+}
 function renderSettleAll(){
   try{ renderSettleSupplierAccount(); }catch(e){}
-  const settles=listSettleRowsForView();
-  const d=ld();
+  applySettleDefaultRange();
+  const statEl=document.getElementById('settle-all-stats');
+  const tableEl=document.getElementById('settle-all-table');
+  if(tableEl && (!_svLoaded.st || !_svLoaded.qt)){
+    if(statEl) statEl.innerHTML=settleStatsPlaceholder();
+    tableEl.innerHTML='<div style="text-align:center;padding:36px;color:var(--text3)">정산 데이터를 불러오는 중…</div>';
+    return;
+  }
+  if(_settleJoinDirty || !_settleJoinCache){
+    const buildToken=++_settlePaintToken;
+    _settleJoinDirty=false;
+    if(statEl) statEl.innerHTML=settleStatsPlaceholder();
+    if(tableEl) tableEl.innerHTML='<div style="text-align:center;padding:36px;color:var(--text3)">목록 구성 중…</div>';
+    setTimeout(function(){
+      if(buildToken!==_settlePaintToken){ _settleJoinDirty=true; return; }
+      try{
+        _settleJoinCache={rows:listSettleRowsForView()};
+        if(typeof DEBUG_PERF!=='undefined' && DEBUG_PERF && _perfSettleClick){
+          console.log('[PERF] 목록 구성 '+(perfNow()-_perfSettleClick).toFixed(1)+'ms / 원본 '+_settleJoinCache.rows.length+'행');
+        }
+      }catch(err){
+        _settleJoinDirty=true;
+        console.error(err);
+        if(tableEl) tableEl.innerHTML='<div style="text-align:center;padding:36px;color:#dc2626">목록을 만들지 못했습니다. 새로고침 후 다시 열어 주세요.</div>';
+        perfSettleDone('목록 구성 실패');
+        return;
+      }
+      renderSettleAll();
+    }, 0);
+    return;
+  }
+  const paintToken=++_settlePaintToken;
+  const settles=_settleJoinCache.rows;
   const search=(document.getElementById('settle-search')?.value||'').toLowerCase();
   const filter=document.getElementById('settle-filter')?.value||'';
   const dateFrom=(document.getElementById('settle-filter-date-from')?.value||'').trim();
@@ -7224,28 +7448,21 @@ function renderSettleAll(){
   const taxFilter=document.getElementById('settle-filter-tax')?.value||'';
   const taxIssuedFilter=document.getElementById('settle-filter-taxissued')?.value||'';
   const supplierFilter=document.getElementById('settle-supplier-key')?.value||'';
-
-  // 요청3 진단용: quotes 전체 개수 확인 (건수에 따라 최적화 방식이 달라짐)
-  console.log('quotes 전체 개수:', QUOTES_CACHE.length);
-
-  // 거래처명 매핑 + 견적서 order (순서 반영)
-  const clientMap={};
-  const clientById={};
-  d.clients.forEach(cl=>{clientMap[cl.id]=cl.name;clientById[cl.id]=cl;});
-  const quotesByClient=_groupRows(d.quotes, q=>q.clientId);
-  const quoteOrder={};
-  const quoteMap={};
-  quotesByClient.forEach(list=>{
-    list.forEach(q=>{ quoteOrder[q.id]=q.order!=null?q.order:9999; quoteMap[q.id]=q; });
-  });
+  const filterKey=[search,filter,dateFrom,dateTo,amtFilter,taxFilter,taxIssuedFilter,supplierFilter].join('\u0001');
+  if(filterKey!==_settleFilterKey){
+    _settleFilterKey=filterKey;
+    _settlePage=1;
+  }
 
   let filtered=settles.filter(s=>{
-    const cname=(clientMap[s.clientId]||'').toLowerCase();
+    const cname=(s._clientName||'').toLowerCase();
     if(search&&!cname.includes(search)&&!(s.toName||'').toLowerCase().includes(search))return false;
     if(filter==='대기'&&s.settled)return false;
     if(filter==='완료'&&!s.settled)return false;
-    if(dateFrom&&(s.date||'').localeCompare(dateFrom)<0)return false;
-    if(dateTo&&(s.date||'').localeCompare(dateTo)>0)return false;
+    const settleDate=String(s.date||'').slice(0,10);
+    const outside=(dateFrom && settleDate.localeCompare(dateFrom)<0) || (dateTo && settleDate.localeCompare(dateTo)>0);
+    if(outside && s.settled) return false;
+    s._carry=!s.settled && !!dateFrom && /^\d{4}-\d{2}-\d{2}$/.test(settleDate) && settleDate<dateFrom;
     if(amtFilter){
       const t=Number(s.total)||0;
       if(amtFilter==='0'&&t!==0)return false;
@@ -7257,36 +7474,47 @@ function renderSettleAll(){
     if(taxFilter==='n'&&s.taxYn)return false;
     if(taxIssuedFilter==='y'){ if(!s.taxYn||!s.taxIssued)return false; }
     if(taxIssuedFilter==='n'){ if(s.taxYn&&s.taxIssued)return false; }
-    if(supplierFilter && quoteSupplierFilterKey(quoteMap[s.qtId])!==supplierFilter) return false;
+    if(supplierFilter && (s._supplierKey||'')!==supplierFilter) return false;
     return true;
   }).sort((a,b)=>{
-    const oa=quoteOrder[a.qtId]!=null?quoteOrder[a.qtId]:9999, ob=quoteOrder[b.qtId]!=null?quoteOrder[b.qtId]:9999;
+    const ca=a._carry?1:0, cb=b._carry?1:0;
+    if(ca!==cb) return cb-ca;
+    const oa=a._order!=null?a._order:9999, ob=b._order!=null?b._order:9999;
     if(oa!==ob)return oa-ob;
     return (b.date||'').localeCompare(a.date||'');
   });
+  const pageCount=Math.max(1, Math.ceil(filtered.length/SETTLE_PAGE_SIZE)||1);
+  if(_settlePage>pageCount) _settlePage=pageCount;
+  if(_settlePage<1) _settlePage=1;
+  const pageStart=(_settlePage-1)*SETTLE_PAGE_SIZE;
+  const pageRows=filtered.slice(pageStart, pageStart+SETTLE_PAGE_SIZE);
+  const carryCount=filtered.reduce((n,x)=>n+(x._carry?1:0),0);
 
-  const totalAmt=filtered.reduce((s,x)=>s+(Number(x.total)||0),0);
-  const settledRows=filtered.filter(x=>x.settled);
-  const settledAmt=settledRows.reduce((s,x)=>s+(Number(x.total)||0),0);
-  const pendingAmt=totalAmt-settledAmt;
-  const statEl=document.getElementById('settle-all-stats');
-  if(statEl) statEl.innerHTML=`
-    ${sCard('전체 견적 건수','var(--accent)',filtered.length+'건','')}
-    ${sCard('총 견적 금액','#0891b2',fmtN(totalAmt)+'원','')}
-    ${sCard('정산 완료','var(--green)',fmtN(settledAmt)+'원',settledRows.length+'건')}
-    ${sCard('미정산','var(--red)',fmtN(pendingAmt)+'원',filtered.filter(x=>!x.settled).length+'건')}`;
+  if(statEl) statEl.innerHTML=settleStatsPlaceholder();
+  setTimeout(function(){
+    if(paintToken!==_settlePaintToken) return;
+    const el=document.getElementById('settle-all-stats');
+    if(!el) return;
+    const totalAmt=filtered.reduce((s,x)=>s+(Number(x.total)||0),0);
+    const settledRows=filtered.filter(x=>x.settled);
+    const settledAmt=settledRows.reduce((s,x)=>s+(Number(x.total)||0),0);
+    const pendingAmt=totalAmt-settledAmt;
+    const pendingCount=filtered.filter(x=>!x.settled).length;
+    el.innerHTML=`
+      ${sCard('전체 견적 건수','var(--accent)',filtered.length+'건',carryCount?('이월 미정산 '+carryCount+'건 포함'):'')}
+      ${sCard('총 견적 금액','#0891b2',fmtN(totalAmt)+'원','')}
+      ${sCard('정산 완료','var(--green)',fmtN(settledAmt)+'원',settledRows.length+'건')}
+      ${sCard('미정산','var(--red)',fmtN(pendingAmt)+'원',pendingCount+'건'+(carryCount?(' · 이월 '+carryCount+'건 포함'):''))}`;
+    perfSettleDone('화면 '+pageRows.length+'/'+filtered.length+'행 · 이월 '+carryCount+' · 합계');
+  }, 0);
 
-  const tbody=filtered.map((s,i)=>{
-    // 요청1: settle → quote(taxBizIdx) → client.bizInfoList[idx].bizNo
-    const quote=quoteMap[s.qtId];
-    const client=clientById[s.clientId];
-    const bizIdx=(quote&&quote.taxBizIdx!=null)?quote.taxBizIdx:0;
-    const bizNo=(client&&client.bizInfoList&&client.bizInfoList[bizIdx]&&client.bizInfoList[bizIdx].bizNo)||'—';
+  const tbody=pageRows.map((s,i)=>{
+    const bizNo=s._bizNo||'—';
     return `<tr>
     <td style="text-align:center;position:sticky;left:0;z-index:3;background:var(--card);min-width:36px"><input type="checkbox" class="settle-row-check" value="${s.id}" onchange="updateBulkTaxBtnState()" onclick="event.stopPropagation()" ${s.taxYn?'':'disabled'}></td>
-    <td style="text-align:center;font-size:11px;color:var(--text3);position:sticky;left:36px;z-index:3;background:var(--card);min-width:40px">${i+1}</td>
+    <td style="text-align:center;font-size:11px;color:var(--text3);position:sticky;left:36px;z-index:3;background:var(--card);min-width:40px">${pageStart+i+1}</td>
     <td style="font-family:monospace;font-size:11px;position:sticky;left:76px;z-index:3;background:var(--card);min-width:90px">${s.date}</td>
-    <td style="font-weight:700;position:sticky;left:166px;z-index:3;background:var(--card);min-width:120px">${clientMap[s.clientId]||'—'}</td>
+    <td style="font-weight:700;position:sticky;left:166px;z-index:3;background:var(--card);min-width:120px">${s._clientName||'—'}</td>
     <td style="font-size:11px;color:var(--text2)">${s.toName||'—'}</td>
     <td style="font-size:10px;color:var(--text2)">${s.no||'—'}</td>
     <td style="font-size:11px;font-family:monospace;color:var(--text2)" title="${bizNo}">${bizNo}</td>
@@ -7325,6 +7553,7 @@ function renderSettleAll(){
           <button class="btn btn-xs btn-green" onclick="markSettleDoneAll('${s.id}')">완료</button>
         </div>`}
       ${settleMismatchBadge(s)}
+      ${settleCarryBadge(s)}
     </td>
     <td style="text-align:center">
       <button class="btn btn-xs btn-red" onclick="${s._hasSettle?`delSettleRow('${s.id}')`:`delQt('${s.qtId}')`}" title="정산 내역 삭제">🗑</button>
@@ -7332,7 +7561,6 @@ function renderSettleAll(){
   </tr>`;
   }).join('');
 
-  const tableEl=document.getElementById('settle-all-table');
   if(!tableEl)return;
   const tableHtml=`<table style="border-collapse:collapse;width:100%;min-width:1100px">
     <thead><tr>
@@ -7355,12 +7583,16 @@ function renderSettleAll(){
   </table>`;
 
   tableEl.innerHTML=`
+    ${settlePagerHtml(_settlePage, pageCount, filtered.length)}
     <div id="settle-all-scroll-top" style="overflow-x:auto;overflow-y:hidden;margin-bottom:4px">
       <div id="settle-all-scroll-top-inner" style="height:1px"></div>
     </div>
     <div id="settle-all-scroll-main" style="overflow-x:auto">
       ${tableHtml}
     </div>`;
+  if(typeof DEBUG_PERF!=='undefined' && DEBUG_PERF && _perfSettleClick){
+    console.log('[PERF] 표 그리기까지 '+(perfNow()-_perfSettleClick).toFixed(1)+'ms / 화면 '+pageRows.length+'행');
+  }
 
   // 상단/하단 스크롤 동기화
   try{
@@ -9426,16 +9658,14 @@ function showPage(n){
     setTimeout(()=>document.getElementById('modal-login-id')?.focus(),100);
     return;
   }
+  if(n==='settle-all') perfMarkSettleClick();
   if(n!=='dupcheck' && _dupReady) dupCheckOnLeave();
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));
   document.getElementById('page-'+n).classList.add('active');
   const el=document.querySelector(`[data-page="${n}"]`);
   if(el)el.classList.add('active');
-  if(adminSubs.includes(n)){
-    document.getElementById('nav-admin-toggle').classList.add('active');
-    openAdminMenu();
-  }
+  syncAdminNav(n);
   const deferCore=(n==='overview'||n==='clients'||n==='export') && !_staffCoreReady();
   if(deferCore){
     _dirtyPages.add(n);
@@ -9443,6 +9673,7 @@ function showPage(n){
   }
   const needsPaint=!_pagePainted.has(n) || _dirtyPages.has(n);
   if(!needsPaint){
+    if(n==='settle-all') perfSettleDone('화면 캐시, renderSettleAll 생략');
     if(n==='clients') flushDirtyClientDetail();
     if(n==='dupcheck') dupResumeWaits();
     return;
@@ -9485,6 +9716,37 @@ function openAdminMenu(){
   const ch=document.getElementById('admin-chevron');
   sub.style.display='block';
   ch.style.transform='rotate(90deg)';
+}
+function toggleAdminGroup(key){
+  const body=document.getElementById('admin-group-'+key);
+  const ch=document.getElementById('admin-chevron-'+key);
+  if(!body) return;
+  const open=body.style.display==='block';
+  body.style.display=open?'none':'block';
+  if(ch) ch.textContent=open?'▶':'▼';
+}
+function openAdminGroup(key){
+  const body=document.getElementById('admin-group-'+key);
+  const ch=document.getElementById('admin-chevron-'+key);
+  if(body) body.style.display='block';
+  if(ch) ch.textContent='▼';
+}
+function closeAdminGroups(){
+  ['settle','code'].forEach(key=>{
+    const body=document.getElementById('admin-group-'+key);
+    const ch=document.getElementById('admin-chevron-'+key);
+    if(body) body.style.display='none';
+    if(ch) ch.textContent='▶';
+  });
+}
+function syncAdminNav(n){
+  const item=document.querySelector('#nav-admin-sub [data-page="'+n+'"]');
+  if(!item) return;
+  const toggle=document.getElementById('nav-admin-toggle');
+  if(toggle) toggle.classList.add('active');
+  openAdminMenu();
+  const body=item.closest('.admin-group-body');
+  if(body && body.id && body.id.indexOf('admin-group-')===0) openAdminGroup(body.id.slice('admin-group-'.length));
 }
 
 // ═══════════════════════════════════════════
@@ -14000,6 +14262,29 @@ let QT_ITEMS={}; // 임시 항목 상태 {qtId:[{type,label,qty,unitPrice,memo}]
 let QT_EDIT_ID=null; // 편집 중인 견적서 id
 let QT_FORM_OPEN=false; // 견적서 작성/수정 폼 열림 여부 (다른 사용자 변경으로 인한 리렌더 차단용)
 
+function quoteCurrentPayHtml(c){
+  const route=c?payShownRoute(c):{route:'',routeMemo:''};
+  const mode=c?payShownMode(c):{mode:'',modeMemo:''};
+  const hasRoute=!!(route.route&&String(route.route).trim());
+  const hasMode=!!(mode.mode&&String(mode.mode).trim());
+  if(!hasRoute && !hasMode){
+    return '<button type="button" id="qt-pay-sticky" class="qt-pay-sticky qt-pay-sticky-empty" onclick="openQuotePayStatus()">결제 방식 미등록</button>';
+  }
+  const routeLabel=hasRoute?escHtml(route.route)+(route.route==='기타'&&route.routeMemo?' · '+escHtml(route.routeMemo):''):'—';
+  const modeLabel=hasMode?escHtml(payModeLabel(mode.mode))+(mode.mode==='etc'&&mode.modeMemo?' · '+escHtml(mode.modeMemo):''):'—';
+  return '<div id="qt-pay-sticky" class="qt-pay-sticky"><div style="font-size:12px;line-height:1.5"><span style="font-size:10px;font-weight:800;color:#0e7490;margin-right:8px">현재 결제</span>경로 <b>'+routeLabel+'</b><span style="color:var(--text3);margin:0 8px">·</span>방식 <b>'+modeLabel+'</b></div><button type="button" class="btn btn-xs btn-gray" onclick="openQuotePayStatus()">결제 현황</button></div>';
+}
+function refreshQuotePaySticky(){
+  const el=document.getElementById('qt-pay-sticky');
+  if(!el) return;
+  const c=(ld().clients||[]).find(x=>x.id===CUR_CLIENT);
+  el.outerHTML=quoteCurrentPayHtml(c);
+}
+function openQuotePayStatus(){
+  const id=CUR_CLIENT;
+  showPage('paystatus');
+  if(id) openPayStatusDetail(id);
+}
 function renderDetQuote(){
   // 견적서 작성/수정 폼이 열려 있을 때는
   // 사용자가 입력 중인 내용을 건드리지 않도록 리스트 리렌더를 건너뛴다.
@@ -14022,6 +14307,7 @@ function renderDetQuote(){
     :`<option value="">선택하세요</option>${bizOptions}`;
 
   let html=`<div style="max-width:920px">
+    ${quoteCurrentPayHtml(c)}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
       <div style="font-size:13px;font-weight:700">📄 견적서 관리</div>
       <div style="display:flex;gap:8px;align-items:center">
@@ -14494,6 +14780,9 @@ function groupQuoteItems(items){
   });
   return groups;
 }
+function quoteGroupShowsSubtotal(g){
+  return !!(g && g.kind==='product' && g.items && g.items.length>1);
+}
 function quoteItemsForSave(list){
   return (list||[]).map((it,idx)=>{
     const productName=String(it.productName||'').trim();
@@ -14683,7 +14972,7 @@ function renderQtNewItems(){
         <td style="padding:5px 4px;text-align:center"><button type="button" class="btn btn-xs btn-red" style="padding:2px 5px" onclick="removeQtItem('${it.id}')">✕</button></td>
       </tr>`);
     });
-    if(g.kind==='product'){
+    if(quoteGroupShowsSubtotal(g)){
       const sub=lines.reduce((s,line)=>({
         supply:s.supply+line.r.supply,
         commission:s.commission+line.r.commission,
@@ -15573,7 +15862,7 @@ function quoteGroupedSheetRows(q, full){
       if(full) rows.push([name, Number(line.it.qty)||0, Number(line.it.unitPrice)||0, line.amt.supply, line.amt.commission, line.amt.vat, line.amt.total]);
       else rows.push([name, Number(line.it.qty)||0, Number(line.it.unitPrice)||0, line.amt.total]);
     });
-    if(g.kind==='product'){
+    if(quoteGroupShowsSubtotal(g)){
       const sub=lines.reduce((s,l)=>({
         supply:s.supply+l.amt.supply, commission:s.commission+l.amt.commission, vat:s.vat+l.amt.vat, total:s.total+l.amt.total
       }),{supply:0,commission:0,vat:0,total:0});
@@ -15620,7 +15909,7 @@ function buildQtDoc(qt){
         <td style="padding:7px 10px;text-align:right;font-weight:700;color:var(--accent)">${fmtN(amt.total)}원</td>
       </tr>`);
     });
-    if(g.kind==='product'){
+    if(quoteGroupShowsSubtotal(g)){
       const sub=lines.reduce((s,l)=>({
         supply:s.supply+l.amt.supply, commission:s.commission+l.amt.commission, vat:s.vat+l.amt.vat, total:s.total+l.amt.total
       }),{supply:0,commission:0,vat:0,total:0});
