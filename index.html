@@ -434,6 +434,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
     <div class="nav-item nav-sub" onclick="showPage('dupcheck')" data-page="dupcheck"><span class="nav-icon" style="font-size:12px">🔎</span>스중체크</div>
     <div class="nav-item nav-sub" onclick="showPage('consult')" data-page="consult"><span class="nav-icon" style="font-size:12px">📒</span>상담일지</div>
     <div class="nav-item nav-sub" onclick="showPage('paystatus')" data-page="paystatus"><span class="nav-icon" style="font-size:12px">💳</span>결제 현황</div>
+    <div class="nav-item nav-sub" onclick="showPage('inflow')" data-page="inflow"><span class="nav-icon" style="font-size:12px">📈</span>유입 분석</div>
     <div class="nav-item" onclick="showPage('crm')" data-page="crm"><span class="nav-icon">📇</span>CRM</div>
     <!-- 관리자 접이식 메뉴 -->
     <div class="nav-item" id="nav-admin-toggle" onclick="toggleAdminMenu()" data-page="__admin__" style="display:flex;align-items:center;justify-content:space-between">
@@ -449,7 +450,8 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
       <div class="nav-item nav-sub" onclick="openChangeLogModal()"><span class="nav-icon" style="font-size:12px">📜</span>수정 이력</div>
       <div class="nav-item nav-sub" onclick="cleanupOrphanSettles()"><span class="nav-icon" style="font-size:12px">🧹</span>고아 정산 정리</div>
       <div class="nav-item nav-sub" onclick="openQuoteLinkCheck()"><span class="nav-icon" style="font-size:12px">🔎</span>견적-정산 연동 점검</div>
-      <div class="nav-item nav-sub" onclick="openPayMigration()"><span class="nav-icon" style="font-size:12px">💳</span>결제 데이터 이관</div>
+      <div class="nav-item nav-sub" id="nav-pay-migration" onclick="openPayMigration()"><span class="nav-icon" style="font-size:12px">💳</span>결제 데이터 이관</div>
+      <div class="nav-item nav-sub" onclick="openPayAudit()"><span class="nav-icon" style="font-size:12px">🧪</span>결제 데이터 점검</div>
     </div>
     <div class="nav-item" onclick="showPage('export')" data-page="export"><span class="nav-icon">📤</span>엑셀 추출</div>
     <div style="padding:10px 20px;border-top:1px solid var(--border);margin-top:auto">
@@ -750,6 +752,21 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
           <tbody id="paystatus-tbody"></tbody>
         </table>
       </div>
+    </div>
+
+    <!-- 유입 분석 -->
+    <div class="page" id="page-inflow">
+      <div class="page-header">
+        <div>
+          <div class="page-title">📈 유입 분석</div>
+          <div class="page-sub">거래처·프로젝트는 이미 불러온 캐시만 쓰고, 유입경로 선택지는 설정 문서 1건만 읽습니다.</div>
+        </div>
+      </div>
+      <div class="dtabs" style="margin-bottom:12px">
+        <div class="dtab active" id="inf-tab-input" onclick="inflowShowTab('input')">유입 입력</div>
+        <div class="dtab" id="inf-tab-analysis" onclick="inflowShowTab('analysis')">분석</div>
+      </div>
+      <div id="inflow-body"></div>
     </div>
 
     <!-- CRM -->
@@ -1368,39 +1385,21 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
   </div>
 </div>
 
-<!-- 거래처 결제 현황 (기타플랫폼용) -->
-<div class="mo hidden" id="modal-client-payments">
-  <div class="md md-lg" style="max-width:820px">
-    <div class="mt">💳 결제 현황</div>
-    <div id="cp-help" style="font-size:11px;color:var(--text3);margin-bottom:10px">
-      기타 플랫폼(오픈마켓·구독 등) 결제 내역을 관리합니다. 로그인한 사용자는 편집할 수 있습니다.
-    </div>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
-      <div id="cp-title" style="font-size:12px;font-weight:700;color:var(--text2)"></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <button class="btn btn-gray btn-sm" id="cp-add-btn" onclick="addPayRow()">+ 행 추가</button>
-        <button class="btn btn-blue btn-sm" onclick="exportPaymentsExcel()">📥 엑셀 추출</button>
-        <button class="btn btn-green btn-sm" id="cp-save-btn" onclick="savePayments()">💾 저장</button>
-      </div>
-    </div>
-    <div class="sheet-outer" style="max-height:420px">
-      <table class="st" id="cp-table">
-        <thead>
-          <tr>
-            <th style="width:40px">NO</th>
-            <th style="min-width:120px">결제 플랫폼</th>
-            <th style="min-width:110px">결제 요청일</th>
-            <th style="min-width:70px">건수</th>
-            <th style="min-width:110px">결제 금액</th>
-            <th style="min-width:140px">메모</th>
-            <th style="width:40px" id="cp-del-th"></th>
-          </tr>
-        </thead>
-        <tbody id="cp-tbody"></tbody>
-      </table>
-    </div>
+<div class="mo hidden" id="modal-client-paylist">
+  <div class="md md-lg" style="max-width:720px">
+    <div class="mt" id="client-paylist-title">결제 내역</div>
+    <div id="client-paylist-body" style="max-height:60vh;overflow:auto"></div>
+    <div class="mf"><button class="btn btn-gray" onclick="closeMd('client-paylist')">닫기</button></div>
+  </div>
+</div>
+<div class="mo hidden" id="modal-pay-audit">
+  <div class="md md-lg" style="max-width:980px">
+    <div class="mt">🧪 결제 데이터 점검</div>
+    <div id="pay-audit-summary" style="font-size:12px;font-weight:700;margin-bottom:8px"></div>
+    <div id="pay-audit-body" style="max-height:60vh;overflow:auto;border:1px solid var(--border);border-radius:8px"></div>
     <div class="mf">
-      <button class="btn btn-gray" onclick="closeMd('client-payments')">닫기</button>
+      <button class="btn btn-gray" onclick="closeMd('pay-audit')">닫기</button>
+      <button class="btn btn-blue" id="pay-audit-all" onclick="payAuditFixAll()">모두 맞추기</button>
     </div>
   </div>
 </div>
@@ -2434,6 +2433,7 @@ function scheduleRerender(collectionName){
     paint('user-mgmt','page-user-mgmt', _renderColsHit(cols, ['users']), function(){ renderUserMgmt(); });
     paint('crm','page-crm', _renderColsHit(cols, ['quotes','clients']), function(){ renderCrmQuotes(); });
     paint('paystatus','page-paystatus', _renderColsHit(cols, ['clients','projects']), function(){ renderPayStatus(); });
+    paint('inflow','page-inflow', _renderColsHit(cols, ['clients','projects']), function(){ renderInflowPage(); });
     try{
       const detailHit=_renderColsHit(cols, ['clients','projects','records','quotes','settles','uiCols','dailySettleRows','blogProjects']);
       if(CUR_CLIENT && detailHit){
@@ -2561,6 +2561,7 @@ async function loadMainDataFromFirestore(force = false){
       const clSnap = await db.collection('clients').get();
       CLIENTS_CACHE = clSnap.docs.map(d=>({id:d.id,...(d.data()||{})}));
       _svAcceptServerRows('cl', CLIENTS_CACHE);
+      try{ refreshPayMigrationMenu(); }catch(e){}
     }catch(e){
       ok=false;
       console.error(e);
@@ -3247,7 +3248,7 @@ function _applyDocChangesToRows(rows, changes, index, sync){
 function _svSetCache(key, rows){
   const next=Array.isArray(rows)?rows:[];
   switch(key){
-    case 'cl': CLIENTS_CACHE=next; break;
+    case 'cl': CLIENTS_CACHE=next; try{ refreshPayMigrationMenu(); }catch(e){} break;
     case 'pr': PROJECTS_CACHE=next; break;
     case 'rc': RECORDS_CACHE=next; break;
     case 'qt': QUOTES_CACHE=next; break;
@@ -3741,6 +3742,7 @@ function updateAdminUI(){
   // 관리자 메뉴 표시 여부
   const adminToggle=document.getElementById('nav-admin-toggle');
   if(adminToggle) adminToggle.style.display = isAdmin ? '' : 'none';
+  refreshPayMigrationMenu();
 }
 
 function onAdminMenuClick(){
@@ -9461,6 +9463,11 @@ function showPage(n){
     consultDayEnsure();
   }
   if(n==='paystatus') renderPayStatus();
+  if(n==='inflow'){
+    ensureInflowRoutes().then(function(){
+      if(_activePageId()==='page-inflow') renderInflowPage();
+    });
+  }
   }finally{
     const label='탭 전환 1회 ('+n+')';
     setTimeout(()=>fsEnd(label), 0);
@@ -10510,6 +10517,7 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
   const modeInfo=payShownMode(c);
   const payLine='<span style="font-size:10px;font-weight:700;color:#0e7490">결제경로: '+escHtml(routeInfo.route||'—')+' · 결제방식: '+escHtml(payModeLabel(modeInfo.mode))+'</span>';
   const payEditBtn=(isAdmin&&c&&c.id)?'<button type="button" class="btn btn-xs btn-blue" style="margin-left:6px" onclick="openPayStatusDetail(decodeURIComponent(\''+encodeURIComponent(c.id)+'\'))">수정</button>':'';
+  const payViewBtn=(!isAdmin&&c&&c.id)?'<button type="button" class="btn btn-xs btn-gray" style="margin-left:6px" onclick="openClientPayList(\''+payJs(c.id)+'\')">결제 내역 보기</button>':'';
   const contractValueHtml=isPerItem
     ?('<span style="font-size:14px;font-weight:800;color:#0891b2">건별결제</span>')
     :('<span style="font-size:14px;font-weight:800;color:#0891b2">'+fmtN(contractTotal)+'<small style="font-size:9px;color:var(--text3)">건</small></span>');
@@ -10529,7 +10537,7 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
     // ① 계약현황 도넛
     +'<div style="background:var(--card);border:1px solid #a5f3fc;border-radius:12px;overflow:hidden;box-shadow:var(--sh)">'
     +'<div style="padding:7px 12px;background:#ecfeff;border-bottom:1px solid #a5f3fc;font-size:10px;font-weight:700;color:#0891b2;display:flex;justify-content:space-between;align-items:center">'
-    +'📊 계약 현황</div><div style="padding:6px 12px;background:#f0fdff;border-bottom:1px solid #a5f3fc;display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap">'+payLine+payEditBtn+'</div>'
+    +'📊 계약 현황</div><div style="padding:6px 12px;background:#f0fdff;border-bottom:1px solid #a5f3fc;display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap">'+payLine+payEditBtn+payViewBtn+'</div>'
     +'<div style="display:flex;flex-direction:column;align-items:center;padding:14px 12px;gap:10px">'
     +'<canvas id="donut-c-'+uid+'" width="100" height="100"></canvas>'
     +'<div style="width:100%">'
@@ -10639,7 +10647,7 @@ function renderDetDash(){
         </table>
       </div>`:'<div style="margin-top:8px;font-size:11px;color:var(--text3)">미발행</div>'}
       ${biz0?`<div style="font-size:11px;color:var(--text2);margin-top:6px;font-weight:600">발행: ${biz0.bizName}</div>`:''}
-      <button class="btn btn-gray btn-xs" style="margin-top:8px" onclick="showDTab('info')">사업자 관리 →</button>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button class="btn btn-gray btn-xs" onclick="showDTab('info')">사업자 관리 →</button>${c&&c.id?payStatusEditBtn(c.id):''}</div>
     </div>
   </div>`;
 
@@ -10692,24 +10700,24 @@ function openRequestUrl(btn){
   }catch(e){}
 }
 
-function saveContractType(){ toast('결제 현황에서 수정해 주세요','error'); }
-function saveContractTotal(){ toast('결제 현황에서 수정해 주세요','error'); }
-function savePrevPurchaseDone(){ toast('결제 현황에서 수정해 주세요','error'); }
-function savePaymentMethod(){ toast('결제 현황에서 수정해 주세요','error'); }
 function payDashContract(c, projs, allRecs){
   const mode=payShownMode(c).mode;
   const isPrepaid=mode==='prepaid';
+  const countPrepaidOnly=!!(c&&c.payMode==='prepaid');
   const prev=(c&&c.prevPurchaseDone!=null)?(Number(c.prevPurchaseDone)||0):0;
   const ids=new Set();
-  (projs||[]).forEach(p=>{
-    if(!p||!p.id) return;
-    if(p.payMode==='prepaid') ids.add(p.id);
-    else if(p.payMode==='separate') return;
-    else if(isPrepaid) ids.add(p.id);
-  });
+  if(countPrepaidOnly){
+    (projs||[]).forEach(p=>{
+      if(!p||!p.id) return;
+      if(p.payMode==='prepaid') ids.add(p.id);
+      else if(p.payMode==='separate') return;
+      else ids.add(p.id);
+    });
+  }
   let auto=0;
   (allRecs||[]).forEach(r=>{
-    if(!r||!ids.has(r.projectId)||!(r.nickname||r.tracking)) return;
+    if(!r||!(r.nickname||r.tracking)) return;
+    if(countPrepaidOnly&&!ids.has(r.projectId)) return;
     auto++;
   });
   const done=auto+prev;
@@ -10720,134 +10728,6 @@ function payDashContract(c, projs, allRecs){
     else qty=(projs||[]).reduce((a,p)=>a+((p&&(p.contractTotal||p.total))||0),0);
   }
   return {isPrepaid, prev, done, qty, remaining:isPrepaid?Math.max(0,(Number(qty)||0)-done):null};
-}
-
-let PAY_EDIT_ROWS=[];
-let PAY_MODAL_READONLY=false;
-function openPaymentModal(){
-  const d=ld();
-  let c=null;
-  if(CUR_CLIENT){
-    c=d.clients.find(x=>x.id===CUR_CLIENT);
-  }else if(typeof CV_CURRENT_CODE!=='undefined' && CV_CURRENT_CODE){
-    c=d.clients.find(x=>x.code===CV_CURRENT_CODE);
-  }
-  if(!c){toast('거래처를 먼저 선택하세요','error');return;}
-  PAY_MODAL_READONLY=!CUR_ADMIN;
-  const rows=Array.isArray(c.payments)?c.payments:[];
-  PAY_EDIT_ROWS=rows.map(r=>({
-    id:r.id||gid(),
-    platform:r.platform||'',
-    requestDate:r.requestDate||'',
-    qty:Number(r.qty)||'',
-    amount:Number(r.amount)||'',
-    memo:r.memo||'',
-  }));
-  if(!PAY_EDIT_ROWS.length && !PAY_MODAL_READONLY){
-    PAY_EDIT_ROWS.push({id:gid(),platform:'',requestDate:'',qty:'',amount:'',memo:''});
-  }
-  const title=document.getElementById('cp-title');
-  if(title)title.textContent=`거래처: ${c.name}`;
-  const help=document.getElementById('cp-help');
-  if(help){
-    help.textContent=PAY_MODAL_READONLY
-      ?'조회 전용입니다. 행 추가, 삭제, 저장은 로그인한 관리 화면에서만 할 수 있습니다.'
-      :'기타 플랫폼(오픈마켓·구독 등) 결제 내역을 관리합니다. 로그인한 사용자는 편집할 수 있습니다.';
-  }
-  const addBtn=document.getElementById('cp-add-btn');
-  const saveBtn=document.getElementById('cp-save-btn');
-  const delTh=document.getElementById('cp-del-th');
-  if(addBtn) addBtn.style.display=PAY_MODAL_READONLY?'none':'';
-  if(saveBtn) saveBtn.style.display=PAY_MODAL_READONLY?'none':'';
-  if(delTh) delTh.style.display=PAY_MODAL_READONLY?'none':'';
-  renderPaymentTable();
-  openMd('client-payments');
-}
-function renderPaymentTable(){
-  const tbody=document.getElementById('cp-tbody');
-  if(!tbody)return;
-  if(PAY_MODAL_READONLY && !PAY_EDIT_ROWS.length){
-    tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:16px">등록된 결제 내역이 없습니다</td></tr>';
-    return;
-  }
-  const ro=PAY_MODAL_READONLY;
-  tbody.innerHTML=PAY_EDIT_ROWS.map((r,i)=>`
-    <tr>
-      <td style="text-align:center;font-size:11px;color:var(--text3)">${i+1}</td>
-      <td><input class="sc" style="width:100%" ${ro?'readonly':''} value="${(r.platform||'').replace(/"/g,'&quot;')}" ${ro?'':`oninput="onPayChange(${i},'platform',this.value)"`}></td>
-      <td><input class="sc sc-date" type="text" placeholder="YYYY-MM-DD" ${ro?'readonly':''} value="${(r.requestDate||'').replace(/"/g,'&quot;')}" ${ro?'':`oninput="onPayChange(${i},'requestDate',this.value)"`}></td>
-      <td><input class="sc" type="number" min="0" ${ro?'readonly':''} value="${r.qty!==''?r.qty:''}" ${ro?'':`oninput="onPayChange(${i},'qty',this.value)"`}></td>
-      <td><input class="sc" type="number" min="0" ${ro?'readonly':''} value="${r.amount!==''?r.amount:''}" ${ro?'':`oninput="onPayChange(${i},'amount',this.value)"`}></td>
-      <td><input class="sc" style="width:100%" ${ro?'readonly':''} value="${(r.memo||'').replace(/"/g,'&quot;')}" ${ro?'':`oninput="onPayChange(${i},'memo',this.value)"`}></td>
-      ${ro?'':`<td style="text-align:center"><button class="btn btn-xs btn-red" onclick="delPayRow(${i})">✕</button></td>`}
-    </tr>`).join('');
-}
-function onPayChange(idx,key,val){
-  if(PAY_MODAL_READONLY||!CUR_ADMIN)return;
-  if(!PAY_EDIT_ROWS[idx])return;
-  if(key==='qty'||key==='amount'){
-    const n=parseInt(val,10);
-    PAY_EDIT_ROWS[idx][key]=isNaN(n)?'':n;
-  }else{
-    PAY_EDIT_ROWS[idx][key]=val;
-  }
-}
-function addPayRow(){
-  if(PAY_MODAL_READONLY||!CUR_ADMIN)return;
-  PAY_EDIT_ROWS.push({id:gid(),platform:'',requestDate:'',qty:'',amount:'',memo:''});
-  renderPaymentTable();
-}
-function delPayRow(idx){
-  if(PAY_MODAL_READONLY||!CUR_ADMIN)return;
-  if(PAY_EDIT_ROWS.length===1){PAY_EDIT_ROWS[0]={id:gid(),platform:'',requestDate:'',qty:'',amount:'',memo:''};}
-  else PAY_EDIT_ROWS.splice(idx,1);
-  renderPaymentTable();
-}
-function savePayments(){
-  if(!CUR_ADMIN){toast('조회 전용입니다','error');return;}
-  const d=ld();
-  let idx=d.clients.findIndex(x=>x.id===CUR_CLIENT);
-  if(idx<0 && typeof CV_CURRENT_CODE!=='undefined' && CV_CURRENT_CODE){
-    idx=d.clients.findIndex(x=>x.code===CV_CURRENT_CODE);
-  }
-  if(idx<0){toast('거래처를 찾을 수 없습니다','error');return;}
-  const rows=PAY_EDIT_ROWS.map(r=>({
-    id:r.id||gid(),
-    platform:(r.platform||'').trim(),
-    requestDate:(r.requestDate||'').trim(),
-    qty:Number(r.qty)||0,
-    amount:Number(r.amount)||0,
-    memo:(r.memo||'').trim(),
-  })).filter(r=>r.platform||r.requestDate||r.amount);
-  d.clients[idx].payments=rows;
-  sv('cl',d.clients);
-  toast('결제 현황이 저장되었습니다');
-}
-function exportPaymentsExcel(){
-  const d=ld();
-  let c=null;
-  if(CUR_CLIENT){
-    c=d.clients.find(x=>x.id===CUR_CLIENT);
-  }else if(typeof CV_CURRENT_CODE!=='undefined' && CV_CURRENT_CODE){
-    c=d.clients.find(x=>x.code===CV_CURRENT_CODE);
-  }
-  if(!c){toast('거래처를 먼저 선택하세요','error');return;}
-  const rows=Array.isArray(c.payments)?c.payments:[];
-  if(!rows.length){toast('저장된 결제 내역이 없습니다','error');return;}
-  const headers=['NO','결제플랫폼','결제요청일','건수','결제금액','메모'];
-  const data=rows.map((r,i)=>[
-    i+1,
-    r.platform||'',
-    r.requestDate||'',
-    Number(r.qty)||0,
-    Number(r.amount)||0,
-    r.memo||''
-  ]);
-  if(typeof XLSX==='undefined'){toast('XLSX 라이브러리 로딩 중...','error');return;}
-  const ws=XLSX.utils.aoa_to_sheet([headers,...data]);
-  const wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb,ws,'결제현황');
-  XLSX.writeFile(wb,`결제현황_${(c.name||'').replace(/[\\/:*?"<>|]/g,'_')||'client'}_${getKSTDate()}.xlsx`);
 }
 
 // ── 결제 구조 (payRecords / payHistory). 화면 잔여에는 아직 연결하지 않는다. ──
@@ -11357,6 +11237,337 @@ async function loadPayForClient(clientId){
   }finally{
     fsEnd('결제 조회 1회');
   }
+}
+
+function refreshPayMigrationMenu(){
+  const el=document.getElementById('nav-pay-migration');
+  if(!el) return;
+  const list=(CLIENTS_CACHE||[]).filter(c=>c&&c.id);
+  el.style.display=(list.length>0 && list.every(c=>!!c.payMigratedAt))?'none':'';
+}
+async function openClientPayList(clientId){
+  if(!clientId) return;
+  const c=payClient(clientId);
+  const title=document.getElementById('client-paylist-title');
+  if(title) title.textContent=(c&&c.name?c.name+' ':'')+'결제 내역';
+  const body=document.getElementById('client-paylist-body');
+  if(body) body.innerHTML='<div style="padding:16px;color:var(--text3)">불러오는 중…</div>';
+  openMd('client-paylist');
+  if(typeof db==='undefined'){
+    if(body) body.innerHTML='<div style="padding:16px;color:#dc2626">결제 내역을 읽지 못했습니다.</div>';
+    return;
+  }
+  fsBegin('업체 결제내역 1회');
+  try{
+    const snap=await db.collection('payRecords').where('clientId','==',clientId).get();
+    const reads=snap.size||0;
+    const rows=snap.docs.map(d=>Object.assign({id:d.id}, d.data()||{})).filter(r=>r&&!r.deleted);
+    rows.sort((a,b)=>String(b.date||'').localeCompare(String(a.date||''))||String(b.createdAt||'').localeCompare(String(a.createdAt||'')));
+    if(body){
+      body.innerHTML=rows.length
+        ? ('<div style="font-size:11px;color:var(--text3);margin-bottom:6px">조회 1회 · 읽기 '+reads+'건</div><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>'
+          +['결제일','구분','결제경로','건수','금액'].map(h=>'<th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--border);white-space:nowrap">'+h+'</th>').join('')
+          +'</tr></thead><tbody>'+rows.map(r=>'<tr>'
+            +'<td style="padding:6px 4px;white-space:nowrap">'+escHtml(payShortDate(r.date))+'</td>'
+            +'<td style="padding:6px 4px;white-space:nowrap">'+escHtml(payKindLabel(r.kind))+'</td>'
+            +'<td style="padding:6px 4px">'+escHtml(r.route||'')+'</td>'
+            +'<td style="padding:6px 4px;text-align:right">'+fmtN(r.qty||0)+'</td>'
+            +'<td style="padding:6px 4px;text-align:right">'+fmtN(r.amount||0)+'</td>'
+            +'</tr>').join('')+'</tbody></table>')
+        : '<div style="padding:16px;color:var(--text3)">결제 내역이 없습니다. 조회 1회 · 읽기 '+reads+'건</div>';
+    }
+  }catch(e){
+    console.error(e);
+    if(body) body.innerHTML='<div style="padding:16px;color:#dc2626">불러오지 못했습니다.</div>';
+  }finally{
+    fsEnd('업체 결제내역 1회');
+  }
+}
+let PAY_AUDIT_ROWS=[];
+let PAY_AUDIT_SRC=null;
+let PAY_AUDIT_BUSY=false;
+function payAuditRow(c, issue, label, current, expected, fixable, projId){
+  return {clientId:c.id, name:c.name||'(이름 없음)', issue, label, current:current==null?'':String(current), expected:expected==null?'':String(expected), fixable:!!fixable, projId:projId||''};
+}
+function payAuditModeText(v){
+  const n=payNormMode(v);
+  return payModeLabel(n.mode)+(n.modeMemo?' ('+n.modeMemo+')':'');
+}
+function payAuditRouteText(v){
+  const n=payNormRoute(v);
+  return (n.route||'없음')+(n.routeMemo?' ('+n.routeMemo+')':'');
+}
+function payAuditTaxText(v){
+  const t=payNormTax(v);
+  const yn=x=>x?'Y':'N';
+  return '발행 '+yn(t.taxYn)+' · 진행비 '+yn(t.fee)+' · 택배비 '+yn(t.delivery)+' · 상품금액 '+yn(t.product);
+}
+function payAuditLegacyPriceText(c){
+  return '유형1 '+(c&&c.price1Type||'없음')+' '+fmtN(Number(c&&c.price1)||0)+' / 유형2 '+(c&&c.price2Type||'없음')+' '+fmtN(Number(c&&c.price2)||0)+' / 택배 '+(c&&c.price3!=null&&c.price3!==''?fmtN(Number(c.price3)||0):'없음');
+}
+function payAuditFillMode(c, latest){
+  const mode=latest&&latest.mode?payNormMode(latest.mode.value).mode:(c&&c.payMode||'');
+  return mode==='prepaid'?'prepaid':'separate';
+}
+function payAuditBuild(clients, projects, records, history){
+  const rows=[];
+  const recBy=new Map();
+  const histBy=new Map();
+  const projBy=new Map();
+  (records||[]).forEach(r=>{ if(!r||!r.clientId) return; const a=recBy.get(r.clientId)||[]; a.push(r); recBy.set(r.clientId,a); });
+  (history||[]).forEach(h=>{ if(!h||!h.clientId) return; const a=histBy.get(h.clientId)||[]; a.push(h); histBy.set(h.clientId,a); });
+  (projects||[]).forEach(p=>{ if(!p||!p.clientId) return; const a=projBy.get(p.clientId)||[]; a.push(p); projBy.set(p.clientId,a); });
+  (clients||[]).forEach(c=>{
+    if(!c||!c.id) return;
+    const hist=histBy.get(c.id)||[];
+    const recs=recBy.get(c.id)||[];
+    const projs=projBy.get(c.id)||[];
+    const active=hist.filter(h=>h&&!h.deleted);
+    if(!active.length) rows.push(payAuditRow(c,'noHist','연대기 없음','0건','결제 현황에서 입력', false));
+    if(!c.payMigratedAt) rows.push(payAuditRow(c,'migrated','이관 표시 없음','없음','이관 실행으로만 채움', false));
+    const latest=payLatestMap(active);
+    const prepaidTotal=recs.filter(r=>r&&!r.deleted&&r.kind==='prepaid').reduce((a,r)=>a+(Number(r.qty)||0),0);
+    const curPrepaid=(c.prepaidTotal==null||c.prepaidTotal==='')?null:Number(c.prepaidTotal);
+    if(curPrepaid!==prepaidTotal) rows.push(payAuditRow(c,'prepaidTotal','선결제 합계', curPrepaid==null?'없음':fmtN(curPrepaid), fmtN(prepaidTotal), true));
+    const mode=latest.mode?payNormMode(latest.mode.value).mode:(c.payMode||'');
+    if(mode==='prepaid'){
+      const curCt=(c.contractTotal==null||c.contractTotal==='')?null:Number(c.contractTotal);
+      if(curCt!==prepaidTotal) rows.push(payAuditRow(c,'contractTotal','선계약 수량', curCt==null?'없음':fmtN(curCt), fmtN(prepaidTotal), true));
+    }
+    if(latest.route){
+      const exp=payNormRoute(latest.route.value);
+      const cur=payNormRoute({route:c.payRoute, routeMemo:c.payRouteMemo});
+      if(cur.route!==exp.route||cur.routeMemo!==exp.routeMemo) rows.push(payAuditRow(c,'route','결제경로', payAuditRouteText(cur), payAuditRouteText(exp), true));
+      const expMethod=payLegacyMethod(exp.route);
+      if((c.paymentMethod||'')!==expMethod) rows.push(payAuditRow(c,'paymentMethod','결제경로(레거시)', c.paymentMethod||'없음', expMethod, true));
+    }
+    if(latest.mode){
+      const exp=payNormMode(latest.mode.value);
+      const cur=payNormMode({mode:c.payMode, modeMemo:c.payModeMemo});
+      if(cur.mode!==exp.mode||cur.modeMemo!==exp.modeMemo) rows.push(payAuditRow(c,'mode','결제방식', payAuditModeText(cur), payAuditModeText(exp), true));
+      const expType=exp.mode==='prepaid'?'숫자입력':'건별결제';
+      if((c.contractType||'')!==expType) rows.push(payAuditRow(c,'contractType','결제방식(레거시)', c.contractType||'없음', expType, true));
+    }
+    if(latest.price){
+      const exp=payNormPrice(latest.price.value);
+      const cur=payNormPrice((c.payPrice&&Array.isArray(c.payPrice.services))?c.payPrice:{services:[]});
+      if(JSON.stringify(cur)!==JSON.stringify(exp)) rows.push(payAuditRow(c,'payPrice','단가표', payPriceBrief(cur), payPriceBrief(exp), true));
+      const rev=payReviewOf(exp);
+      if(rev){
+        const p3=(c.price3==null||c.price3==='')?null:Number(c.price3);
+        const diff=(c.price1Type||'')!==(rev.t1.label||'')||(Number(c.price1)||0)!==rev.t1.price||(c.price2Type||'')!==(rev.t2.label||'')||(Number(c.price2)||0)!==rev.t2.price||p3!==rev.t3.price;
+        if(diff){
+          const expect='유형1 '+rev.t1.label+' '+fmtN(rev.t1.price)+' / 유형2 '+rev.t2.label+' '+fmtN(rev.t2.price)+' / 택배 '+fmtN(rev.t3.price);
+          rows.push(payAuditRow(c,'legacyPrice','단가(레거시)', payAuditLegacyPriceText(c), expect, true));
+        }
+      }
+    }
+    if(latest.tax){
+      const exp=payNormTax(latest.tax.value);
+      const cur=payTaxValue(c);
+      if(JSON.stringify(cur)!==JSON.stringify(exp)) rows.push(payAuditRow(c,'tax','계산서', payAuditTaxText(cur), payAuditTaxText(exp), true));
+    }
+    const inflows=active.filter(h=>h.type==='inflow');
+    if(inflows.length>=2){
+      const winner=inflows.slice().sort((a,b)=>payHistAsc(b,a))[0];
+      const inf=payNormInflow(winner.value||{});
+      const keep=(inf.route||'경로 없음')+(inf.firstContractDate?' · '+inf.firstContractDate:'');
+      rows.push(payAuditRow(c,'dupInflow','유입 기록 중복', inflows.length+'건', keep, true));
+    }
+    const fill=payAuditFillMode(c, latest);
+    projs.forEach(p=>{
+      if(!p||p.payMode==='prepaid'||p.payMode==='separate') return;
+      rows.push(payAuditRow(c,'projMode','프로젝트 구분 없음 · '+(p.name||''), '없음', fill==='prepaid'?'선결제 차감':'별도 결제', true, p.id));
+    });
+  });
+  return rows;
+}
+function payAuditInflowCanon(c, history){
+  const active=(history||[]).filter(h=>h&&h.clientId===c.id&&!h.deleted&&h.type==='inflow');
+  if(active.length<2) return null;
+  const winner=active.slice().sort((a,b)=>payHistAsc(b,a))[0];
+  const id=inflowDocId(c.id);
+  const iso=new Date().toISOString();
+  const who=payWho();
+  const canon=Object.assign({}, winner, {
+    id, clientId:c.id, type:'inflow', deleted:false, updatedBy:who, updatedAt:iso,
+  });
+  const docs=[canon];
+  active.forEach(h=>{
+    if(!h||h.id===id) return;
+    docs.push(Object.assign({}, h, {deleted:true, updatedBy:who, updatedAt:iso}));
+  });
+  return {canon, docs};
+}
+function payAuditPatch(c, row, src){
+  const history=((src&&src.history)||[]).filter(h=>h&&h.clientId===c.id);
+  const records=((src&&src.records)||[]).filter(r=>r&&r.clientId===c.id);
+  const latest=payLatestMap(history);
+  const prepaidTotal=records.filter(r=>r&&!r.deleted&&r.kind==='prepaid').reduce((a,r)=>a+(Number(r.qty)||0),0);
+  const next=Object.assign({}, c);
+  const projects=[];
+  const histDocs=[];
+  if(row.issue==='prepaidTotal') next.prepaidTotal=prepaidTotal;
+  if(row.issue==='contractTotal') next.contractTotal=prepaidTotal;
+  if(row.issue==='route'&&latest.route){
+    const exp=payNormRoute(latest.route.value);
+    next.payRoute=exp.route; next.payRouteMemo=exp.routeMemo;
+  }
+  if(row.issue==='paymentMethod'&&latest.route) next.paymentMethod=payLegacyMethod(payNormRoute(latest.route.value).route);
+  if(row.issue==='mode'&&latest.mode){
+    const exp=payNormMode(latest.mode.value);
+    next.payMode=exp.mode; next.payModeMemo=exp.modeMemo;
+  }
+  if(row.issue==='contractType'&&latest.mode){
+    const exp=payNormMode(latest.mode.value);
+    next.contractType=exp.mode==='prepaid'?'숫자입력':'건별결제';
+  }
+  if(row.issue==='payPrice'&&latest.price) next.payPrice=payNormPrice(latest.price.value);
+  if(row.issue==='legacyPrice'&&latest.price){
+    const rev=payReviewOf(latest.price.value);
+    if(rev){
+      next.price1Type=rev.t1.label; next.price1=rev.t1.price;
+      next.price2Type=rev.t2.label; next.price2=rev.t2.price;
+      next.price3=rev.t3.price;
+    }
+  }
+  if(row.issue==='tax'&&latest.tax){
+    const t=payNormTax(latest.tax.value);
+    next.taxYn=t.taxYn; next.taxItems={fee:t.fee, delivery:t.delivery, product:t.product};
+  }
+  if(row.issue==='projMode'&&row.projId){
+    const p=((src&&src.projects)||PROJECTS_CACHE||[]).find(x=>x&&x.id===row.projId);
+    if(p) projects.push(Object.assign({}, p, {payMode:payAuditFillMode(c, latest)}));
+  }
+  if(row.issue==='dupInflow'){
+    const fixed=payAuditInflowCanon(c, history);
+    if(fixed){
+      const merged=payClientPatch(next, [fixed.canon]);
+      next.firstInflow=merged.firstInflow;
+      next.firstContractDate=merged.firstContractDate;
+      fixed.docs.forEach(doc=>histDocs.push(doc));
+    }
+  }
+  return {client:next, projects, history:histDocs};
+}
+function renderPayAudit(){
+  const body=document.getElementById('pay-audit-body');
+  const sum=document.getElementById('pay-audit-summary');
+  const src=PAY_AUDIT_SRC||{reads:0, recN:0, histN:0};
+  if(sum) sum.textContent='읽기 '+src.reads+'건 (payRecords '+src.recN+' + payHistory '+src.histN+') · 문제 '+PAY_AUDIT_ROWS.length+'건';
+  if(!body) return;
+  if(!PAY_AUDIT_ROWS.length){
+    body.innerHTML='<div style="padding:16px;color:var(--text2)">어긋난 항목이 없습니다.</div>';
+    return;
+  }
+  body.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>'
+    +['거래처명','문제 항목','현재 값','맞춰야 할 값',''].map(h=>'<th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--border);white-space:nowrap">'+h+'</th>').join('')
+    +'</tr></thead><tbody>'+PAY_AUDIT_ROWS.map((r,i)=>'<tr>'
+      +'<td style="padding:6px 4px">'+escHtml(r.name)+'</td>'
+      +'<td style="padding:6px 4px">'+escHtml(r.label)+'</td>'
+      +'<td style="padding:6px 4px">'+escHtml(r.current)+'</td>'
+      +'<td style="padding:6px 4px">'+escHtml(r.expected)+'</td>'
+      +'<td style="padding:6px 4px;white-space:nowrap">'+(r.fixable?'<button type="button" class="btn btn-xs btn-blue" onclick="payAuditFix('+i+')">맞추기</button>':'')+'</td>'
+      +'</tr>').join('')+'</tbody></table>';
+}
+async function payAuditCommit(clientId, rows){
+  const c=payClient(clientId);
+  if(!c||!PAY_AUDIT_SRC) return;
+  let next=Object.assign({}, c);
+  const projMap=new Map();
+  const histMap=new Map();
+  rows.forEach(row=>{
+    if(!row||!row.fixable) return;
+    const part=payAuditPatch(next, row, Object.assign({projects:PROJECTS_CACHE}, PAY_AUDIT_SRC));
+    next=part.client;
+    part.projects.forEach(p=>{ if(p&&p.id) projMap.set(p.id, p); });
+    (part.history||[]).forEach(h=>{ if(h&&h.id) histMap.set(h.id, h); });
+  });
+  const group='payaudit_'+clientId;
+  const ops=[{key:'cl', id:clientId, data:next, group}];
+  projMap.forEach(p=>ops.push({key:'pr', id:p.id, data:p, group}));
+  histMap.forEach(h=>ops.push({key:'payh', id:h.id, data:h, group}));
+  await commitSvOps(ops);
+  if(PAY_AUDIT_SRC&&histMap.size){
+    const list=(PAY_AUDIT_SRC.history||[]).slice();
+    histMap.forEach(doc=>{
+      const i=list.findIndex(h=>h&&h.id===doc.id);
+      if(i<0) list.push(doc);
+      else list[i]=doc;
+    });
+    PAY_AUDIT_SRC.history=list;
+  }
+}
+function payAuditRefresh(){
+  if(!PAY_AUDIT_SRC) return;
+  PAY_AUDIT_ROWS=payAuditBuild(CLIENTS_CACHE, PROJECTS_CACHE, PAY_AUDIT_SRC.records, PAY_AUDIT_SRC.history);
+  renderPayAudit();
+  if(CUR_CLIENT){ try{ renderDetDash(); renderDetProjView(); }catch(e){} }
+  try{ renderPayStatus(); }catch(e){}
+}
+async function openPayAudit(){
+  if(!CUR_ADMIN||CUR_ADMIN.role!=='admin'){ toast('관리자만 실행할 수 있습니다','error'); return; }
+  if(typeof db==='undefined'){ toast('데이터를 읽지 못했습니다','error'); return; }
+  const n=(CLIENTS_CACHE||[]).filter(c=>c&&c.id).length;
+  if(!confirm('결제 데이터 점검을 실행합니다.\npayRecords, payHistory를 각각 1회 읽습니다.\n읽기 약 N건 발생\nN은 두 컬렉션 문서 수의 합입니다.\n거래처 '+n+'곳은 이미 불러온 캐시를 사용합니다.')) return;
+  openMd('pay-audit');
+  const body=document.getElementById('pay-audit-body');
+  if(body) body.innerHTML='<div style="padding:16px;color:var(--text3)">읽는 중…</div>';
+  fsBegin('결제 점검 1회');
+  try{
+    const recSnap=await db.collection('payRecords').get();
+    const histSnap=await db.collection('payHistory').get();
+    const records=recSnap.docs.map(d=>Object.assign({id:d.id}, d.data()||{}));
+    const history=histSnap.docs.map(d=>Object.assign({id:d.id}, d.data()||{}));
+    _svSetCache('pay', _svMergeRows(_svGetCache('pay'), records));
+    _svSetCache('payh', _svMergeRows(_svGetCache('payh'), history));
+    PAY_AUDIT_SRC={records, history, reads:(recSnap.size||0)+(histSnap.size||0), recN:recSnap.size||0, histN:histSnap.size||0};
+    PAY_AUDIT_ROWS=payAuditBuild(CLIENTS_CACHE, PROJECTS_CACHE, records, history);
+    renderPayAudit();
+  }catch(e){
+    console.error(e);
+    if(body) body.innerHTML='<div style="padding:16px;color:#dc2626">점검에 실패했습니다.</div>';
+    toast('점검에 실패했습니다','error');
+  }finally{
+    fsEnd('결제 점검 1회');
+  }
+}
+async function payAuditFix(index){
+  if(PAY_AUDIT_BUSY) return;
+  if(!CUR_ADMIN||CUR_ADMIN.role!=='admin'){ toast('관리자만 실행할 수 있습니다','error'); return; }
+  const row=PAY_AUDIT_ROWS[index];
+  if(!row||!row.fixable) return;
+  if(!confirm((row.name||'')+'의 '+row.label+'을 맞출까요?')) return;
+  PAY_AUDIT_BUSY=true;
+  try{
+    await payAuditCommit(row.clientId, [row]);
+    payAuditRefresh();
+    toast('맞췄습니다');
+  }catch(e){
+    console.error(e);
+    toast('맞추기에 실패했습니다','error');
+  }finally{ PAY_AUDIT_BUSY=false; }
+}
+async function payAuditFixAll(){
+  if(PAY_AUDIT_BUSY) return;
+  if(!CUR_ADMIN||CUR_ADMIN.role!=='admin'){ toast('관리자만 실행할 수 있습니다','error'); return; }
+  const ids=[];
+  PAY_AUDIT_ROWS.forEach(r=>{ if(r&&r.fixable&&ids.indexOf(r.clientId)<0) ids.push(r.clientId); });
+  if(!ids.length){ toast('맞출 항목이 없습니다','error'); return; }
+  if(!confirm(ids.length+'곳의 요약·레거시·프로젝트 구분·유입 중복을 기록과 연대기 기준으로 맞춥니다.')) return;
+  PAY_AUDIT_BUSY=true;
+  try{
+    for(let i=0;i<ids.length;i++){
+      const id=ids[i];
+      await payAuditCommit(id, PAY_AUDIT_ROWS.filter(r=>r&&r.clientId===id&&r.fixable));
+    }
+    payAuditRefresh();
+    toast('맞췄습니다');
+  }catch(e){
+    console.error(e);
+    payAuditRefresh();
+    toast('맞추기에 실패했습니다','error');
+  }finally{ PAY_AUDIT_BUSY=false; }
 }
 
 // ── 결제 현황 (목록은 clients/projects 캐시, 상세에서만 payHistory 를 읽는다) ──
@@ -12154,7 +12365,7 @@ function payHistEditor(doc){
   }else if(doc.type==='tax'){
     fields+=payTaxFields('ph', v);
   }else if(doc.type==='inflow'){
-    fields+=payChipRow(true,'inflow',v.route,[['크몽','크몽'],['임반장','임반장'],['지인소개','지인소개'],['홈페이지','홈페이지'],['기타','기타']]);
+    fields+=payChipRow(true,'inflow',v.route,inflowRoutePairs(v.route));
     if(v.route==='지인소개'){
       const refShown=PAY_EDIT._refName||v.referrerName||'';
       fields+='<div style="margin-top:8px"><input id="ph-ref" class="fi" placeholder="소개해 준 곳" value="'+escHtml(refShown)+'" oninput="payRefInput(\'ph\')"><div id="ph-ref-box"></div></div>';
@@ -12574,7 +12785,7 @@ function renderPayStatusDetail(){
   const box='style="border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:12px"';
   body.innerHTML=''
     +'<div '+box+'><div style="font-size:13px;font-weight:800;margin-bottom:8px">'+escHtml(c.name||'거래처')+'</div>'
-    +'<div class="fl">첫 유입경로</div>'+payChipRow(false,'inflow',f.inflowRoute,[['크몽','크몽'],['임반장','임반장'],['지인소개','지인소개'],['홈페이지','홈페이지'],['기타','기타']])
+    +'<div class="fl">첫 유입경로</div>'+payChipRow(false,'inflow',f.inflowRoute,inflowRoutePairs(f.inflowRoute))
     +refBlock+inMemo
     +'<label style="display:block;margin-top:10px;font-size:11px;font-weight:700">첫 계약일<input id="ps-first-date" class="fi" type="date" style="margin-top:4px" value="'+escHtml(f.firstContractDate||'')+'"></label>'
     +suggestHtml
@@ -12625,6 +12836,8 @@ async function openPayStatusDetail(clientId){
     if(token!==PAY_ST_TOKEN) return;
     PAY_ST_FORM=payFormFromCurrent(clientId, PAY_ST_HIST);
     PAY_REC_FORM=payBlankRecForm(payClient(clientId)||c);
+    await ensureInflowRoutes();
+    if(token!==PAY_ST_TOKEN) return;
     renderPayStatusDetail();
     renderPayStatus();
     payRefreshDash();
@@ -12643,6 +12856,35 @@ async function payCommitClient(c, hist, extraOps){
   PAY_ST_HIST=payHistFor(c.id);
   return merged;
 }
+function inflowDocId(clientId){
+  return ('inflow_'+String(clientId||'')).replace(/\//g,'_');
+}
+function inflowUpsertDoc(c, value, memo){
+  const id=inflowDocId(c.id);
+  const cached=(PAY_HISTORY_CACHE||[]).find(h=>h&&h.id===id)||null;
+  const iso=new Date().toISOString();
+  const memoOut=memo==null?(cached?(cached.memo||''):''):memo;
+  const base=cached?Object.assign({}, cached):Object.assign({id, clientId:c.id, type:'inflow'}, payAuditStamp(iso));
+  return Object.assign(base, {
+    id, clientId:c.id, type:'inflow', deleted:false,
+    effectiveDate:value.firstContractDate||(cached&&cached.effectiveDate)||getKSTDate(),
+    value, memo:memoOut, updatedBy:payWho(), updatedAt:iso,
+  });
+}
+async function commitPayInflow(c, value, memo){
+  const doc=inflowUpsertDoc(c, value, memo);
+  const merged=payClientPatch(payClient(c.id)||c, [doc]);
+  const group='inflow_'+c.id;
+  await commitSvOps([
+    {key:'payh', id:doc.id, data:doc, group},
+    {key:'cl', id:c.id, data:merged, group},
+  ]);
+  if(PAY_ST_ID===c.id){
+    PAY_ST_HIST=payHistFor(c.id);
+    if(PAY_ST_FORM) PAY_ST_FORM=payFormFromCurrent(c.id, PAY_ST_HIST);
+  }
+  return merged;
+}
 async function savePayInflow(){
   if(PAY_ST_BUSY) return;
   payReadDetailForm();
@@ -12650,29 +12892,13 @@ async function savePayInflow(){
   if(!c) return;
   const value=payInflowFromForm(PAY_ST_FORM);
   if(!value.route){ toast('유입경로를 선택하세요','error'); return; }
+  if(value.referrerClientId&&value.referrerClientId===c.id){ toast('자기 자신은 소개자로 선택할 수 없습니다','error'); return; }
+  if(value.referrerClientId&&inflowWouldCycle(c.id, value.referrerClientId)){ toast('소개 관계가 순환됩니다. 저장하지 않았습니다','error'); return; }
   const cur=payCurrentSnapshot(c, PAY_ST_HIST).inflow;
   if(cur&&JSON.stringify(cur)===JSON.stringify(value)){ toast('변경사항이 없습니다','error'); return; }
-  const iso=new Date().toISOString();
-  const who=payWho();
-  const existing=(PAY_ST_HIST||[]).filter(h=>h&&!h.deleted&&h.type==='inflow').sort((a,b)=>payHistAsc(b,a))[0];
-  let doc;
-  if(existing){
-    doc=Object.assign({}, existing, {
-      effectiveDate:value.firstContractDate||existing.effectiveDate||getKSTDate(),
-      value, memo:'', updatedBy:who, updatedAt:iso,
-    });
-  }else{
-    doc=Object.assign({
-      id:gid(), clientId:c.id, type:'inflow',
-      effectiveDate:value.firstContractDate||getKSTDate(),
-      value, memo:'',
-    }, payAuditStamp(iso));
-  }
-  const hist=existing?PAY_ST_HIST.map(h=>h.id===doc.id?doc:h):PAY_ST_HIST.concat([doc]);
   PAY_ST_BUSY=true;
   try{
-    await payCommitClient(c, hist, [{key:'payh', id:doc.id, data:doc}]);
-    PAY_ST_FORM=payFormFromCurrent(c.id, PAY_ST_HIST);
+    await commitPayInflow(c, value, null);
     renderPayStatusDetail();
     renderPayStatus();
     payRefreshDash();
@@ -12681,6 +12907,581 @@ async function savePayInflow(){
     console.error(e);
     toast('저장에 실패했습니다','error');
   }finally{ PAY_ST_BUSY=false; }
+}
+const INFLOW_ROUTES_DEFAULT=['크몽','임반장','지인소개','홈페이지','기타'];
+const INFLOW_LOCKED=['지인소개','기타'];
+let INFLOW_ROUTES=INFLOW_ROUTES_DEFAULT.slice();
+let INFLOW_ROUTES_LOADED=false;
+let INFLOW_TAB='input';
+let INFLOW_ONLY_EMPTY=true;
+let INFLOW_KEEP={q:'', route:'', empty:true, period:'all', year:'', from:'', to:''};
+let INFLOW_SAVING={};
+let _inflowDonut=null;
+let _inflowBar=null;
+let INFLOW_TREE_OPEN={};
+function inflowRoutePairs(current){
+  const list=(INFLOW_ROUTES&&INFLOW_ROUTES.length?INFLOW_ROUTES:INFLOW_ROUTES_DEFAULT).slice();
+  if(current&&list.indexOf(current)<0) list.push(current);
+  return list.map(r=>[r,r]);
+}
+function inflowNormalizeRoutes(list){
+  const out=[];
+  (Array.isArray(list)?list:[]).forEach(r=>{
+    const name=payTrim(r);
+    if(!name||out.indexOf(name)>=0) return;
+    out.push(name);
+  });
+  INFLOW_LOCKED.forEach(name=>{ if(out.indexOf(name)<0) out.push(name); });
+  return out.length?out:INFLOW_ROUTES_DEFAULT.slice();
+}
+async function ensureInflowRoutes(){
+  if(INFLOW_ROUTES_LOADED) return INFLOW_ROUTES;
+  INFLOW_ROUTES=INFLOW_ROUTES_DEFAULT.slice();
+  if(typeof db==='undefined'){ INFLOW_ROUTES_LOADED=true; return INFLOW_ROUTES; }
+  fsBegin('유입경로 설정 1회');
+  try{
+    const snap=await db.collection('settings').doc('inflowRoutes').get();
+    const data=snap&&snap.exists?snap.data():null;
+    if(data&&Array.isArray(data.routes)&&data.routes.length) INFLOW_ROUTES=inflowNormalizeRoutes(data.routes);
+  }catch(e){
+    console.error(e);
+  }finally{
+    INFLOW_ROUTES_LOADED=true;
+    fsEnd('유입경로 설정 1회');
+  }
+  return INFLOW_ROUTES;
+}
+function inflowView(c){
+  const inf=(c&&c.firstInflow)||{};
+  return {
+    route:inf.route||'',
+    referrerClientId:inf.referrerClientId||'',
+    referrerName:inf.referrerName||'',
+    memo:inf.memo||'',
+    date:(c&&c.firstContractDate)||inf.firstContractDate||'',
+  };
+}
+function inflowWouldCycle(clientId, referrerId){
+  if(!referrerId) return false;
+  if(referrerId===clientId) return true;
+  const seen=new Set([clientId]);
+  let cur=referrerId;
+  let guard=0;
+  while(cur&&guard<1000){
+    if(seen.has(cur)) return true;
+    seen.add(cur);
+    const c=payClient(cur);
+    cur=(c&&c.firstInflow&&c.firstInflow.referrerClientId)||'';
+    guard++;
+  }
+  return false;
+}
+function inflowShowTab(tab){
+  INFLOW_TAB=tab==='analysis'?'analysis':'input';
+  const a=document.getElementById('inf-tab-input');
+  const b=document.getElementById('inf-tab-analysis');
+  if(a) a.classList.toggle('active', INFLOW_TAB==='input');
+  if(b) b.classList.toggle('active', INFLOW_TAB==='analysis');
+  renderInflowPage();
+}
+function inflowReadFilters(){
+  const next=Object.assign({}, INFLOW_KEEP);
+  const q=document.getElementById('inf-q');
+  const route=document.getElementById('inf-route');
+  const empty=document.getElementById('inf-empty');
+  const period=document.getElementById('inf-period');
+  const year=document.getElementById('inf-year');
+  const from=document.getElementById('inf-from');
+  const to=document.getElementById('inf-to');
+  if(q) next.q=q.value;
+  if(route) next.route=route.value;
+  if(empty) next.empty=!!empty.checked;
+  else next.empty=INFLOW_ONLY_EMPTY;
+  if(period) next.period=period.value||'all';
+  if(year) next.year=year.value;
+  if(from) next.from=from.value;
+  if(to) next.to=to.value;
+  INFLOW_KEEP=next;
+  return next;
+}
+function inflowValueFrom(v, patch){
+  return payNormInflow(Object.assign({
+    route:v.route, referrerClientId:v.referrerClientId, referrerName:v.referrerName,
+    memo:v.memo, firstContractDate:v.date,
+  }, patch||{}));
+}
+function inflowRefreshRows(){
+  inflowReadFilters();
+  INFLOW_ONLY_EMPTY=INFLOW_KEEP.empty;
+  inflowRenderRows();
+}
+function renderInflowPage(){
+  const body=document.getElementById('inflow-body');
+  if(!body) return;
+  const keep=inflowReadFilters();
+  INFLOW_ONLY_EMPTY=keep.empty;
+  if(INFLOW_TAB!=='analysis'){
+    if(_inflowDonut){ _inflowDonut.destroy(); _inflowDonut=null; }
+    if(_inflowBar){ _inflowBar.destroy(); _inflowBar=null; }
+  }
+  if(INFLOW_TAB==='analysis') renderInflowAnalysis(body, keep);
+  else renderInflowInput(body, keep);
+}
+function inflowCounts(){
+  let noRoute=0, noDate=0;
+  (CLIENTS_CACHE||[]).forEach(c=>{
+    if(!c||!c.id) return;
+    const v=inflowView(c);
+    if(!v.route) noRoute++;
+    if(!v.date) noDate++;
+  });
+  return {noRoute, noDate};
+}
+function inflowRouteEditor(){
+  if(!CUR_ADMIN||CUR_ADMIN.role!=='admin') return '';
+  const rows=INFLOW_ROUTES.map((name,i)=>{
+    const locked=INFLOW_LOCKED.indexOf(name)>=0;
+    return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">'
+      +'<input class="fi" style="max-width:180px" value="'+escHtml(name)+'" '+(locked?'readonly':'')+' data-inf-route-name="'+i+'">'
+      +'<button type="button" class="btn btn-xs btn-gray" onclick="inflowMoveRoute('+i+',-1)">위로</button>'
+      +'<button type="button" class="btn btn-xs btn-gray" onclick="inflowMoveRoute('+i+',1)">아래로</button>'
+      +(locked?'':'<button type="button" class="btn btn-xs btn-red" onclick="inflowDeleteRoute('+i+')">삭제</button>')
+      +'</div>';
+  }).join('');
+  return '<div class="card" style="margin-bottom:12px"><div style="font-size:13px;font-weight:800;margin-bottom:8px">유입경로 선택지</div>'
+    +'<div style="font-size:11px;color:var(--text3);margin-bottom:8px">지인소개와 기타는 삭제하거나 이름을 바꿀 수 없습니다. 소개자 칸과 메모 칸이 그 이름에 연결됩니다.</div>'
+    +rows
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><input id="inf-route-new" class="fi" style="max-width:180px" placeholder="새 선택지"><button type="button" class="btn btn-xs btn-gray" onclick="inflowAddRoute()">추가</button><button type="button" class="btn btn-xs btn-blue" onclick="saveInflowRoutes()">선택지 저장</button></div></div>';
+}
+function inflowCollectRoutesFromEditor(){
+  const inputs=[...document.querySelectorAll('[data-inf-route-name]')];
+  if(!inputs.length) return INFLOW_ROUTES.slice();
+  return inflowNormalizeRoutes(inputs.map(el=>{
+    const i=Number(el.dataset.infRouteName);
+    return INFLOW_LOCKED.indexOf(INFLOW_ROUTES[i])>=0?INFLOW_ROUTES[i]:el.value;
+  }));
+}
+function inflowAddRoute(){
+  const el=document.getElementById('inf-route-new');
+  const name=payTrim(el&&el.value);
+  if(!name){ toast('선택지 이름을 입력하세요','error'); return; }
+  INFLOW_ROUTES=inflowNormalizeRoutes(inflowCollectRoutesFromEditor().concat([name]));
+  renderInflowPage();
+}
+function inflowDeleteRoute(i){
+  const cur=inflowCollectRoutesFromEditor();
+  if(INFLOW_LOCKED.indexOf(cur[i])>=0){ toast('이 선택지는 삭제할 수 없습니다','error'); return; }
+  cur.splice(i,1);
+  INFLOW_ROUTES=inflowNormalizeRoutes(cur);
+  renderInflowPage();
+}
+function inflowMoveRoute(i, dir){
+  const cur=inflowCollectRoutesFromEditor();
+  const j=i+dir;
+  if(j<0||j>=cur.length) return;
+  const tmp=cur[i]; cur[i]=cur[j]; cur[j]=tmp;
+  INFLOW_ROUTES=cur;
+  renderInflowPage();
+}
+async function saveInflowRoutes(){
+  if(!CUR_ADMIN||CUR_ADMIN.role!=='admin'){ toast('관리자만 바꿀 수 있습니다','error'); return; }
+  const routes=inflowNormalizeRoutes(inflowCollectRoutesFromEditor());
+  INFLOW_ROUTES=routes;
+  if(typeof db==='undefined'){ toast('저장하지 못했습니다','error'); return; }
+  fsBegin('유입경로 설정 저장');
+  try{
+    await db.collection('settings').doc('inflowRoutes').set({routes},{merge:true});
+    INFLOW_ROUTES_LOADED=true;
+    toast('유입경로 선택지를 저장했습니다');
+    renderInflowPage();
+  }catch(e){
+    console.error(e);
+    toast('저장에 실패했습니다','error');
+  }finally{ fsEnd('유입경로 설정 저장'); }
+}
+function renderInflowInput(body, keep){
+  const refocus=document.activeElement&&document.activeElement.id==='inf-q';
+  const counts=inflowCounts();
+  const routes=INFLOW_ROUTES.slice();
+  const routeOpts=['<option value="">유입경로 전체</option>','<option value="__empty"'+(keep.route==='__empty'?' selected':'')+'>미입력</option>'].concat(routes.map(r=>'<option value="'+escHtml(r)+'"'+(keep.route===r?' selected':'')+'>'+escHtml(r)+'</option>')).join('');
+  body.innerHTML=inflowRouteEditor()
+    +'<div class="card" style="margin-bottom:12px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+    +'<label style="font-size:12px;display:flex;align-items:center;gap:4px"><input id="inf-empty" type="checkbox"'+(keep.empty?' checked':'')+' onchange="inflowRefreshRows()"> 미입력만 보기</label>'
+    +'<input id="inf-q" class="fi" style="max-width:200px" placeholder="거래처명 검색" value="'+escHtml(keep.q||'')+'" oninput="inflowRefreshRows()">'
+    +'<select id="inf-route" class="fs" style="max-width:160px" onchange="inflowRefreshRows()">'+routeOpts+'</select>'
+    +'<button type="button" class="btn btn-sm btn-blue" onclick="inflowApplySuggestedDates()">제안 계약일 일괄 적용</button>'
+    +'<span id="inf-counts" style="font-size:12px;color:var(--text2)">유입경로 미입력 '+counts.noRoute+'곳 · 첫 계약일 미입력 '+counts.noDate+'곳</span>'
+    +'</div></div><div id="inflow-rows"></div>';
+  inflowRenderRows();
+  const q=document.getElementById('inf-q');
+  if(refocus&&q){ q.focus(); const n=q.value.length; try{ q.setSelectionRange(n,n); }catch(e){} }
+}
+function inflowFilteredClients(){
+  const keep=inflowReadFilters();
+  const q=payTrim(keep.q).toLowerCase();
+  return (CLIENTS_CACHE||[]).filter(c=>{
+    if(!c||!c.id) return false;
+    const v=inflowView(c);
+    if(keep.empty&&v.route) return false;
+    if(q&&String(c.name||'').toLowerCase().indexOf(q)<0) return false;
+    if(keep.route==='__empty'&&v.route) return false;
+    if(keep.route&&keep.route!=='__empty'&&v.route!==keep.route) return false;
+    return true;
+  }).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ko'));
+}
+function inflowRenderRows(){
+  const host=document.getElementById('inflow-rows');
+  if(!host) return;
+  const rows=inflowFilteredClients();
+  if(!rows.length){ host.innerHTML='<div class="card" style="color:var(--text3)">표시할 거래처가 없습니다.</div>'; return; }
+  host.innerHTML='<div class="card" style="overflow:auto;padding:0"><table style="width:100%;min-width:920px;border-collapse:collapse;font-size:12px"><thead><tr>'
+    +['거래처명','유입경로','소개해 준 곳','첫 계약일','상태'].map(h=>'<th style="text-align:left;padding:8px;border-bottom:1px solid var(--border);white-space:nowrap">'+h+'</th>').join('')
+    +'</tr></thead><tbody>'+rows.map(inflowRowHtml).join('')+'</tbody></table></div>';
+}
+function inflowRowHtml(c){
+  const v=inflowView(c);
+  const suggest=!v.date?payEarliestStart(c.id):'';
+  const chips=inflowRoutePairs(v.route).map(p=>'<button type="button" class="btn btn-xs '+(p[0]===v.route?'btn-blue':'btn-gray')+'" style="white-space:nowrap" onclick="inflowSetRoute(\''+payJs(c.id)+'\',\''+payJs(p[0])+'\')">'+escHtml(p[1])+'</button>').join(' ');
+  const refOn=v.route==='지인소개';
+  const refShown=v.referrerClientId?(payClient(v.referrerClientId)||{}).name||v.referrerName:v.referrerName;
+  const ref=refOn
+    ? '<input class="fi" data-client-id="'+escHtml(c.id)+'" value="'+escHtml(refShown||'')+'" placeholder="거래처 검색 또는 이름" oninput="inflowRefInput(this)" onblur="inflowRefBlur(this)"><div class="inf-ref-box"></div>'
+    : '<span style="color:var(--text3)">—</span>';
+  const memo=v.route==='기타'
+    ? '<input class="fi" style="margin-top:4px" value="'+escHtml(v.memo||'')+'" placeholder="기타 메모" onblur="inflowSetMemo(\''+payJs(c.id)+'\', this.value)">'
+    : '';
+  const date='<input class="fi" type="date" value="'+escHtml(v.date||'')+'" onchange="inflowSetDate(\''+payJs(c.id)+'\', this.value)">'
+    +(suggest?'<div style="font-size:10px;color:#94a3b8;margin-top:2px">제안 '+escHtml(suggest)+'</div>':'');
+  const status=INFLOW_SAVING[c.id]?'저장 중':(v.route?'저장됨':'미입력');
+  return '<tr><td style="padding:8px;font-weight:700;white-space:nowrap">'+escHtml(c.name||'')+'</td>'
+    +'<td style="padding:8px"><div style="display:flex;gap:4px;flex-wrap:wrap">'+chips+'</div>'+memo+'</td>'
+    +'<td style="padding:8px;min-width:180px">'+ref+'</td>'
+    +'<td style="padding:8px">'+date+'</td>'
+    +'<td style="padding:8px;white-space:nowrap" data-inf-status="'+escHtml(c.id)+'">'+status+'</td></tr>';
+}
+async function inflowSaveRow(c, value, memo){
+  if(!c) return;
+  if(value.referrerClientId&&value.referrerClientId===c.id){ toast('자기 자신은 소개자로 선택할 수 없습니다','error'); renderInflowPage(); return; }
+  if(value.referrerClientId&&inflowWouldCycle(c.id, value.referrerClientId)){ toast('소개 관계가 순환됩니다. 저장하지 않았습니다','error'); renderInflowPage(); return; }
+  const cur=inflowValueFrom(inflowView(c));
+  if(JSON.stringify(cur)===JSON.stringify(value)&&(memo==null)) return;
+  INFLOW_SAVING[c.id]=true;
+  const status=document.querySelector('[data-inf-status="'+CSS.escape(c.id)+'"]');
+  if(status) status.textContent='저장 중';
+  try{
+    await commitPayInflow(c, value, memo);
+    INFLOW_SAVING[c.id]=false;
+    renderInflowPage();
+  }catch(e){
+    console.error(e);
+    INFLOW_SAVING[c.id]=false;
+    if(status) status.textContent='저장 실패';
+    toast('저장에 실패했습니다','error');
+  }
+}
+async function inflowSetRoute(id, route){
+  const c=payClient(id);
+  if(!c||INFLOW_SAVING[id]) return;
+  const v=inflowView(c);
+  if(v.route===route) return;
+  await inflowSaveRow(c, inflowValueFrom(v, {route}), null);
+}
+async function inflowSetDate(id, date){
+  const c=payClient(id);
+  if(!c||INFLOW_SAVING[id]) return;
+  const v=inflowView(c);
+  await inflowSaveRow(c, inflowValueFrom(v, {firstContractDate:date||''}), null);
+}
+async function inflowSetMemo(id, memo){
+  const c=payClient(id);
+  if(!c||INFLOW_SAVING[id]) return;
+  const v=inflowView(c);
+  if(v.route!=='기타') return;
+  await inflowSaveRow(c, inflowValueFrom(v, {memo:memo||''}), null);
+}
+function inflowRefInput(el){
+  const id=el.dataset.clientId;
+  const box=el.parentElement.querySelector('.inf-ref-box');
+  if(!box) return;
+  const q=el.value.trim().toLowerCase();
+  if(!q){ box.innerHTML=''; return; }
+  const hits=(CLIENTS_CACHE||[]).filter(c=>c&&c.id!==id&&String(c.name||'').toLowerCase().indexOf(q)>=0).slice(0,8);
+  box.innerHTML=hits.length?hits.map(c=>'<button type="button" class="btn btn-xs btn-gray" style="margin:2px" onmousedown="inflowPickRef(event,\''+payJs(id)+'\',\''+payJs(c.id)+'\')">'+escHtml(c.name||'')+'</button>').join(''):'<div style="font-size:11px;color:var(--text3)">일치하는 거래처 없음. 입력한 이름으로 저장됩니다.</div>';
+}
+function inflowPickRef(ev, id, refId){
+  if(ev) ev.preventDefault();
+  const c=payClient(refId);
+  const input=document.querySelector('[data-client-id="'+CSS.escape(id)+'"]');
+  if(input){ input.value=c&&c.name||''; input.dataset.picked='1'; }
+  inflowSetReferrer(id, refId, c&&c.name||'');
+}
+function inflowRefBlur(el){
+  const id=el.dataset.clientId;
+  setTimeout(function(){
+    if(!el.isConnected) return;
+    if(el.dataset.picked==='1'){ el.dataset.picked=''; return; }
+    const c=payClient(id);
+    const v=c?inflowView(c):null;
+    const shown=v&&v.referrerClientId?((payClient(v.referrerClientId)||{}).name||v.referrerName):(v&&v.referrerName)||'';
+    if(payTrim(el.value)===payTrim(shown)) return;
+    inflowSetReferrer(id, '', el.value);
+  }, 180);
+}
+async function inflowSetReferrer(id, refId, name){
+  const c=payClient(id);
+  if(!c||INFLOW_SAVING[id]) return;
+  const v=inflowView(c);
+  if(v.route!=='지인소개') return;
+  await inflowSaveRow(c, inflowValueFrom(v, {referrerClientId:refId||'', referrerName:name||''}), null);
+}
+async function inflowApplySuggestedDates(){
+  const targets=(CLIENTS_CACHE||[]).filter(c=>{
+    if(!c||!c.id) return false;
+    return !inflowView(c).date && !!payEarliestStart(c.id);
+  });
+  if(!targets.length){ toast('적용할 거래처가 없습니다','error'); return; }
+  if(!confirm(targets.length+'곳 적용')) return;
+  const ops=[];
+  targets.forEach(c=>{
+    const suggest=payEarliestStart(c.id);
+    const v=inflowView(c);
+    const value=payNormInflow(Object.assign({}, v, {firstContractDate:suggest}));
+    const doc=inflowUpsertDoc(c, value, '프로젝트 시작일로 추정');
+    const merged=payClientPatch(c, [doc]);
+    const group='infdate_'+c.id;
+    ops.push({key:'payh', id:doc.id, data:doc, group});
+    ops.push({key:'cl', id:c.id, data:merged, group});
+  });
+  try{
+    await commitSvOps(ops);
+    renderInflowPage();
+    toast(targets.length+'곳에 제안 계약일을 적용했습니다');
+  }catch(e){
+    console.error(e);
+    toast('저장에 실패했습니다','error');
+  }
+}
+function inflowColor(name, i){
+  const map={'크몽':'#f59e0b','임반장':'#6366f1','지인소개':'#10b981','홈페이지':'#0ea5e9','기타':'#a855f7','미입력':'#94a3b8'};
+  if(map[name]) return map[name];
+  const pal=['#f97316','#14b8a6','#e11d48','#84cc16','#8b5cf6','#0891b2'];
+  return pal[Math.abs(i)%pal.length];
+}
+function inflowInPeriod(date, keep){
+  if(keep.period==='all'||!keep.period) return true;
+  if(!date) return false;
+  if(keep.period==='year') return !!keep.year && date.slice(0,4)===keep.year;
+  const from=keep.from?keep.from+'-01':'';
+  const to=keep.to?keep.to+'-31':'';
+  if(from&&date<from) return false;
+  if(to&&date>to) return false;
+  return true;
+}
+function inflowAnalysisClients(keep){
+  return (CLIENTS_CACHE||[]).filter(c=>c&&c.id&&inflowInPeriod(inflowView(c).date, keep));
+}
+function renderInflowAnalysis(body, keep){
+  if(_inflowDonut){ _inflowDonut.destroy(); _inflowDonut=null; }
+  if(_inflowBar){ _inflowBar.destroy(); _inflowBar=null; }
+  const years=[];
+  (CLIENTS_CACHE||[]).forEach(c=>{
+    const d=inflowView(c).date;
+    if(d&&years.indexOf(d.slice(0,4))<0) years.push(d.slice(0,4));
+  });
+  years.sort();
+  if(keep.period==='year'&&!keep.year&&years.length){ keep.year=years[years.length-1]; INFLOW_KEEP.year=keep.year; }
+  const yearOpts=years.map(y=>'<option value="'+y+'"'+(keep.year===y?' selected':'')+'>'+y+'</option>').join('');
+  const noDate=(CLIENTS_CACHE||[]).filter(c=>c&&c.id&&!inflowView(c).date).length;
+  body.innerHTML='<div class="card" style="margin-bottom:12px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+    +'<select id="inf-period" class="fs" style="max-width:140px" onchange="renderInflowPage()"><option value="all"'+(keep.period==='all'?' selected':'')+'>전체</option><option value="year"'+(keep.period==='year'?' selected':'')+'>연도</option><option value="range"'+(keep.period==='range'?' selected':'')+'>기간</option></select>'
+    +'<select id="inf-year" class="fs" style="max-width:120px;'+(keep.period==='year'?'':'display:none')+'" onchange="renderInflowPage()">'+yearOpts+'</select>'
+    +'<input id="inf-from" class="fi" type="month" value="'+escHtml(keep.from||'')+'" style="max-width:160px;'+(keep.period==='range'?'':'display:none')+'" onchange="renderInflowPage()">'
+    +'<input id="inf-to" class="fi" type="month" value="'+escHtml(keep.to||'')+'" style="max-width:160px;'+(keep.period==='range'?'':'display:none')+'" onchange="renderInflowPage()">'
+    +'<span style="font-size:12px;color:var(--text2)">계약일 미입력 '+noDate+'곳</span>'
+    +'</div></div>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px;align-items:stretch">'
+    +'<div class="card" style="flex:1 1 340px;min-width:min(100%,340px)"><div style="font-size:13px;font-weight:800;margin-bottom:8px">경로별 비율</div><canvas id="inflow-donut" height="220"></canvas></div>'
+    +'<div class="card" id="inflow-cards" style="flex:1 1 280px;min-width:min(100%,280px)"></div></div>'
+    +'<div class="card" style="margin-bottom:12px"><div style="font-size:13px;font-weight:800;margin-bottom:8px">월별 유입</div><canvas id="inflow-bar" height="120"></canvas></div>'
+    +'<div class="card" style="margin-bottom:12px"><div style="font-size:13px;font-weight:800;margin-bottom:8px">지인소개 트리</div><div id="inflow-tree" style="overflow-x:auto"></div></div>'
+    +'<div class="card"><div style="font-size:13px;font-weight:800;margin-bottom:8px">소개 순위</div><div id="inflow-rank"></div></div>';
+  inflowDrawCharts(keep);
+  const tree=inflowTreeModel();
+  const treeHost=document.getElementById('inflow-tree');
+  if(treeHost) treeHost.innerHTML=tree.roots.length?tree.roots.map(n=>inflowTreeNode(n,0)).join(''):'<div style="color:var(--text3)">소개 관계가 없습니다.</div>';
+  const rankHost=document.getElementById('inflow-rank');
+  if(rankHost){
+    rankHost.innerHTML=tree.rank.length?'<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th style="text-align:left;padding:6px">거래처명</th><th style="text-align:right;padding:6px">직접 소개</th><th style="text-align:right;padding:6px">전체 하위</th></tr></thead><tbody>'
+      +tree.rank.map(r=>'<tr><td style="padding:6px"><button type="button" class="btn btn-xs btn-gray" onclick="openPayStatusDetail(\''+payJs(r.id)+'\')">'+escHtml(r.name)+'</button></td><td style="padding:6px;text-align:right">'+r.direct+'</td><td style="padding:6px;text-align:right">'+r.desc+'</td></tr>').join('')
+      +'</tbody></table>':'<div style="color:var(--text3)">소개 실적이 없습니다.</div>';
+  }
+}
+function inflowDrawCharts(keep){
+  const list=inflowAnalysisClients(keep);
+  const labels=[];
+  const counts=[];
+  function add(label){
+    let i=labels.indexOf(label);
+    if(i<0){ labels.push(label); counts.push(0); i=labels.length-1; }
+    counts[i]++;
+  }
+  list.forEach(c=>{
+    const route=inflowView(c).route;
+    add(route||'미입력');
+  });
+  const total=counts.reduce((a,n)=>a+n,0)||0;
+  const colors=labels.map((name,i)=>inflowColor(name,i));
+  const cards=document.getElementById('inflow-cards');
+  if(cards){
+    cards.innerHTML='<div style="font-size:13px;font-weight:800;margin-bottom:8px">경로별 숫자</div><div style="display:flex;gap:8px;flex-wrap:wrap">'
+      +(labels.length?labels.map((name,i)=>{
+        const pct=total?Math.round(counts[i]*1000/total)/10:0;
+        return '<div style="border:1px solid var(--border);border-radius:10px;padding:8px 10px;min-width:110px"><div style="font-size:12px;font-weight:800;color:'+colors[i]+'">'+escHtml(name)+'</div><div style="font-size:18px;font-weight:900">'+counts[i]+'<span style="font-size:11px;color:var(--text3)">곳</span></div><div style="font-size:11px;color:var(--text3)">'+pct+'%</div></div>';
+      }).join(''):'<div style="color:var(--text3)">기간 안 거래처가 없습니다.</div>')
+      +'</div>';
+  }
+  const donut=document.getElementById('inflow-donut');
+  if(donut&&typeof Chart!=='undefined'){
+    _inflowDonut=new Chart(donut,{type:'doughnut',data:{labels,datasets:[{data:counts,backgroundColor:colors}]},options:{plugins:{legend:{position:'bottom'}}}});
+  }
+  const byMonth={};
+  list.forEach(c=>{
+    const v=inflowView(c);
+    if(!v.date) return;
+    const month=v.date.slice(0,7);
+    if(!/^\d{4}-\d{2}$/.test(month)) return;
+    if(!byMonth[month]) byMonth[month]={};
+    const key=v.route||'미입력';
+    byMonth[month][key]=(byMonth[month][key]||0)+1;
+  });
+  const months=inflowMonthSpan(Object.keys(byMonth).sort());
+  const present={};
+  months.forEach(m=>Object.keys(byMonth[m]||{}).forEach(k=>{ present[k]=1; }));
+  const series=[];
+  INFLOW_ROUTES.forEach(r=>{ if(present[r]) series.push(r); });
+  Object.keys(present).forEach(k=>{ if(k!=='미입력'&&series.indexOf(k)<0) series.push(k); });
+  if(present['미입력']) series.push('미입력');
+  const bar=document.getElementById('inflow-bar');
+  if(bar&&typeof Chart!=='undefined'){
+    _inflowBar=new Chart(bar,{
+      type:'bar',
+      data:{labels:months,datasets:series.map((name,i)=>({label:name,data:months.map(m=>(byMonth[m]&&byMonth[m][name])||0),backgroundColor:inflowColor(name,i),stack:'in'}))},
+      options:{responsive:true,plugins:{legend:{position:'bottom'}},scales:{x:{stacked:true},y:{stacked:true,beginAtZero:true,ticks:{precision:0}}}}
+    });
+  }
+}
+function inflowMonthSpan(keys){
+  if(!keys.length) return [];
+  const out=[];
+  let y=+keys[0].slice(0,4), m=+keys[0].slice(5,7);
+  const end=keys[keys.length-1];
+  const ey=+end.slice(0,4), em=+end.slice(5,7);
+  let guard=0;
+  while((y<ey||(y===ey&&m<=em))&&guard<240){
+    out.push(y+'-'+String(m).padStart(2,'0'));
+    m++; if(m>12){ m=1; y++; }
+    guard++;
+  }
+  return out;
+}
+function inflowChildMap(){
+  const clients=(CLIENTS_CACHE||[]).filter(c=>c&&c.id);
+  const byId=new Map(clients.map(c=>[c.id,c]));
+  const childMap=new Map();
+  const nameGroups=new Map();
+  const unknown=[];
+  clients.forEach(c=>{
+    const inf=c.firstInflow||{};
+    if(inf.referrerClientId&&byId.has(inf.referrerClientId)&&inf.referrerClientId!==c.id){
+      const arr=childMap.get(inf.referrerClientId)||[];
+      arr.push(c.id); childMap.set(inf.referrerClientId, arr);
+    }else if((inf.route==='지인소개')&&payTrim(inf.referrerName)){
+      const key=payTrim(inf.referrerName);
+      const arr=nameGroups.get(key)||[];
+      arr.push(c.id); nameGroups.set(key, arr);
+    }
+  });
+  clients.forEach(c=>{
+    const kids=childMap.get(c.id)||[];
+    if(!kids.length) return;
+    const inf=c.firstInflow||{};
+    if(inf.route!=='지인소개') return;
+    const linked=inf.referrerClientId&&byId.has(inf.referrerClientId);
+    const named=!inf.referrerClientId&&payTrim(inf.referrerName);
+    if(!linked&&!named) unknown.push(c.id);
+  });
+  return {clients, byId, childMap, nameGroups, unknown};
+}
+function inflowDescendants(id, childMap, stack){
+  if(stack.has(id)) return [];
+  stack.add(id);
+  const out=[];
+  (childMap.get(id)||[]).forEach(kid=>{
+    out.push(kid);
+    inflowDescendants(kid, childMap, stack).forEach(x=>{ if(out.indexOf(x)<0) out.push(x); });
+  });
+  stack.delete(id);
+  return out;
+}
+function inflowClientNode(id, model, stack){
+  if(stack.has(id)) return null;
+  const c=model.byId.get(id);
+  if(!c) return null;
+  const next=new Set(stack); next.add(id);
+  const kids=(model.childMap.get(id)||[]).map(kid=>inflowClientNode(kid, model, next)).filter(Boolean);
+  const desc=inflowDescendants(id, model.childMap, new Set());
+  const inf=c.firstInflow||{};
+  return {key:'c:'+id, clientId:id, name:c.name||'(이름 없음)', date:c.firstContractDate||inf.firstContractDate||'', gray:false, desc:desc.length, direct:(model.childMap.get(id)||[]).length, children:kids};
+}
+function inflowTreeModel(){
+  const model=inflowChildMap();
+  const roots=[];
+  model.clients.forEach(c=>{
+    const kids=model.childMap.get(c.id)||[];
+    if(!kids.length) return;
+    if((c.firstInflow||{}).route==='지인소개') return;
+    const node=inflowClientNode(c.id, model, new Set());
+    if(node) roots.push(node);
+  });
+  model.nameGroups.forEach((ids, name)=>{
+    const children=ids.map(id=>inflowClientNode(id, model, new Set())).filter(Boolean);
+    const seen=new Set();
+    let desc=0;
+    function walk(n){ if(!n||seen.has(n.clientId)) return; seen.add(n.clientId); desc++; (n.children||[]).forEach(walk); }
+    children.forEach(walk);
+    roots.push({key:'n:'+name, clientId:'', name, date:'', gray:true, desc, direct:children.length, children});
+  });
+  if(model.unknown.length){
+    const children=model.unknown.map(id=>inflowClientNode(id, model, new Set())).filter(Boolean);
+    roots.push({key:'n:소개자 미상', clientId:'', name:'소개자 미상', date:'', gray:true, desc:children.reduce((a,n)=>a+1+n.desc,0), direct:children.length, children});
+  }
+  roots.sort((a,b)=>b.desc-a.desc||String(a.name).localeCompare(String(b.name),'ko'));
+  const rank=model.clients.map(c=>{
+    const desc=inflowDescendants(c.id, model.childMap, new Set()).length;
+    return {id:c.id, name:c.name||'(이름 없음)', direct:(model.childMap.get(c.id)||[]).length, desc};
+  }).filter(r=>r.desc>0).sort((a,b)=>b.desc-a.desc||a.name.localeCompare(b.name,'ko')).slice(0,10);
+  return {roots, rank};
+}
+function inflowTreeNode(n, depth){
+  const opened=Object.prototype.hasOwnProperty.call(INFLOW_TREE_OPEN, n.key)?INFLOW_TREE_OPEN[n.key]:depth<1;
+  const has=n.children&&n.children.length;
+  const mark=has?(opened?'▾':'▸'):'·';
+  const toggle=has?'<button type="button" class="btn btn-xs btn-gray" onclick="inflowToggle(\''+payJs(n.key)+'\','+depth+')">'+mark+'</button>':'<span style="display:inline-block;width:28px;text-align:center;color:#94a3b8">'+mark+'</span>';
+  const nameBtn=n.clientId
+    ? '<button type="button" class="btn btn-xs btn-gray" onclick="openPayStatusDetail(\''+payJs(n.clientId)+'\')">'+escHtml(n.name)+'</button>'
+    : '<span style="font-weight:800;color:#64748b">'+escHtml(n.name)+'</span>';
+  const kids=opened&&has?n.children.map(ch=>inflowTreeNode(ch, depth+1)).join(''):'';
+  return '<div style="margin-left:'+(depth?16:0)+'px;border-left:'+(depth?'1px solid #cbd5e1':'none')+';padding-left:'+(depth?8:0)+'px">'
+    +'<div style="display:flex;gap:6px;align-items:center;padding:3px 0;white-space:nowrap">'+toggle+nameBtn
+    +'<span style="font-size:11px;color:#94a3b8">'+(n.date?escHtml(n.date)+' · ':'')+'하위 '+n.desc+'곳</span></div>'
+    +kids+'</div>';
+}
+function inflowToggle(key, depth){
+  const opened=Object.prototype.hasOwnProperty.call(INFLOW_TREE_OPEN, key)?INFLOW_TREE_OPEN[key]:Number(depth)<1;
+  INFLOW_TREE_OPEN[key]=!opened;
+  const tree=inflowTreeModel();
+  const host=document.getElementById('inflow-tree');
+  if(host) host.innerHTML=tree.roots.map(n=>inflowTreeNode(n,0)).join('');
 }
 async function savePayStatusUpdate(){
   if(PAY_ST_BUSY) return;
@@ -12789,12 +13590,6 @@ function saveClientMemo(){
   sv('cl',d.clients);
   toast('거래처 메모가 저장되었습니다');
 }
-// 선계약수량 수정 팝업 (하위호환)
-function openContractEdit(){
-  if(!CUR_CLIENT) return;
-  openPayStatusDetail(CUR_CLIENT);
-}
-
 function renderDetProjView(){
   const d=ld();
   let projs=d.projects.filter(p=>p.clientId===CUR_CLIENT);
