@@ -5,9 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>WAY PROJECT · 리뷰 마케팅 대시보드</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script>window.XLSX_COMMUNITY=window.XLSX;</script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.min.js"></script>
-<script>window.XLSX_STYLE=window.XLSX;window.XLSX=window.XLSX_COMMUNITY;</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800;900&display=swap');
@@ -9908,10 +9906,6 @@ function settleExcelColWidths(aoa){
   });
   return cols.map(w=>({wch:Math.min(42, Math.max(8, (w||8)+2))}));
 }
-function settleXlsxWrite(){
-  if(typeof XLSX_STYLE!=='undefined' && XLSX_STYLE && XLSX_STYLE.style_version && XLSX_STYLE.writeFile) return XLSX_STYLE;
-  return (typeof XLSX!=='undefined') ? XLSX : null;
-}
 function settleExcelScopeValue(){
   const nodes=[...document.querySelectorAll('select[data-settle-excel-scope]')];
   const shown=nodes.find(el=>el.getClientRects().length>0);
@@ -9926,31 +9920,36 @@ function settleExcelRedRows(aoa, kind){
   }
   return rows;
 }
-function settleExcelSheet(aoa, amountCols, redRows){
-  const X=settleXlsxWrite();
-  const ws=X.utils.aoa_to_sheet(aoa);
-  ws['!cols']=settleExcelColWidths(aoa);
+function settleExcelSheet(wb, name, aoa, amountCols, redRows){
+  const ws=wb.addWorksheet(name);
+  ws.views=[{state:'frozen', ySplit:1}];
   const red=new Set(redRows||[]);
-  const styled=!!(X&&X.style_version);
-  if(ws['!ref']){
-    const range=X.utils.decode_range(ws['!ref']);
-    for(let r=range.s.r;r<=range.e.r;r++){
-      const isRed=red.has(r);
-      for(let c=range.s.c;c<=range.e.c;c++){
-        const cell=ws[X.utils.encode_cell({r,c})];
-        if(!cell) continue;
-        const isAmt=amountCols.indexOf(c)>=0 && typeof cell.v==='number';
-        if(isAmt){ cell.t='n'; cell.z='#,##0'; }
-        if(!styled) continue;
-        const style={};
-        if(r===0) style.font={bold:true};
-        if(isRed) style.fill={patternType:'solid', fgColor:{rgb:'FFFEE2E2'}};
-        if(isAmt) style.numFmt='#,##0';
-        if(style.font||style.fill||style.numFmt) cell.s=style;
-      }
-    }
-  }
+  const amount=new Set(amountCols||[]);
+  aoa.forEach((row, r)=>{
+    const excelRow=ws.addRow(row.map(v=>v==null?'':v));
+    const isRed=red.has(r);
+    row.forEach((val, c)=>{
+      const cell=excelRow.getCell(c+1);
+      if(r===0) cell.font={bold:true};
+      if(isRed) cell.fill={type:'pattern', pattern:'solid', fgColor:{argb:'FFFEE2E2'}};
+      if(amount.has(c) && typeof val==='number') cell.numFmt='#,##0';
+    });
+  });
+  settleExcelColWidths(aoa).forEach((col, i)=>{
+    // ExcelJS는 너비 9를 기본값으로 보고 열 너비를 파일에 쓰지 않는다.
+    ws.getColumn(i+1).width=col.wch===9 ? 9.01 : col.wch;
+  });
   return ws;
+}
+function settleExcelDownload(buf, fileName){
+  const blob=new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1500);
 }
 function settleSummarySheetRows(rows){
   const groups=new Map();
@@ -10013,14 +10012,13 @@ function settleDetailSheetRows(rows, useCarry){
   });
   return aoa;
 }
-function exportSettleExcel(){
+async function exportSettleExcel(){
   try{
     if(document.body.classList.contains('client-view-link')) return;
     const app=document.getElementById('app');
     if(!app || app.classList.contains('hidden')) return;
     if(!CUR_ADMIN){ alert('로그인이 필요합니다'); return; }
-    const X=settleXlsxWrite();
-    if(!X){ toast('XLSX 라이브러리 로딩 중...','error'); return; }
+    if(typeof ExcelJS==='undefined'){ toast('엑셀 라이브러리 로딩 중...','error'); return; }
     if(!_svLoaded.st || !_svLoaded.qt){
       alert('정산 데이터를 불러오는 중입니다. 잠시 후 다시 시도하세요');
       return;
@@ -10038,13 +10036,13 @@ function exportSettleExcel(){
     }
     const summary=settleSummarySheetRows(rows);
     const detail=settleDetailSheetRows(rows, useFilter);
-    const wb=X.utils.book_new();
-    X.utils.book_append_sheet(wb, settleExcelSheet(summary, [2,3,5], settleExcelRedRows(summary,'summary')), '정산요약');
-    X.utils.book_append_sheet(wb, settleExcelSheet(detail, [5,11], settleExcelRedRows(detail,'detail')), '견적내역');
+    const wb=new ExcelJS.Workbook();
+    settleExcelSheet(wb, '정산요약', summary, [2,3,5], settleExcelRedRows(summary,'summary'));
+    settleExcelSheet(wb, '견적내역', detail, [5,11], settleExcelRedRows(detail,'detail'));
     const day=String(getKSTDate()||'').replace(/-/g,'');
     const narrowed=useFilter && settleAllFilterActive(filter);
     const fileName='웨이프로젝트_거래처정산_'+day+(narrowed?'_필터적용':'')+'.xlsx';
-    X.writeFile(wb, fileName, {compression:true});
+    settleExcelDownload(await wb.xlsx.writeBuffer(), fileName);
     toast('엑셀 다운로드 완료');
   }catch(e){
     console.error(e);
