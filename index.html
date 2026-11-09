@@ -348,6 +348,60 @@ body.client-view-link #client-view-loading{display:flex;}
 body.client-view-link.client-view-ready #client-view-loading{display:none;}
 #client-view-loading .loading-text{font-size:18px;font-weight:700;color:var(--accent);}
 #client-view-loading .loading-sub{font-size:13px;color:var(--text2);}
+
+/* ── 보고 · 정산현황 ── */
+.rpt-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
+.rpt-modes{display:flex;gap:4px;background:var(--bg2);border-radius:10px;padding:3px;}
+.rpt-modes button{border:none;background:transparent;padding:6px 14px;border-radius:8px;font-family:var(--font);font-size:12px;font-weight:700;color:var(--text2);cursor:pointer;}
+.rpt-modes button.on{background:var(--accent);color:#fff;}
+.rpt-nav{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.rpt-period-label{font-size:13px;font-weight:800;min-width:160px;text-align:center;}
+.rpt-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px;}
+.rpt-period-val{font-size:14px;font-weight:800;line-height:1.35;word-break:keep-all;}
+.rpt-ratio{font-size:13px;font-weight:700;margin-bottom:12px;padding:10px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;}
+.rpt-sec{border:1px solid var(--border);border-radius:12px;margin-bottom:10px;background:#fff;overflow:hidden;}
+.rpt-sec-h{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:#fff;border:none;padding:12px 14px;cursor:pointer;font-family:var(--font);color:var(--text);flex-wrap:wrap;}
+.rpt-sec-name{font-weight:800;min-width:0;word-break:break-word;}
+.rpt-sec-meta{margin-left:auto;font-size:12px;font-weight:700;color:var(--accent);text-align:right;}
+.rpt-chev{font-size:11px;color:var(--text3);flex:0 0 auto;}
+.rpt-doc{display:grid;grid-template-columns:118px minmax(0,1fr) 148px 64px;gap:8px;align-items:start;padding:8px 14px;border-top:1px solid var(--border);font-size:12px;}
+.rpt-doc-head{font-size:10px;font-weight:700;color:var(--text3);background:var(--bg2);}
+.rpt-doc-date{font-weight:700;}
+.rpt-doc-items{min-width:0;}
+.rpt-item{line-height:1.45;word-break:break-word;}
+.rpt-doc-amt{text-align:right;font-weight:800;color:var(--accent);}
+.rpt-amt-sub{font-size:10px;font-weight:600;color:var(--text2);}
+.rpt-doc-age{text-align:right;color:var(--text2);white-space:nowrap;}
+.rpt-month{min-width:760px;}
+.rpt-month th,.rpt-month td.num{text-align:right;}
+.rpt-month th:first-child,.rpt-month td:first-child{text-align:left;}
+.rpt-month-row{cursor:pointer;}
+.rpt-bucket-title{font-size:13px;font-weight:800;margin:16px 0 8px;}
+.rpt-danger{border:1px solid #fca5a5;background:#fef2f2;border-radius:12px;padding:4px 10px 8px;margin-bottom:12px;}
+.rpt-danger .rpt-bucket-title,.rpt-danger .rpt-sec-name,.rpt-danger .rpt-sec-meta{color:#991b1b;}
+.rpt-unknown{border-style:dashed;}
+.rpt-stamp{margin-top:14px;font-size:12px;color:var(--text2);text-align:right;}
+.rpt-loading,.rpt-empty{padding:36px 12px;text-align:center;color:var(--text3);}
+.rpt-print-head{display:none;font-size:18px;font-weight:800;margin-bottom:8px;}
+@media (max-width:768px){
+  .rpt-stats{grid-template-columns:1fr 1fr;}
+  .rpt-toolbar{align-items:stretch;}
+  .rpt-period-label{min-width:0;flex:1;}
+  .rpt-sec-meta{margin-left:0;text-align:left;}
+  .rpt-doc{grid-template-columns:1fr auto;gap:4px 8px;}
+  .rpt-doc-head{display:none;}
+  .rpt-doc-items{grid-column:1 / -1;}
+}
+@media print{
+  body.rpt-printing .sidebar{display:none !important;}
+  body.rpt-printing .main{margin:0 !important;padding:0 !important;}
+  body.rpt-printing .no-print{display:none !important;}
+  body.rpt-printing #toast{display:none !important;}
+  body.rpt-printing .rpt-print-head{display:block;}
+  body.rpt-printing .rpt-sec-body{display:block !important;}
+  body.rpt-printing tr.rpt-month-detail{display:table-row !important;}
+  body.rpt-printing .rpt-danger{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+}
 </style>
 </head>
 <body>
@@ -448,6 +502,13 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
       <span id="admin-chevron" style="font-size:10px;transition:transform .2s">▶</span>
     </div>
     <div id="nav-admin-sub" style="display:none;background:rgba(0,0,0,.15);border-left:2px solid var(--accent);margin-left:0">
+      <div class="nav-item nav-sub nav-group" onclick="toggleAdminGroup('report')">
+        <span>보고</span>
+        <span id="admin-chevron-report" style="font-size:10px">▶</span>
+      </div>
+      <div class="admin-group-body" id="admin-group-report" data-group="report">
+        <div class="nav-item nav-sub nav-sub2" onclick="showPage('report-settle')" data-page="report-settle"><span class="nav-icon" style="font-size:12px">📋</span>정산현황</div>
+      </div>
       <div class="nav-item nav-sub nav-group" onclick="toggleAdminGroup('settle')">
         <span>정산</span>
         <span id="admin-chevron-settle" style="font-size:10px">▶</span>
@@ -937,6 +998,34 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
         <div id="dep-unmatched-table" class="tw"></div>
       </div>
       </div><!-- /dep-tab-unmatched -->
+    </div>
+
+    <!-- 보고 · 정산현황 -->
+    <div class="page" id="page-report-settle">
+      <div class="page-header no-print">
+        <div><div class="page-title">보고 · 정산현황</div><div class="page-sub">견적 안내일 기준 미입금. 관리자 전용이며 정산 데이터는 읽기만 합니다.</div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn btn-sm btn-gray" onclick="rptCopy()">보고서 복사</button>
+          <button type="button" class="btn btn-sm btn-blue" onclick="rptPrint()">인쇄/PDF</button>
+        </div>
+      </div>
+      <div class="rpt-toolbar no-print" id="rpt-toolbar">
+        <div class="rpt-modes">
+          <button type="button" id="rpt-mode-week" onclick="rptSetMode('week')">주간</button>
+          <button type="button" id="rpt-mode-month" onclick="rptSetMode('month')">월간</button>
+          <button type="button" id="rpt-mode-all" onclick="rptSetMode('all')">전체</button>
+        </div>
+        <div class="rpt-nav" id="rpt-nav">
+          <button type="button" class="btn btn-sm btn-gray" onclick="rptShift(-1)" aria-label="이전 기간">◀</button>
+          <span class="rpt-period-label" id="rpt-period-label"></span>
+          <button type="button" class="btn btn-sm btn-gray" onclick="rptShift(1)" aria-label="다음 기간">▶</button>
+          <button type="button" class="btn btn-sm btn-gray" onclick="rptResetPeriod()">이번 보고 기간</button>
+        </div>
+      </div>
+      <div id="rpt-print">
+        <div class="rpt-print-head" id="rpt-print-head"></div>
+        <div id="rpt-body"></div>
+      </div>
     </div>
 
     <!-- 거래처 정산 (전체) -->
@@ -2524,6 +2613,16 @@ function scheduleRerender(collectionName){
     paint('clients','page-clients', coreReady && _renderColsHit(cols, ['clients','projects']), function(){ renderClients(); });
     paint('export','page-export', coreReady && _renderColsHit(cols, ['clients','projects','records']), function(){ renderExportPage(); });
     paint('settle-all','page-settle-all', _renderColsHit(cols, ['settles','quotes','clients']), function(){ renderSettleAll(); });
+    if(_renderColsHit(cols, ['settles','quotes','clients'])){
+      const reportOn=_appVisible() && _activePageId()==='page-report-settle';
+      if(reportOn){
+        _dirtyPages.delete('report-settle');
+        _pagePainted.add('report-settle');
+        try{ renderSettleReport(); }catch(e){}
+      }else{
+        _dirtyPages.add('report-settle');
+      }
+    }
     paint('deposit','page-deposit', _renderColsHit(cols, ['depositHistory','depositUnmatched','depNames','settles','clients']), function(){ refreshOpenDeposit(); });
     paint('daily-settle','page-daily-settle', _renderColsHit(cols, ['dailySettleRows','bankTransactions','companyExpenses']), function(){ refreshOpenDailySettle(); });
     paint('user-mgmt','page-user-mgmt', _renderColsHit(cols, ['users']), function(){ renderUserMgmt(); });
@@ -9651,11 +9750,15 @@ function showPage(n){
   fsBegin('탭 전환 1회 ('+n+')');
   try{
   // 관리자 전용 페이지는 로그인 필요
-  const adminSubs=['settle-all','deposit','daily-settle'];
+  const adminSubs=['settle-all','deposit','daily-settle','report-settle'];
   if(adminSubs.includes(n)&&!CUR_ADMIN){
     PENDING_ADMIN_PAGE=n;
     openMd('admin-login');
     setTimeout(()=>document.getElementById('modal-login-id')?.focus(),100);
+    return;
+  }
+  if(n==='report-settle' && (!CUR_ADMIN || CUR_ADMIN.role!=='admin')){
+    toast('관리자 권한이 필요합니다','error');
     return;
   }
   if(n==='settle-all') perfMarkSettleClick();
@@ -9685,6 +9788,7 @@ function showPage(n){
   if(!deferCore && n==='export')renderExportPage();
   if(n==='crm')renderCrmQuotes();
   if(n==='settle-all')renderSettleAll();
+  if(n==='report-settle')renderSettleReport();
   if(n==='deposit'){showDepTab('names');updateUnmatchedBadge();}
   if(n==='daily-settle')initDailySettle();
   if(n==='user-mgmt')renderUserMgmt();
@@ -9732,7 +9836,7 @@ function openAdminGroup(key){
   if(ch) ch.textContent='▼';
 }
 function closeAdminGroups(){
-  ['settle','code'].forEach(key=>{
+  ['report','settle','code'].forEach(key=>{
     const body=document.getElementById('admin-group-'+key);
     const ch=document.getElementById('admin-chevron-'+key);
     if(body) body.style.display='none';
@@ -9748,6 +9852,538 @@ function syncAdminNav(n){
   const body=item.closest('.admin-group-body');
   if(body && body.id && body.id.indexOf('admin-group-')===0) openAdminGroup(body.id.slice('admin-group-'.length));
 }
+
+// ═══════════════════════════════════════════
+// 보고 · 정산현황 (캐시 읽기 전용)
+// ═══════════════════════════════════════════
+let RPT_MODE='week';
+let RPT_WEEK_FROM='';
+let RPT_MONTH='';
+let RPT_FOLDED={};
+let RPT_MODEL=null;
+let RPT_COMPARED=false;
+const RPT_WD=['일','월','화','수','목','금','토'];
+
+function rptCacheReady(){
+  return !!(_svLoaded.qt && _svLoaded.st && _svLoaded.cl);
+}
+function rptNow(){
+  const parts=new Intl.DateTimeFormat('en-US',{
+    timeZone:'Asia/Seoul',
+    year:'numeric', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', hourCycle:'h23'
+  }).formatToParts(new Date());
+  const pick=type=>{
+    const found=parts.find(p=>p.type===type);
+    return found?found.value:'';
+  };
+  let hour=pick('hour');
+  if(hour==='24') hour='00';
+  return {iso:pick('year')+'-'+pick('month')+'-'+pick('day'), hm:hour+':'+pick('minute')};
+}
+function rptIsYmd(value){
+  return typeof value==='string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+function rptDateOf(row){
+  return row && typeof row.date==='string' ? row.date : '';
+}
+function ymdWeekday(iso){
+  const [y,m,d]=iso.split('-').map(Number);
+  return new Date(Date.UTC(y, m-1, d)).getUTCDay();
+}
+function ymdAdd(iso, days){
+  const [y,m,d]=iso.split('-').map(Number);
+  const dt=new Date(Date.UTC(y, m-1, d+days));
+  return dt.getUTCFullYear()+'-'+String(dt.getUTCMonth()+1).padStart(2,'0')+'-'+String(dt.getUTCDate()).padStart(2,'0');
+}
+function rptElapsed(from, to){
+  const [y1,m1,d1]=from.split('-').map(Number);
+  const [y2,m2,d2]=to.split('-').map(Number);
+  return Math.round((Date.UTC(y2, m2-1, d2)-Date.UTC(y1, m1-1, d1))/86400000);
+}
+function rptFmtDate(iso){
+  if(!rptIsYmd(iso)) return '날짜 없음';
+  return iso.slice(2,4)+'.'+iso.slice(5,7)+'.'+iso.slice(8,10)+'('+RPT_WD[ymdWeekday(iso)]+')';
+}
+function rptWon(n){
+  return fmtN(Math.round(Number(n)||0))+'원';
+}
+function rptPrevWeek(today){
+  const dow=ymdWeekday(today);
+  const sinceMon=dow===0?6:dow-1;
+  const thisMon=ymdAdd(today, -sinceMon);
+  return {from:ymdAdd(thisMon, -7), to:ymdAdd(thisMon, -1)};
+}
+function rptShiftMonth(ym, delta){
+  let [y,m]=ym.split('-').map(Number);
+  m+=delta;
+  while(m<1){ m+=12; y--; }
+  while(m>12){ m-=12; y++; }
+  return y+'-'+String(m).padStart(2,'0');
+}
+function rptMonthEnd(ym){
+  const [y,m]=ym.split('-').map(Number);
+  const last=new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return ym+'-'+String(last).padStart(2,'0');
+}
+function rptDefaultMonth(today){
+  return rptShiftMonth(today.slice(0,7), -1);
+}
+function rptInRange(date, from, to){
+  return rptIsYmd(date) && date>=from && date<=to;
+}
+function rptMoney(row){
+  const total=Number(row&&row.total)||0;
+  const paid=Number(row&&row.depositAmt)||0;
+  const partial=!!(row && row.settled===false && paid>0);
+  const balance=partial ? Math.max(0, total-paid) : total;
+  return {total, paid, partial, balance};
+}
+function rptSelfCheckDates(){
+  const sample=rptPrevWeek('2026-11-09');
+  if(sample.from!=='2026-11-02' || sample.to!=='2026-11-08'){
+    console.error('[정산현황] 주간 경계 오류', sample);
+  }
+}
+function rptCanonicalSettles(){
+  const rows=[];
+  const seenId=new Set();
+  const seenQt=new Set();
+  listSettleRowsForView().forEach(row=>{
+    if(!row || !row._hasSettle) return;
+    rows.push(row);
+    if(row.id) seenId.add(row.id);
+    if(row.qtId) seenQt.add(row.qtId);
+  });
+  const quoteById=new Map();
+  (QUOTES_CACHE||[]).forEach(q=>{ if(q&&q.id) quoteById.set(q.id, q); });
+  (SETTLES_CACHE||[]).forEach(row=>{
+    if(!row || !row.id || seenId.has(row.id)) return;
+    if(row.qtId && seenQt.has(row.qtId)) return;
+    if(row.qtId){
+      const qt=quoteById.get(row.qtId);
+      if(qt && qt.crmMode===true) return;
+      if(qt && qt.clientId) return;
+    }
+    rows.push(Object.assign({}, row, {_hasSettle:true}));
+    seenId.add(row.id);
+  });
+  return rows;
+}
+function rptQuoteMap(){
+  const map=new Map();
+  (QUOTES_CACHE||[]).forEach(q=>{ if(q&&q.id) map.set(q.id, q); });
+  return map;
+}
+function rptClientRef(row){
+  const id=row&&row.clientId;
+  if(!id) return {key:'__none__', unknown:true, name:'거래처 미지정'};
+  const client=(CLIENTS_CACHE||[]).find(c=>c&&c.id===id);
+  if(!client) return {key:'__none__', unknown:true, name:'거래처 미지정'};
+  return {key:id, unknown:false, name:client.name||'(이름 없음)'};
+}
+function rptMonthWeek(date){
+  const day=Number(date.slice(8,10));
+  if(!day) return 0;
+  return Math.min(5, Math.ceil(day/7));
+}
+function rptGroup(rows){
+  const map=new Map();
+  rows.forEach(row=>{
+    const ref=rptClientRef(row);
+    let group=map.get(ref.key);
+    if(!group){
+      group={key:ref.key, unknown:ref.unknown, name:ref.name, rows:[], balance:0, count:0, oldest:'', weeks:[0,0,0,0,0]};
+      map.set(ref.key, group);
+    }
+    group.rows.push(row);
+    const money=rptMoney(row);
+    group.balance+=money.balance;
+    group.count+=1;
+    const date=rptDateOf(row);
+    if(rptIsYmd(date)){
+      if(!group.oldest || date<group.oldest) group.oldest=date;
+      const index=rptMonthWeek(date)-1;
+      if(index>=0 && index<5) group.weeks[index]+=money.balance;
+    }
+  });
+  map.forEach(group=>{
+    group.rows.sort((a,b)=>{
+      const da=rptIsYmd(rptDateOf(a))?rptDateOf(a):'9999-99-99';
+      const db=rptIsYmd(rptDateOf(b))?rptDateOf(b):'9999-99-99';
+      return da.localeCompare(db);
+    });
+  });
+  return [...map.values()];
+}
+function rptSortBalance(groups){
+  const named=groups.filter(g=>!g.unknown).sort((a,b)=>b.balance-a.balance || a.name.localeCompare(b.name,'ko'));
+  return named.concat(groups.filter(g=>g.unknown));
+}
+function rptSortOldest(groups){
+  const rank=g=>g.oldest||'9999-99-99';
+  const named=groups.filter(g=>!g.unknown).sort((a,b)=>rank(a).localeCompare(rank(b)) || b.balance-a.balance);
+  const unknown=groups.filter(g=>g.unknown).sort((a,b)=>rank(a).localeCompare(rank(b)) || b.balance-a.balance);
+  return named.concat(unknown);
+}
+function rptItemName(it){
+  if(!it) return '항목';
+  if(it.calc==='product') return String(it.productName||'').trim()||it.label||'상품';
+  return it.label||it.calc||'항목';
+}
+function rptItemsHtml(row, quoteById){
+  const qt=row.qtId ? quoteById.get(row.qtId) : null;
+  const items=qt && Array.isArray(qt.items) ? qt.items.filter(Boolean) : [];
+  if(!qt || !items.length){
+    const text=String(row.itemSummary||'').trim();
+    return '<div class="rpt-item">'+escHtml(text||'—')+'</div>';
+  }
+  return orderedQuoteItems(items).map(it=>{
+    return '<div class="rpt-item">'+escHtml(String(rptItemName(it)))+' · '+fmtN(Number(it.qty)||0)+'개 · '+fmtN(Number(it.unitPrice)||0)+'원</div>';
+  }).join('');
+}
+function rptItemText(row, quoteById){
+  const qt=row.qtId ? quoteById.get(row.qtId) : null;
+  const items=qt && Array.isArray(qt.items) ? qt.items.filter(Boolean) : [];
+  if(!qt || !items.length) return String(row.itemSummary||'').trim()||'—';
+  return orderedQuoteItems(items).map(it=>{
+    return String(rptItemName(it))+' · '+fmtN(Number(it.qty)||0)+'개 · '+fmtN(Number(it.unitPrice)||0)+'원';
+  }).join(' / ');
+}
+function rptAmtHtml(money){
+  if(!money.partial) return '<div>'+rptWon(money.total)+'</div>';
+  return '<div>'+rptWon(money.total)+'</div>'
+    +'<div class="rpt-amt-sub">입금 '+rptWon(money.paid)+'</div>'
+    +'<div class="rpt-amt-sub">잔액 '+rptWon(money.balance)+'</div>'
+    +'<span class="badge by">부분입금</span>';
+}
+function rptFolded(key){
+  if(Object.prototype.hasOwnProperty.call(RPT_FOLDED, key)) return !!RPT_FOLDED[key];
+  return key.slice(0,2)!=='w:';
+}
+function rptDomId(key){
+  let n=2166136261;
+  const str=String(key);
+  for(let i=0;i<str.length;i++){
+    n^=str.charCodeAt(i);
+    n=Math.imul(n, 16777619);
+  }
+  return (n>>>0).toString(36);
+}
+function rptDocsHtml(rows, today, quoteById){
+  const head='<div class="rpt-doc rpt-doc-head"><div>견적 안내일</div><div>세부 견적</div><div>금액</div><div>경과일</div></div>';
+  const body=rows.map(row=>{
+    const date=rptDateOf(row);
+    const age=rptIsYmd(date) ? (Math.max(0, rptElapsed(date, today))+'일') : '—';
+    return '<div class="rpt-doc">'
+      +'<div class="rpt-doc-date">'+escHtml(rptFmtDate(date))+'</div>'
+      +'<div class="rpt-doc-items">'+rptItemsHtml(row, quoteById)+'</div>'
+      +'<div class="rpt-doc-amt">'+rptAmtHtml(rptMoney(row))+'</div>'
+      +'<div class="rpt-doc-age">'+escHtml(age)+'</div>'
+      +'</div>';
+  }).join('');
+  return head+body;
+}
+function rptSectionHtml(group, today, quoteById, foldKey){
+  const folded=rptFolded(foldKey);
+  const id=rptDomId(foldKey);
+  const oldest=group.oldest ? ' · 가장 오래된 '+escHtml(rptFmtDate(group.oldest)) : '';
+  return '<section class="rpt-sec'+(group.unknown?' rpt-unknown':'')+'">'
+    +'<button type="button" class="rpt-sec-h" onclick="rptToggle(decodeURIComponent(\''+encodeURIComponent(foldKey)+'\'))">'
+    +'<span class="rpt-sec-name">'+escHtml(group.name)+'</span>'
+    +'<span class="rpt-sec-meta">'+rptWon(group.balance)+' · '+fmtN(group.count)+'건'+oldest+'</span>'
+    +'<span class="rpt-chev" id="rpt-chev-'+id+'">'+(folded?'▶':'▼')+'</span>'
+    +'</button>'
+    +'<div class="rpt-sec-body" id="rpt-fold-'+id+'"'+(folded?' style="display:none"':'')+'>'
+    +rptDocsHtml(group.rows, today, quoteById)
+    +'</div></section>';
+}
+function rptCardsHtml(period, clients, count, amount){
+  return '<div class="rpt-stats">'
+    +'<div class="stat-card" style="border-top-color:var(--accent)"><div class="stat-label">보고 기간</div><div class="rpt-period-val">'+escHtml(period)+'</div></div>'
+    +sCard('미지급 거래처','#0891b2', fmtN(clients)+'곳')
+    +sCard('미지급 건수','var(--yellow)', fmtN(count)+'건')
+    +sCard('미지급 총액','var(--red)', rptWon(amount), '잔액 기준')
+    +'</div>';
+}
+function rptAgeBucket(date, today){
+  if(!rptIsYmd(date)) return 'none';
+  const days=rptElapsed(date, today);
+  if(days<=7) return 'w1';
+  if(days<=14) return 'w2';
+  if(days<=28) return 'w4';
+  return 'month';
+}
+function rptCopyLines(meta, blocks, quoteById){
+  const lines=[];
+  lines.push('[정산현황 · '+meta.modeLabel+']');
+  lines.push('보고 기간: '+meta.period);
+  if(meta.ratio) lines.push('기간 내 안내 '+meta.ratio.n+'건 중 입금완료 '+meta.ratio.m+'건 / 미입금 '+meta.ratio.k+'건');
+  lines.push('미지급 거래처 '+meta.clientCount+'곳 / 미지급 '+meta.count+'건 / 미지급 총액 '+rptWon(meta.amount));
+  lines.push('');
+  blocks.forEach(block=>{
+    if(block.title){
+      lines.push('◆ '+block.title);
+      lines.push('');
+    }
+    block.groups.forEach(group=>{
+      lines.push('■ '+group.name);
+      let head='미지급 '+rptWon(group.balance)+' · '+group.count+'건';
+      if(group.oldest) head+=' · 가장 오래된 '+rptFmtDate(group.oldest);
+      lines.push(head);
+      if(meta.mode==='month'){
+        lines.push('주차별 '+group.weeks.map((v,i)=>(i+1)+'주차 '+rptWon(v)).join(' / '));
+      }
+      group.rows.forEach(row=>{
+        const date=rptDateOf(row);
+        const age=rptIsYmd(date) ? (Math.max(0, rptElapsed(date, meta.today))+'일') : '날짜 없음';
+        const money=rptMoney(row);
+        let amount=rptWon(money.total);
+        if(money.partial) amount+=' (입금 '+rptWon(money.paid)+' / 잔액 '+rptWon(money.balance)+', 부분입금)';
+        lines.push('- '+rptFmtDate(date)+' | '+rptItemText(row, quoteById)+' | '+amount+' | '+age);
+      });
+      lines.push('');
+    });
+  });
+  lines.push(meta.stamp+' 기준');
+  return lines.join('\n');
+}
+function rptSyncToolbar(label){
+  ['week','month','all'].forEach(mode=>{
+    const button=document.getElementById('rpt-mode-'+mode);
+    if(button) button.classList.toggle('on', RPT_MODE===mode);
+  });
+  const nav=document.getElementById('rpt-nav');
+  if(nav) nav.style.display=RPT_MODE==='all' ? 'none' : '';
+  const period=document.getElementById('rpt-period-label');
+  if(period) period.textContent=label||'';
+}
+function rptViewRange(today){
+  if(RPT_MODE==='week'){
+    const from=RPT_WEEK_FROM || rptPrevWeek(today).from;
+    const to=ymdAdd(from, 6);
+    return {from, to, label:rptFmtDate(from)+' ~ '+rptFmtDate(to)};
+  }
+  if(RPT_MODE==='month'){
+    const ym=RPT_MONTH || rptDefaultMonth(today);
+    const from=ym+'-01';
+    const to=rptMonthEnd(ym);
+    return {from, to, label:ym.slice(0,4)+'년 '+Number(ym.slice(5))+'월'};
+  }
+  return {from:'', to:'', label:'전체'};
+}
+function renderSettleReport(){
+  const body=document.getElementById('rpt-body');
+  const head=document.getElementById('rpt-print-head');
+  if(!body) return;
+  if(!rptCacheReady()){
+    RPT_MODEL=null;
+    if(head) head.textContent='';
+    body.innerHTML='<div class="rpt-loading">불러오는 중</div>';
+    rptSyncToolbar('불러오는 중');
+    _dirtyPages.add('report-settle');
+    _pagePainted.delete('report-settle');
+    return;
+  }
+  try{
+    const now=rptNow();
+    const today=now.iso;
+    const stamp=today+' '+now.hm;
+    const range=rptViewRange(today);
+    const modeLabel=RPT_MODE==='month'?'월간':(RPT_MODE==='all'?'전체':'주간');
+    rptSyncToolbar(range.label);
+    if(head) head.textContent='정산현황 · '+modeLabel+' · '+range.label;
+    const quoteById=rptQuoteMap();
+    const canonical=rptCanonicalSettles();
+    let shown;
+    let ratio=null;
+    if(RPT_MODE==='all'){
+      shown=canonical.filter(row=>row.settled===false);
+    }else{
+      const periodRows=canonical.filter(row=>rptInRange(rptDateOf(row), range.from, range.to));
+      const paid=periodRows.filter(row=>row.settled===true);
+      shown=periodRows.filter(row=>row.settled===false);
+      ratio={n:paid.length+shown.length, m:paid.length, k:shown.length};
+    }
+    const groups=RPT_MODE==='all' ? [] : rptSortBalance(rptGroup(shown));
+    const clientCount=new Set(shown.map(row=>rptClientRef(row).key)).size;
+    const amount=shown.reduce((sum,row)=>sum+rptMoney(row).balance, 0);
+    const blocks=[];
+    let html=rptCardsHtml(range.label, clientCount, shown.length, amount);
+    if(ratio){
+      html='<div class="rpt-ratio">기간 내 안내 '+fmtN(ratio.n)+'건 중 입금완료 '+fmtN(ratio.m)+'건 / 미입금 '+fmtN(ratio.k)+'건</div>'+html;
+    }
+    if(!shown.length){
+      html+='<div class="rpt-empty">이 조건의 미입금 건이 없습니다.</div>';
+    }else if(RPT_MODE==='month'){
+      html+=rptMonthHtml(groups, today, quoteById);
+      blocks.push({title:'', groups});
+    }else if(RPT_MODE==='all'){
+      const buckets=[
+        {id:'w1', title:'1주 이내', danger:false},
+        {id:'w2', title:'1~2주', danger:false},
+        {id:'w4', title:'2~4주', danger:false},
+        {id:'month', title:'한 달 이상', danger:true},
+        {id:'none', title:'날짜 없음', danger:false}
+      ];
+      buckets.forEach(bucket=>{
+        const rows=shown.filter(row=>rptAgeBucket(rptDateOf(row), today)===bucket.id);
+        if(!rows.length) return;
+        const grouped=rptSortOldest(rptGroup(rows));
+        blocks.push({title:bucket.title, groups:grouped});
+        html+='<div class="rpt-bucket'+(bucket.danger?' rpt-danger':'')+'">'
+          +'<div class="rpt-bucket-title">'+bucket.title+'</div>'
+          +grouped.map(group=>rptSectionHtml(group, today, quoteById, 'a:'+bucket.id+':'+group.key)).join('')
+          +'</div>';
+      });
+    }else{
+      html+=groups.map(group=>rptSectionHtml(group, today, quoteById, 'w:'+group.key)).join('');
+      blocks.push({title:'', groups});
+    }
+    html+='<div class="rpt-stamp">'+escHtml(stamp)+' 기준</div>';
+    body.innerHTML=html;
+    const meta={mode:RPT_MODE, modeLabel, period:range.label, ratio, clientCount, count:shown.length, amount, today, stamp};
+    RPT_MODEL={text:rptCopyLines(meta, blocks, quoteById)};
+    if(!RPT_COMPARED) rptSelfCheckDates();
+    try{ compareSettleReport('2026-11-02','2026-11-08', {log:'change'}); }catch(err){ console.error(err); }
+    RPT_COMPARED=true;
+  }catch(err){
+    console.error(err);
+    RPT_MODEL=null;
+    body.innerHTML='<div class="rpt-empty">보고서를 만들지 못했습니다.</div>';
+  }
+}
+function rptMonthHtml(groups, today, quoteById){
+  const body=groups.map(group=>{
+    const foldKey='m:'+group.key;
+    const folded=rptFolded(foldKey);
+    const id=rptDomId(foldKey);
+    const weeks=group.weeks.map(value=>'<td class="num">'+(value?rptWon(value):'—')+'</td>').join('');
+    return '<tr class="rpt-month-row'+(group.unknown?' rpt-unknown':'')+'" onclick="rptToggle(decodeURIComponent(\''+encodeURIComponent(foldKey)+'\'))">'
+      +'<td>'+escHtml(group.name)+' <span class="rpt-chev" id="rpt-chev-'+id+'">'+(folded?'▶':'▼')+'</span></td>'
+      +'<td class="num">'+rptWon(group.balance)+'</td>'
+      +'<td class="num">'+fmtN(group.count)+'</td>'
+      +weeks
+      +'</tr>'
+      +'<tr class="rpt-month-detail" id="rpt-fold-'+id+'"'+(folded?' style="display:none"':'')+'><td colspan="8">'
+      +rptDocsHtml(group.rows, today, quoteById)
+      +'</td></tr>';
+  }).join('');
+  return '<div class="tw"><table class="rpt-month"><thead><tr>'
+    +'<th>거래처</th><th>미지급 총액</th><th>건수</th><th>1주차</th><th>2주차</th><th>3주차</th><th>4주차</th><th>5주차</th>'
+    +'</tr></thead><tbody>'+body+'</tbody></table></div>';
+}
+function rptSetMode(mode){
+  if(mode!=='week' && mode!=='month' && mode!=='all') return;
+  RPT_MODE=mode;
+  renderSettleReport();
+}
+function rptShift(delta){
+  const today=rptNow().iso;
+  if(RPT_MODE==='week'){
+    const from=RPT_WEEK_FROM || rptPrevWeek(today).from;
+    RPT_WEEK_FROM=ymdAdd(from, delta*7);
+  }else if(RPT_MODE==='month'){
+    const ym=RPT_MONTH || rptDefaultMonth(today);
+    RPT_MONTH=rptShiftMonth(ym, delta);
+  }
+  renderSettleReport();
+}
+function rptResetPeriod(){
+  const today=rptNow().iso;
+  if(RPT_MODE==='week') RPT_WEEK_FROM=rptPrevWeek(today).from;
+  else if(RPT_MODE==='month') RPT_MONTH=rptDefaultMonth(today);
+  renderSettleReport();
+}
+function rptToggle(key){
+  RPT_FOLDED[key]=!rptFolded(key);
+  const id=rptDomId(key);
+  const body=document.getElementById('rpt-fold-'+id);
+  const chev=document.getElementById('rpt-chev-'+id);
+  if(body){
+    const folded=!!RPT_FOLDED[key];
+    body.style.display=folded ? 'none' : '';
+    if(chev) chev.textContent=folded ? '▶' : '▼';
+    return;
+  }
+  renderSettleReport();
+}
+function rptPrint(){
+  document.body.classList.add('rpt-printing');
+  const done=()=>{
+    document.body.classList.remove('rpt-printing');
+    window.removeEventListener('afterprint', done);
+  };
+  window.addEventListener('afterprint', done);
+  window.print();
+}
+async function rptCopy(){
+  const text=RPT_MODEL && RPT_MODEL.text;
+  if(!text){ toast('복사할 보고서가 없습니다','error'); return; }
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(text);
+    }else{
+      throw new Error('clipboard');
+    }
+    toast('보고서를 복사했습니다');
+  }catch(e){
+    const area=document.createElement('textarea');
+    area.value=text;
+    document.body.appendChild(area);
+    area.select();
+    try{
+      document.execCommand('copy');
+      toast('보고서를 복사했습니다');
+    }catch(err){
+      toast('복사에 실패했습니다','error');
+    }
+    area.remove();
+  }
+}
+function compareSettleReport(from, to, opts){
+  from=from||'2026-11-02';
+  to=to||'2026-11-08';
+  const report=rptCanonicalSettles().filter(row=>row.settled===false && rptInRange(rptDateOf(row), from, to));
+  const tab=(typeof listSettleRowsForView==='function'?listSettleRowsForView():[]).filter(row=>{
+    if(!row || row.settled) return false;
+    const date=String(row.date||'').slice(0,10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(date) && date>=from && date<=to;
+  });
+  const reportIds=new Set(report.map(row=>row.id));
+  const tabIds=new Set(tab.map(row=>row.id));
+  const onlyReport=report.filter(row=>!tabIds.has(row.id));
+  const onlyTab=tab.filter(row=>!reportIds.has(row.id));
+  const sumBal=list=>list.reduce((sum,row)=>sum+rptMoney(row).balance, 0);
+  const sumTot=list=>list.reduce((sum,row)=>sum+(Number(row.total)||0), 0);
+  const partial=report.filter(row=>rptMoney(row).partial).length;
+  const out={
+    range:from+'~'+to,
+    reportCount:report.length,
+    reportBalance:sumBal(report),
+    reportTotal:sumTot(report),
+    partial,
+    tabCount:tab.length,
+    tabTotal:sumTot(tab),
+    tabBalance:sumBal(tab),
+    onlyReport:onlyReport.map(row=>row.id),
+    onlyTab:onlyTab.map(row=>({id:row.id, hasSettle:!!row._hasSettle})),
+    countMatch:report.length===tab.length && !onlyReport.length && !onlyTab.length
+  };
+  window._rptCompare=out;
+  const sig=[out.reportCount, out.reportBalance, out.tabCount, out.tabTotal, out.partial, out.onlyReport.length, out.onlyTab.length].join(':');
+  const changed=window._rptCompareSig!==sig;
+  window._rptCompareSig=sig;
+  if(opts && opts.log==='change' && !changed) return out;
+  console.log('[정산현황 검증] '+from+' ~ '+to);
+  console.log('보고서 미입금 '+out.reportCount+'건 / 잔액 '+fmtN(out.reportBalance)+'원 / 총액 '+fmtN(out.reportTotal)+'원 / 부분입금 '+out.partial+'건');
+  console.log('정산탭 동일조건(미정산·기간, 이월 제외) '+out.tabCount+'건 / 총액 '+fmtN(out.tabTotal)+'원 / 잔액 '+fmtN(out.tabBalance)+'원');
+  console.log('건수 일치 '+out.countMatch+' / 보고서에만 '+out.onlyReport.length+'건 / 정산탭에만 '+out.onlyTab.length+'건');
+  if(out.onlyReport.length) console.log('보고서에만 (견적 없는 정산 행)', out.onlyReport);
+  if(out.onlyTab.length) console.log('정산탭에만 (정산 문서 없는 견적 등)', out.onlyTab);
+  return out;
+}
+window.compareSettleReport=compareSettleReport;
 
 // ═══════════════════════════════════════════
 // OVERVIEW
