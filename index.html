@@ -166,6 +166,10 @@ tr:last-child td{border-bottom:none;}
 .pay-tab{background:none;border:none;border-bottom:2px solid transparent;margin:0 0 -2px;padding:8px 12px;font-size:13px;font-weight:600;color:var(--text2);cursor:pointer;font-family:var(--font);}
 .pay-tab.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:800;}
 .pay-badge{display:inline-block;max-width:100%;font-size:11px;font-weight:800;border-radius:999px;padding:2px 8px;line-height:1.45;white-space:normal;overflow-wrap:anywhere;}
+.pay-price-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin-top:10px;align-items:start;}
+@media (max-width:768px){
+  .pay-price-row{grid-template-columns:minmax(0,1fr);}
+}
 
 /* ── TABS ── */
 .dtabs{display:flex;gap:0;margin-bottom:18px;border-bottom:2px solid var(--border);overflow-x:auto;}
@@ -542,6 +546,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
       </div>
       <div class="admin-group-body" id="admin-group-settle" data-group="settle">
         <div class="nav-item nav-sub nav-sub2" onclick="showPage('settle-all')" data-page="settle-all"><span class="nav-icon" style="font-size:12px">💰</span>거래처 정산</div>
+        <div class="nav-item nav-sub nav-sub2" onclick="openPrepaidSummaryRefresh()"><span class="nav-icon" style="font-size:12px">↻</span>선결제 요약 일괄 갱신</div>
         <div class="nav-item nav-sub nav-sub2" onclick="showPage('deposit')" data-page="deposit"><span class="nav-icon" style="font-size:12px">🏦</span>입금 내역</div>
         <div class="nav-item nav-sub nav-sub2" onclick="showPage('daily-settle')" data-page="daily-settle"><span class="nav-icon" style="font-size:12px">📒</span>일/월 정산</div>
       </div>
@@ -12040,12 +12045,18 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
   const payLine='<span style="font-size:10px;font-weight:700;color:#0e7490">결제경로: '+escHtml(routeInfo.route||'—')+' · 결제방식: '+escHtml(payModeLabel(modeInfo.mode))+'</span>';
   const payEditBtn=(isAdmin&&c&&c.id)?'<button type="button" class="btn btn-xs btn-blue" style="margin-left:6px" onclick="openPayStatusDetail(decodeURIComponent(\''+encodeURIComponent(c.id)+'\'))">수정</button>':'';
   const payViewBtn=(!isAdmin&&c&&c.id)?'<button type="button" class="btn btn-xs btn-gray" style="margin-left:6px" onclick="openClientPayList(\''+payJs(c.id)+'\')">결제 내역 보기</button>':'';
+  const contractHold=!!contract.pending||(!isAdmin&&!isPerItem&&remaining<0);
   const contractValueHtml=isPerItem
     ?('<span style="font-size:14px;font-weight:800;color:#0891b2">건별결제</span>')
-    :('<span style="font-size:14px;font-weight:800;color:#0891b2">'+fmtN(contractTotal)+'<small style="font-size:9px;color:var(--text3)">건</small></span>');
+    :(contract.pending
+      ?('<span style="font-size:14px;font-weight:800;color:var(--text3)">확인 중</span>')
+      :('<span style="font-size:14px;font-weight:800;color:#0891b2">'+fmtN(contractTotal)+'<small style="font-size:9px;color:var(--text3)">건</small></span>'));
+  const remainColor=remaining<0?'#dc2626':(remaining>0?'#ef4444':'#22c55e');
   const remainingHtml=isPerItem
     ?'<span style="font-size:14px;font-weight:800;color:var(--text3)">—</span>'
-    :('<span style="font-size:14px;font-weight:800;color:'+(remaining>0?'#ef4444':'#22c55e')+'">'+fmtN(remaining)+'<small style="font-size:9px;color:var(--text3)">건</small></span>');
+    :(contractHold
+      ?'<span style="font-size:14px;font-weight:800;color:var(--text3)">확인 중</span>'
+      :('<span style="font-size:14px;font-weight:800;color:'+remainColor+'">'+fmtN(remaining)+'<small style="font-size:9px;color:var(--text3)">건</small></span>'));
   const prevBuyInput=isPerItem?'':(
     '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)">'+
       '<span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#94a3b8;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">기존 구매완료</span></span>'+
@@ -12066,7 +12077,7 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#0891b2;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">선계약</span></span>'+contractValueHtml+'</div>'
     +prevBuyInput
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span style="font-size:11px;color:var(--text2)">구매완료(합계)</span></span><span style="font-size:14px;font-weight:800;color:#22c55e">'+fmtN(contractDone)+'<small style="font-size:9px;color:var(--text3)">건</small></span></div>'
-    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:'+(isPerItem?'var(--border)':(remaining>0?'#ef4444':'#22c55e'))+';display:inline-block"></span><span style="font-size:11px;color:var(--text2)">잔여</span></span>'+remainingHtml+'</div>'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0"><span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:'+(isPerItem||contractHold?'var(--border)':remainColor)+';display:inline-block"></span><span style="font-size:11px;color:var(--text2)">잔여</span></span>'+remainingHtml+'</div>'
     +'</div></div></div>'
 
     // ② 진행현황 도넛
@@ -12098,8 +12109,10 @@ function buildStatsDash(c, projs, allRecs, isAdmin){
   // 도넛 그래프 렌더 (건별결제 시 잔여 없음)
   drawDonut('donut-c-'+uid, isPerItem
     ?[{val:contractDone,color:'#22c55e'},{val:Math.max(1,contractDone||0),color:'#e5e7eb'}]
-    :[{val:contractDone,color:'#22c55e'},{val:remaining,color:remaining>0?'#ef4444':'#d1fae5'}],
-  {size:100,lineWidth:16,centerLabel:isPerItem?'—':(contractPct+'%'),centerSub:isPerItem?'건별결제':'구매율'});
+    :(contractHold
+      ?[{val:1,color:'#e5e7eb'}]
+      :[{val:contractDone,color:'#22c55e'},{val:remaining,color:remaining>0?'#ef4444':'#d1fae5'}]),
+  {size:100,lineWidth:16,centerLabel:isPerItem?'—':(contractHold?'확인 중':(contractPct+'%')),centerSub:isPerItem?'건별결제':(contractHold?'':'구매율')});
   drawDonut('donut-r-'+uid,[
     {val:rev,color:'#7c3aed'},
     {val:purchaseDone-rev,color:'#22c55e'},
@@ -12225,36 +12238,81 @@ function openRequestUrl(btn){
 function payDashContract(c, projs, allRecs){
   const mode=payShownMode(c).mode;
   const isPrepaid=mode==='prepaid';
-  const countPrepaidOnly=!!(c&&c.payMode==='prepaid');
   const prev=(c&&c.prevPurchaseDone!=null)?(Number(c.prevPurchaseDone)||0):0;
-  const ids=new Set();
-  if(countPrepaidOnly){
-    (projs||[]).forEach(p=>{
-      if(!p||!p.id) return;
-      if(p.payMode==='prepaid') ids.add(p.id);
-      else if(p.payMode==='separate') return;
-      else ids.add(p.id);
+  if(!isPrepaid){
+    let auto=0;
+    (allRecs||[]).forEach(r=>{
+      if(!r||!recordIsPurchaseDone(r)) return;
+      auto++;
     });
+    return {isPrepaid:false, prev, done:auto+prev, qty:null, remaining:null};
   }
-  let auto=0;
-  (allRecs||[]).forEach(r=>{
-    if(!r||!(r.nickname||r.tracking)) return;
-    if(countPrepaidOnly&&!ids.has(r.projectId)) return;
-    auto++;
-  });
-  const done=auto+prev;
-  let qty=null;
-  if(isPrepaid){
-    if(c&&c.prepaidTotal!=null&&c.prepaidTotal!=='') qty=Number(c.prepaidTotal)||0;
-    else if(c&&c.contractTotal!=null&&c.contractTotal!=='') qty=Number(c.contractTotal);
-    else qty=(projs||[]).reduce((a,p)=>a+((p&&(p.contractTotal||p.total))||0),0);
+  const bal=calcPrepaidBalance(c&&c.id, {client:c, projects:projs||[], records:allRecs||[], mode:'prepaid'});
+  let charged=bal.charged;
+  let remaining=bal.remaining;
+  if(!bal.payLoaded){
+    const s=c&&c.prepaidSummary;
+    if(!s||s.charged==null||s.charged===''){
+      return {isPrepaid:true, pending:true, prev:bal.prevDone, done:bal.prevDone+bal.used, qty:null, remaining:null};
+    }
+    charged=Number(s.charged)||0;
+    remaining=charged-(bal.prevDone+bal.used);
   }
-  return {isPrepaid, prev, done, qty, remaining:isPrepaid?Math.max(0,(Number(qty)||0)-done):null};
+  return {isPrepaid:true, pending:false, prev:bal.prevDone, done:bal.prevDone+bal.used, qty:charged, remaining};
 }
 
-// ── 결제 구조 (payRecords / payHistory). 화면 잔여에는 아직 연결하지 않는다. ──
+// ── 선결제 잔여. 상단 요약·크몽 박스·계약 현황이 이 결과만 쓴다. prepaidTotal은 읽지 않는다. ──
 function recordIsPurchaseDone(r){
   return !!(r&&(r.nickname||r.tracking));
+}
+function payBalanceSources(clientId, ctx){
+  const c=(ctx&&ctx.client)||((CLIENTS_CACHE||[]).find(x=>x&&x.id===clientId))||null;
+  const projects=(ctx&&Object.prototype.hasOwnProperty.call(ctx,'projects'))
+    ? (ctx.projects||[]).filter(p=>p&&(!clientId||p.clientId===clientId))
+    : (PROJECTS_CACHE||[]).filter(p=>p&&p.clientId===clientId);
+  let payRecords;
+  let payLoaded=false;
+  if(ctx&&Object.prototype.hasOwnProperty.call(ctx,'payRecords')){
+    payRecords=ctx.payRecords||[];
+    payLoaded=true;
+  }else if(clientId&&PAY_ST_ID===clientId&&Array.isArray(PAY_ST_PAY)){
+    payRecords=PAY_ST_PAY;
+    payLoaded=true;
+  }else{
+    payRecords=(PAY_RECORDS_CACHE||[]).filter(r=>r&&r.clientId===clientId);
+    payLoaded=payRecords.length>0;
+  }
+  let records;
+  if(ctx&&Object.prototype.hasOwnProperty.call(ctx,'records')) records=ctx.records||[];
+  else if(clientId&&PAY_ST_ID===clientId&&Array.isArray(PAY_ST_RECS)) records=PAY_ST_RECS;
+  else if(clientId&&RECORDS_CLIENT_ID===clientId&&Array.isArray(RECORDS_CACHE)) records=RECORDS_CACHE;
+  else records=[];
+  return {c, projects, payRecords, payLoaded, records};
+}
+function calcPrepaidBalance(clientId, ctx){
+  const src=payBalanceSources(clientId, ctx||{});
+  const c=src.c;
+  const mode=(ctx&&ctx.mode)||(c?payShownMode(c).mode:'');
+  const isPrepaid=mode==='prepaid';
+  const prevDone=(c&&c.prevPurchaseDone!=null)?(Number(c.prevPurchaseDone)||0):0;
+  const charges=(src.payRecords||[]).filter(r=>r&&!r.deleted&&r.kind==='prepaid'&&(!r.clientId||!clientId||r.clientId===clientId));
+  const charged=charges.reduce((a,r)=>a+(Number(r.qty)||0),0);
+  let used=0;
+  if(isPrepaid){
+    const eligible=new Set();
+    (src.projects||[]).forEach(p=>{
+      if(!p||!p.id||p.payMode==='separate') return;
+      eligible.add(p.id);
+    });
+    (src.records||[]).forEach(r=>{
+      if(!recordIsPurchaseDone(r)||!eligible.has(r.projectId)) return;
+      used++;
+    });
+  }
+  return {
+    isPrepaid, payLoaded:src.payLoaded, charged, prevDone, used,
+    remaining:charged-(prevDone+used),
+  };
 }
 function effectiveContractTotal(c, projs){
   if(c&&c.contractTotal!==undefined&&c.contractTotal!==null) return Number(c.contractTotal);
@@ -12266,34 +12324,9 @@ function screenContractRemaining(c, projs, doneAuto){
   const prev=(c&&c.prevPurchaseDone!=null)?Number(c.prevPurchaseDone):0;
   return Math.max(0, contractTotal-((Number(doneAuto)||0)+prev));
 }
-function sumProjectDone(projs, doneByProject, onlyPrepaid){
-  let n=0;
-  (projs||[]).forEach(p=>{
-    if(!p||!p.id) return;
-    if(onlyPrepaid&&p.payMode!=='prepaid') return;
-    n+=Number(doneByProject&&doneByProject.get(p.id))||0;
-  });
-  return n;
-}
 function getPrepaidSummary(clientId, ctx){
-  const clients=(ctx&&ctx.clients)||CLIENTS_CACHE||[];
-  const projects=(ctx&&ctx.projects)||PROJECTS_CACHE||[];
-  const c=clients.find(x=>x&&x.id===clientId)||null;
-  const projs=projects.filter(p=>p&&p.clientId===clientId);
-  const total=Number(c&&c.prepaidTotal)||0;
-  const prevDone=(c&&c.prevPurchaseDone!=null)?Number(c.prevPurchaseDone):0;
-  let done=0;
-  if(ctx&&ctx.doneByProject){
-    done=sumProjectDone(projs, ctx.doneByProject, true);
-  }else{
-    const records=(ctx&&ctx.records)||RECORDS_CACHE||[];
-    const ids=new Set(projs.filter(p=>p&&p.payMode==='prepaid'&&p.id).map(p=>p.id));
-    records.forEach(r=>{
-      if(!r||!ids.has(r.projectId)||!recordIsPurchaseDone(r)) return;
-      done++;
-    });
-  }
-  return {total, prevDone, done, remaining:Math.max(0, total-(prevDone+done))};
+  const bal=calcPrepaidBalance(clientId, ctx||{});
+  return {total:bal.charged, prevDone:bal.prevDone, done:bal.used, remaining:bal.remaining};
 }
 function inferPayMode(c, contractTotal){
   const t=c?c.contractType:undefined;
@@ -13027,6 +13060,75 @@ function payAuditRefresh(){
   if(CUR_CLIENT){ try{ renderDetDash(); renderDetProjView(); }catch(e){} }
   try{ renderPayStatus(); }catch(e){}
 }
+async function payQueryWhereIn(col, field, ids, countOnly){
+  const out=[];
+  let n=0;
+  for(let i=0;i<ids.length;i+=30){
+    const chunk=ids.slice(i,i+30).filter(Boolean);
+    if(!chunk.length) continue;
+    const q=db.collection(col).where(field,'in',chunk);
+    if(countOnly){
+      const snap=await q.count().get();
+      const data=snap&&typeof snap.data==='function'?snap.data():{};
+      n+=Number(data&&data.count)||0;
+    }else{
+      const snap=await q.get();
+      snap.docs.forEach(d=>out.push(Object.assign({id:d.id}, d.data()||{})));
+    }
+  }
+  return countOnly?n:out;
+}
+async function openPrepaidSummaryRefresh(){
+  if(!CUR_ADMIN||CUR_ADMIN.role!=='admin'){ toast('관리자만 실행할 수 있습니다','error'); return; }
+  if(typeof db==='undefined'){ toast('저장소를 사용할 수 없습니다','error'); return; }
+  const clients=(CLIENTS_CACHE||[]).filter(c=>c&&c.id&&c.payMode==='prepaid');
+  const idSet={};
+  clients.forEach(c=>{ idSet[c.id]=1; });
+  const projects=(PROJECTS_CACHE||[]).filter(p=>p&&p.id&&idSet[p.clientId]);
+  const clientIds=clients.map(c=>c.id);
+  const projIds=projects.map(p=>p.id);
+  let payN=0, recN=0;
+  try{
+    payN=await payQueryWhereIn('payRecords','clientId',clientIds,true);
+    recN=await payQueryWhereIn('records','projectId',projIds,true);
+  }catch(e){
+    console.error(e);
+    toast('예상 읽기 수를 계산하지 못했습니다','error');
+    return;
+  }
+  const total=payN+recN;
+  if(!confirm('선결제 거래처 '+clients.length+'곳\n예상 읽기: 결제 기록 '+payN+'건 + 업무 기록 '+recN+'건 = '+total+'건\n확인 후 이 문서만 한 번 읽고 요약을 저장합니다. 실행할까요?')) return;
+  try{
+    const payRows=await payQueryWhereIn('payRecords','clientId',clientIds,false);
+    const recRows=await payQueryWhereIn('records','projectId',projIds,false);
+    const recByProj={};
+    recRows.forEach(r=>{
+      if(!r||!r.projectId) return;
+      (recByProj[r.projectId]||(recByProj[r.projectId]=[])).push(r);
+    });
+    const projByClient={};
+    projects.forEach(p=>{
+      (projByClient[p.clientId]||(projByClient[p.clientId]=[])).push(p);
+    });
+    const updates=[];
+    clients.forEach(c=>{
+      const projs=projByClient[c.id]||[];
+      const pays=payRows.filter(r=>r&&r.clientId===c.id);
+      const recs=[];
+      projs.forEach(p=>{ (recByProj[p.id]||[]).forEach(r=>recs.push(r)); });
+      const bal=calcPrepaidBalance(c.id,{client:c, projects:projs, payRecords:pays, records:recs, mode:'prepaid'});
+      const summary=prepaidSummaryPayload(bal);
+      if(!prepaidSummaryChanged(c.prepaidSummary, summary)) return;
+      updates.push(Object.assign({}, c, {prepaidSummary:summary}));
+    });
+    if(updates.length) await sv('cl', updates);
+    toast('선결제 요약 '+updates.length+'곳을 갱신했습니다');
+    try{ renderPayStatus(); }catch(e){}
+  }catch(e){
+    console.error(e);
+    toast('일괄 갱신에 실패했습니다','error');
+  }
+}
 async function openPayAudit(){
   if(!CUR_ADMIN||CUR_ADMIN.role!=='admin'){ toast('관리자만 실행할 수 있습니다','error'); return; }
   if(typeof db==='undefined'){ toast('데이터를 읽지 못했습니다','error'); return; }
@@ -13110,8 +13212,13 @@ let PAY_ST_BUSY=false;
 let PAY_ST_TAB='';
 let PAY_ST_COND=false;
 let PAY_REC_OPEN=false;
+let PAY_REC_ROUTE='';
 let PAY_PREV_OPEN=false;
 let PAY_PREV_DRAFT=null;
+let PAY_CONVERT_OPEN=false;
+let PAY_CONVERT_READY=false;
+let PAY_CONVERT_IDS=[];
+let PAY_CONVERT_LIST=[];
 function payClient(id){
   return (CLIENTS_CACHE||[]).find(c=>c&&c.id===id)||null;
 }
@@ -13338,32 +13445,24 @@ function payClientPatch(c, history){
   return Object.assign({}, c, patch);
 }
 function countPrepaidPurchaseDone(clientId, records){
-  const ids=new Set();
-  payClientProjects(clientId).forEach(p=>{
-    if(p.payMode==='prepaid'&&p.id) ids.add(p.id);
-  });
-  let n=0;
-  (records||[]).forEach(r=>{
-    if(!r||!ids.has(r.projectId)||!recordIsPurchaseDone(r)) return;
-    n++;
-  });
-  return n;
+  return calcPrepaidBalance(clientId, {records:records||[]}).used;
 }
 function payRemainingCount(c, records){
   if(!c) return 0;
-  const total=Number(c.prepaidTotal)||0;
-  const prev=Number(c.prevPurchaseDone)||0;
-  let done=0;
-  if(records) done=countPrepaidPurchaseDone(c.id, records);
-  else if(c.prepaidDoneCache!=null&&c.prepaidDoneCache!=='') done=Number(c.prepaidDoneCache)||0;
-  return Math.max(0, total-(prev+done));
+  if(records) return calcPrepaidBalance(c.id, {client:c, records}).remaining;
+  const s=c.prepaidSummary;
+  if(!s||s.remaining==null||s.remaining==='') return 0;
+  const n=Number(s.remaining);
+  return Number.isFinite(n)?n:0;
 }
 function payListRemain(c){
   if(!c||c.payMode!=='prepaid') return {kind:'na'};
-  if(c.prepaidDoneCache==null||c.prepaidDoneCache==='') return {kind:'miss'};
-  const total=Number(c.prepaidTotal)||0;
-  const remaining=payRemainingCount(c, null);
-  return {kind:'ok', total, remaining, at:c.prepaidDoneAt||'', low:total>0&&remaining*10<=total};
+  const s=c.prepaidSummary;
+  if(!s||s.charged==null||s.charged===''||s.remaining==null||s.remaining==='') return {kind:'miss'};
+  const total=Number(s.charged);
+  const remaining=Number(s.remaining);
+  if(!Number.isFinite(total)||!Number.isFinite(remaining)) return {kind:'miss'};
+  return {kind:'ok', total, remaining, at:s.calcAt||'', low:remaining<=0||(total>0&&remaining*10<=total)};
 }
 function payServiceShort(name){
   if(name==='블로그체험단') return '블로그';
@@ -13421,6 +13520,7 @@ function payTypeLabel(type){
   if(type==='price') return '단가';
   if(type==='tax') return '계산서';
   if(type==='inflow') return '유입';
+  if(type==='projConvert') return '프로젝트 전환';
   return type||'';
 }
 function payReviewOf(price){
@@ -13480,6 +13580,10 @@ function payPhrases(type, prev, next){
     if(p.firstContractDate!==n.firstContractDate) out.push('첫 계약일 '+(p.firstContractDate||'없음')+' → '+(n.firstContractDate||'없음'));
     return out.length?out:['변경 없음'];
   }
+  if(type==='projConvert'){
+    const n=Number(next&&next.count)||0;
+    return ['결제방식 변경에 따른 프로젝트 전환 '+fmtN(n)+'건'];
+  }
   const n=payNormPrice(next);
   if(!prev) return ['최초 설정 · '+payPriceBrief(n)];
   const p=payNormPrice(prev);
@@ -13530,10 +13634,12 @@ function rosterNickTrackChanged(prev, next){
 }
 function schedulePrepaidDoneForProjects(clientId, projectIds){
   if(!clientId) return;
+  const c=payClient(clientId);
+  if(!c||payShownMode(c).mode!=='prepaid') return;
   const hit=(projectIds||[]).some(id=>{
     if(!id) return false;
     const p=(PROJECTS_CACHE||[]).find(x=>x&&x.id===id);
-    return !!(p&&p.payMode==='prepaid');
+    return !(p&&p.payMode==='separate');
   });
   if(!hit) return;
   schedulePrepaidDoneCache(clientId);
@@ -13541,21 +13647,35 @@ function schedulePrepaidDoneForProjects(clientId, projectIds){
 function schedulePrepaidDoneCache(clientId){
   if(!clientId) return;
   const c=payClient(clientId);
-  if(!c||c.payMode!=='prepaid') return;
+  if(!c||payShownMode(c).mode!=='prepaid') return;
   if(_prepaidDoneTimer) clearTimeout(_prepaidDoneTimer);
   _prepaidDoneTimer=setTimeout(function(){
     _prepaidDoneTimer=null;
     if(RECORDS_CLIENT_ID!==clientId||!_recordsChunksReady) return;
-    flushPrepaidDoneCache(clientId, RECORDS_CACHE).catch(function(e){ console.error('prepaidDoneCache', e); });
+    flushPrepaidDoneCache(clientId, RECORDS_CACHE).catch(function(e){ console.error('prepaidSummary', e); });
   }, 2000);
+}
+function prepaidSummaryPayload(bal){
+  return {charged:bal.charged, used:bal.used, remaining:bal.remaining, calcAt:new Date().toISOString()};
+}
+function prepaidSummaryChanged(prev, next){
+  if(!prev) return true;
+  return Number(prev.charged)!==Number(next.charged)
+    || Number(prev.used)!==Number(next.used)
+    || Number(prev.remaining)!==Number(next.remaining);
 }
 async function flushPrepaidDoneCache(clientId, records){
   const c=payClient(clientId);
-  if(!c||c.payMode!=='prepaid') return false;
-  const done=countPrepaidPurchaseDone(clientId, records);
-  if(c.prepaidDoneCache!=null&&c.prepaidDoneCache!==''&&Number(c.prepaidDoneCache)===done) return false;
+  if(!c||payShownMode(c).mode!=='prepaid') return false;
+  const ctx={client:c, mode:'prepaid'};
+  if(Array.isArray(records)) ctx.records=records;
+  if(PAY_ST_ID===clientId&&Array.isArray(PAY_ST_PAY)) ctx.payRecords=PAY_ST_PAY;
+  const bal=calcPrepaidBalance(clientId, ctx);
+  if(!bal.payLoaded) return false;
+  const summary=prepaidSummaryPayload(bal);
+  if(!prepaidSummaryChanged(c.prepaidSummary, summary)) return false;
   const latest=payClient(clientId)||c;
-  await sv('cl', [Object.assign({}, latest, {prepaidDoneCache:done, prepaidDoneAt:new Date().toISOString()})]);
+  await sv('cl', [Object.assign({}, latest, {prepaidSummary:summary})]);
   if(clientId===CUR_CLIENT){
     try{ refreshQuotePaySticky(); }catch(e){}
   }
@@ -13577,7 +13697,7 @@ function payBlankForm(){
     price:payNormPrice(payPriceValue(null)),
     taxYn:false, fee:false, delivery:false, product:false, memo:'',
     inflowRoute:'', referrerClientId:'', referrerName:'', referrerQuery:'', inflowMemo:'', firstContractDate:'',
-    kmongQty:'', payMemo:'',
+    payMemo:'',
   };
 }
 function payFormFromCurrent(clientId, history){
@@ -13598,7 +13718,6 @@ function payFormFromCurrent(clientId, history){
     memo:'',
     inflowRoute:inf.route, referrerClientId:inf.referrerClientId, referrerName:inf.referrerName,
     referrerQuery:refQuery, inflowMemo:inf.memo, firstContractDate:inf.firstContractDate||'',
-    kmongQty:payKmongTotalInput(c),
     payMemo:c&&c.payMemo!=null?String(c.payMemo):'',
   };
 }
@@ -13665,7 +13784,6 @@ function payReadDetailForm(){
   if(g('ps-route-memo')!=null) f.routeMemo=g('ps-route-memo');
   if(g('ps-mode-memo')!=null) f.modeMemo=g('ps-mode-memo');
   if(g('ps-memo')!=null) f.memo=g('ps-memo');
-  if(g('ps-kmong-qty')!=null) f.kmongQty=g('ps-kmong-qty');
   if(g('ps-client-memo')!=null) f.payMemo=g('ps-client-memo');
   if(g('ps-in-memo')!=null) f.inflowMemo=g('ps-in-memo');
   if(g('ps-first-date')!=null) f.firstContractDate=g('ps-first-date');
@@ -13954,7 +14072,7 @@ function renderPayStatus(){
     const routeTitle=route.route==='기타'&&route.routeMemo?' title="'+escHtml(route.routeMemo)+'"':'';
     const modeTitle=mode.mode==='etc'&&mode.modeMemo?' title="'+escHtml(mode.modeMemo)+'"':'';
     let remText='—', remTitle='', remStyle='';
-    if(rem.kind==='miss') remText='—(상세에서 갱신)';
+    if(rem.kind==='miss') remText='–';
     else if(rem.kind==='ok'){
       remText='잔여 '+fmtN(rem.remaining)+' / '+fmtN(rem.total);
       if(rem.at) remTitle=' title="기준: '+escHtml(payKstStamp(rem.at))+'"';
@@ -14003,7 +14121,7 @@ function payHistEditor(doc){
 function payHistVisible(type){
   const f=PAY_ST_FILTER||'all';
   if(f==='all') return true;
-  if(f==='routemode'||f==='route'||f==='mode') return type==='route'||type==='mode';
+  if(f==='routemode'||f==='route'||f==='mode') return type==='route'||type==='mode'||type==='projConvert';
   return type===f;
 }
 function payFilterKey(){
@@ -14148,7 +14266,8 @@ function payRecordsSection(c, snap){
     +'</div>'
     +'<label style="display:block;margin-top:8px;font-size:11px;font-weight:700">메모<textarea id="pr-memo" class="fta" style="margin-top:4px">'+escHtml(f.memo||'')+'</textarea></label>'
     +'<div style="text-align:right;margin-top:8px"><button type="button" class="btn btn-xs btn-gray" onclick="payCancelRecEdit()">취소</button> <button type="button" class="btn btn-sm btn-blue" onclick="paySaveRecordUi()">저장</button></div></div>'):'';
-  const rows=(PAY_ST_PAY||[]).filter(r=>r&&(PAY_ST_TRASH||!r.deleted)).slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||''))||String(b.createdAt||'').localeCompare(String(a.createdAt||'')));
+  const routeOn=PAY_REC_ROUTE==='크몽';
+  const rows=(PAY_ST_PAY||[]).filter(r=>r&&(PAY_ST_TRASH||!r.deleted)&&(!routeOn||r.route==='크몽')).slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||''))||String(b.createdAt||'').localeCompare(String(a.createdAt||'')));
   const list=rows.length?rows.map(r=>{
     const route=(r.route||'')+(r.route==='기타'&&r.routeMemo?' ('+r.routeMemo+')':'');
     const actions=r.deleted
@@ -14165,24 +14284,88 @@ function payRecordsSection(c, snap){
       +'<div style="display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:4px;font-size:12px"><span>건수 <b>'+fmtN(r.qty||0)+'</b></span><span>단가 <b>'+fmtN(r.unitPrice||0)+'</b></span><span>금액 <b>'+fmtN(r.amount||0)+'</b></span></div>'
       +(memo?'<div style="margin-top:2px;font-size:12px;color:var(--text2)">'+escHtml(memo)+'</div>':'')
       +'<div style="margin-top:2px;font-size:10px;color:var(--text3)">'+escHtml(r.createdBy||'—')+'</div></div>';
-  }).join(''):'<div style="font-size:12px;color:var(--text3);padding:8px 0">결제 기록이 없습니다</div>';
-  return '<div style="display:flex;justify-content:flex-end"><button type="button" class="btn btn-sm btn-blue" onclick="payOpenRecAdd()">+ 결제 추가</button></div>'+form+list+payTrashToggle();
+  }).join(''):'<div style="font-size:12px;color:var(--text3);padding:8px 0">'+(routeOn?'크몽 결제 기록이 없습니다':'결제 기록이 없습니다')+'</div>';
+  const filterBtn=routeOn?'<button type="button" class="btn btn-xs btn-gray" onclick="payClearRecRoute()">필터 해제</button>':'';
+  return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div>'+filterBtn+'</div><button type="button" class="btn btn-sm btn-blue" onclick="payOpenRecAdd()">+ 결제 추가</button></div>'+form+list+payTrashToggle();
+}
+function payKmongPayRows(){
+  return (PAY_ST_PAY||[]).filter(r=>r&&!r.deleted&&r.route==='크몽');
+}
+function payKmongSummaryHtml(){
+  const rows=payKmongPayRows();
+  if(!rows.length) return '';
+  let qty=0, amount=0, latest='';
+  const byKind={};
+  rows.forEach(r=>{
+    const q=Number(r.qty)||0;
+    qty+=q;
+    amount+=Number(r.amount)||0;
+    const d=String(r.date||'');
+    if(d&&d>latest) latest=d;
+    const k=r.kind==='prepaid'?'prepaid':'perItem';
+    if(!byKind[k]) byKind[k]={qty:0};
+    byKind[k].qty+=q;
+  });
+  const kindLines=['prepaid','perItem'].filter(k=>byKind[k]).length>1
+    ? ['prepaid','perItem'].filter(k=>byKind[k]).map(k=>'<div style="margin-top:2px;color:var(--text2)">'+escHtml(payKindLabel(k))+' '+fmtN(byKind[k].qty)+'건</div>').join('')
+    : '';
+  const on=PAY_REC_ROUTE==='크몽';
+  return '<button type="button" onclick="payFilterKmongRecords()" style="display:block;width:100%;text-align:left;cursor:pointer;padding:10px 12px;border:1px solid '+(on?'#0284c7':'var(--border)')+';border-radius:10px;background:'+(on?'#f0f9ff':'var(--card)')+';font-family:var(--font);color:inherit">'
+    +'<div style="font-size:11px;font-weight:800;color:var(--text3);margin-bottom:6px">크몽 결제</div>'
+    +'<div style="font-size:13px;line-height:1.7">'
+    +'<div>크몽 결제 횟수 <b>'+fmtN(rows.length)+'회</b></div>'
+    +'<div>크몽 결제 건수 합계 <b>'+fmtN(qty)+'건</b></div>'
+    +'<div>크몽 결제 금액 합계 <b>'+fmtN(amount)+'원</b></div>'
+    +'<div>최근 크몽 결제일 <b>'+(latest?escHtml(payShortDate(latest)):'없음')+'</b></div>'
+    +kindLines
+    +'</div></button>';
+}
+function payFilterKmongRecords(){
+  payReadDetailForm();
+  payReadHistEdit();
+  payReadRecForm();
+  PAY_REC_ROUTE='크몽';
+  PAY_ST_TAB='records';
+  payStTabSave('records');
+  renderPayStatusDetail();
+  const sc=document.getElementById('paystatus-scroll');
+  if(sc){ try{ sc.scrollIntoView({block:'nearest'}); }catch(e){} }
+}
+function payClearRecRoute(){
+  payReadDetailForm();
+  payReadHistEdit();
+  payReadRecForm();
+  PAY_REC_ROUTE='';
+  renderPayStatusDetail();
 }
 function payProjectSection(c){
   const projs=payClientProjects(c.id).slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ko'));
   if(!projs.length) return '<div style="font-size:12px;color:var(--text3)">프로젝트가 없습니다</div>';
+  const clientPrepaid=payShownMode(c).mode==='prepaid';
   return projs.map(p=>{
     const done=(PAY_ST_RECS||[]).filter(r=>r&&r.projectId===p.id&&recordIsPurchaseDone(r)).length;
-    const mode=p.payMode==='prepaid'?'prepaid':'separate';
+    const explicit=p.payMode==='prepaid'?'prepaid':(p.payMode==='separate'?'separate':'');
+    const mode=explicit==='separate'?'separate':(explicit==='prepaid'||clientPrepaid?'prepaid':'separate');
+    const prepaidLabel=(explicit===''&&clientPrepaid)?'선결제(기본)':'선결제 차감';
     const btn=(val,label)=>'<button type="button" class="btn btn-xs '+(mode===val?'btn-blue':'btn-gray')+'" onclick="paySetProjMode(\''+payJs(p.id)+'\',\''+val+'\')">'+label+'</button>';
     return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'
       +'<div style="font-weight:700;word-break:break-word">'+escHtml(p.name||'')+'</div>'
       +'<div style="font-size:12px;color:var(--text2);margin-top:2px">'+(p.status?escHtml(p.status)+' · ':'')+'구매완료 '+fmtN(done)+'</div>'
-      +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">'+btn('prepaid','선결제 차감')+btn('separate','별도 결제')+'</div></div>';
+      +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">'+btn('prepaid',prepaidLabel)+btn('separate','별도 결제')+'</div></div>';
   }).join('');
 }
 async function payCommitRecords(c, list, doc, okMsg){
   const merged=payApplyRecordTotals(payClient(c.id)||c, list);
+  const bal=calcPrepaidBalance(c.id, {
+    client:merged,
+    payRecords:list,
+    records:Array.isArray(PAY_ST_RECS)?PAY_ST_RECS:(RECORDS_CLIENT_ID===c.id?RECORDS_CACHE:[]),
+    mode:payShownMode(merged).mode,
+  });
+  if(bal.isPrepaid&&bal.payLoaded){
+    const summary=prepaidSummaryPayload(bal);
+    if(prepaidSummaryChanged(merged.prepaidSummary, summary)) merged.prepaidSummary=summary;
+  }
   const group='payrec_'+c.id;
   await commitSvOps([
     {key:'pay', id:doc.id, data:doc, group},
@@ -14321,7 +14504,7 @@ async function paySetProjMode(projId, mode){
   try{
     await sv('pr', [next]);
     const c=payClient(PAY_ST_ID);
-    if(c&&c.payMode==='prepaid'){
+    if(c&&payShownMode(c).mode==='prepaid'){
       if(!PAY_ST_RECS) PAY_ST_RECS=await payLoadRecordsOnce(c.id);
       await flushPrepaidDoneCache(c.id, PAY_ST_RECS||[]);
     }
@@ -14480,11 +14663,12 @@ function payPriceTableHtml(price){
 }
 function payPrevEditorHtml(c){
   const prev=Number(c.prevPurchaseDone)||0;
+  const tip='시스템에 기록되지 않은 과거 사용분 보정값';
   if(!PAY_PREV_OPEN){
-    return '<b>'+fmtN(prev)+'</b> <button type="button" class="btn btn-xs btn-gray" style="padding:1px 6px;vertical-align:middle" title="기존 구매완료 수정" onclick="payBeginPrevEdit()">✎</button>';
+    return '<b>'+fmtN(prev)+'</b> <button type="button" class="btn btn-xs btn-gray" style="padding:1px 6px;vertical-align:middle" title="'+tip+'" onclick="payBeginPrevEdit()">✎</button>';
   }
   const val=PAY_PREV_DRAFT!=null?PAY_PREV_DRAFT:String(prev);
-  return '<input id="ps-prev-done" class="fi" type="number" min="0" value="'+escHtml(val)+'" style="width:76px;max-width:42%;padding:4px 8px;display:inline-block;vertical-align:middle">'
+  return '<input id="ps-prev-done" class="fi" type="number" min="0" title="'+tip+'" value="'+escHtml(val)+'" style="width:76px;max-width:42%;padding:4px 8px;display:inline-block;vertical-align:middle">'
     +'<button type="button" class="btn btn-xs btn-blue" style="margin-left:4px;vertical-align:middle" onclick="paySavePrevDoneUi()">저장</button>'
     +'<button type="button" class="btn btn-xs btn-gray" style="margin-left:4px;vertical-align:middle" onclick="payCancelPrevEdit()">취소</button>';
 }
@@ -14497,43 +14681,18 @@ function payIsKmongDeduct(c){
   const mode=payShownMode(c);
   return payIsKmongDeductRouteMode(route.route, mode.mode);
 }
-function payKmongNumOrNull(c, key){
-  if(!c||c[key]==null||c[key]==='') return null;
-  const n=Number(c[key]);
-  return Number.isFinite(n)?n:null;
-}
-function payKmongInput(c, key){
-  const n=payKmongNumOrNull(c, key);
-  return n==null?'':String(n);
-}
-function payKmongTotalInput(c){
-  const prepaid=payKmongNumOrNull(c, 'prepaidTotal');
-  if(prepaid!=null) return String(prepaid);
-  return payKmongInput(c, 'kmongPrepaidQty');
-}
-function payKmongParse(raw){
-  const s=String(raw==null?'':raw).trim();
-  if(s==='') return null;
-  const n=Number(s);
-  if(!Number.isFinite(n)||n<0) return null;
-  return n;
+function payDetailBalance(c, mode){
+  const ctx={client:c};
+  if(mode) ctx.mode=mode;
+  if(Array.isArray(PAY_ST_PAY)) ctx.payRecords=PAY_ST_PAY;
+  if(Array.isArray(PAY_ST_RECS)) ctx.records=PAY_ST_RECS;
+  return calcPrepaidBalance(c&&c.id, ctx);
 }
 function payKmongState(c){
-  const prepaid=payKmongNumOrNull(c, 'prepaidTotal');
-  const fallback=payKmongNumOrNull(c, 'kmongPrepaidQty');
-  const total=prepaid!=null?prepaid:fallback;
-  const cache=payKmongNumOrNull(c, 'prepaidDoneCache');
-  const used=cache==null?0:cache;
-  if(total==null) return {known:false, total:0, used, remain:0-used};
-  return {known:true, total, used, remain:total-used};
-}
-function payKmongDraftPatch(c){
-  const rawQ=String(PAY_ST_FORM&&PAY_ST_FORM.kmongQty==null?'':PAY_ST_FORM.kmongQty).trim();
-  if(rawQ==='') return {error:false, patch:null};
-  const qty=payKmongParse(rawQ);
-  if(qty==null) return {error:true};
-  if(payKmongNumOrNull(c, 'prepaidTotal')===qty) return {error:false, patch:null};
-  return {error:false, patch:{prepaidTotal:qty}};
+  if(!c) return {known:false, total:0, used:0, remain:0};
+  const bal=calcPrepaidBalance(c.id, {client:c});
+  if(!bal.isPrepaid||!bal.payLoaded) return {known:false, total:0, used:0, remain:0};
+  return {known:true, total:bal.charged, used:bal.prevDone+bal.used, remain:bal.remaining};
 }
 function payKmongRemainText(state){
   if(!state||!state.known) return {text:'잔여 — / 총 —', color:''};
@@ -14542,23 +14701,25 @@ function payKmongRemainText(state){
   if(state.remain<=2) return {text, color:'#ea580c'};
   return {text, color:''};
 }
-function payKmongEditorHtml(f){
+function payBalanceLineHtml(bal){
+  const used=bal.prevDone+bal.used;
+  const remain=bal.remaining;
+  let remColor='var(--text)';
+  if(remain<=0) remColor='#dc2626';
+  else if(remain<=5) remColor='#ea580c';
+  return '<span>충전 '+fmtN(bal.charged)+'</span><span style="color:var(--text3);font-weight:700">−</span>'
+    +'<span>사용 '+fmtN(used)+'</span><span style="color:var(--text3);font-weight:700">=</span>'
+    +'<span style="color:'+remColor+'">잔여 '+fmtN(remain)+'</span>';
+}
+function payKmongEditorHtml(){
   const c=payClient(PAY_ST_ID);
-  const qty=f&&f.kmongQty!=null?f.kmongQty:'';
-  const saved=payKmongState(c);
-  const typed=payKmongParse(qty);
-  const total=typed==null?saved.total:typed;
-  const preview=payKmongRemainText({known:typed!=null||saved.known, total, used:saved.used, remain:total-saved.used});
-  const previewStyle=preview.color?' style="color:'+preview.color+';font-weight:800"':'';
-  const cache=payKmongNumOrNull(c, 'prepaidDoneCache');
-  const usedText=cache==null?'자동 집계: —':'자동 집계: '+fmtN(cache)+'건';
+  const bal=payDetailBalance(c, 'prepaid');
+  const preview=payKmongRemainText({known:true, total:bal.charged, used:bal.prevDone+bal.used, remain:bal.remaining});
+  const warn=bal.remaining<=0?'<div style="margin-top:6px;font-size:12px;font-weight:800;color:#dc2626">'+escHtml(preview.text)+'</div>':'';
   return '<div style="margin-top:10px;padding:10px;border:1px solid #bae6fd;border-radius:10px;background:#f0f9ff">'
     +'<div style="font-size:12px;font-weight:800;margin-bottom:6px">크몽 선결제 후 차감</div>'
-    +'<label style="font-size:11px;font-weight:700;display:block;max-width:220px">선결제 총 건수<input id="ps-kmong-qty" class="fi" type="number" min="0" step="1" style="margin-top:4px" value="'+escHtml(qty)+'"></label>'
-    +'<div style="margin-top:8px;font-size:12px;color:var(--text2)">'+escHtml(usedText)+'</div>'
-    +'<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;margin-top:8px">'
-    +'<div style="font-size:12px">'+escHtml('크몽 선결제 후 차감')+' · <span'+previewStyle+'>'+escHtml(preview.text)+'</span></div>'
-    +'<button type="button" class="btn btn-xs btn-blue" onclick="saveKmongPrepaidCounts()">건수 저장</button></div></div>';
+    +'<div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;font-size:14px;font-weight:800;line-height:1.4">'+payBalanceLineHtml(bal)+'</div>'
+    +warn+'</div>';
 }
 function payClientMemoHtml(c, draft){
   const text=draft!=null?String(draft):(c&&c.payMemo!=null?String(c.payMemo):'');
@@ -14574,31 +14735,20 @@ function payClientMemoHtml(c, draft){
 function payKeyNumbersHtml(c, snap){
   const prepaid=!!(snap.mode&&snap.mode.mode==='prepaid');
   if(prepaid){
-    const total=payPrepaidQty(PAY_ST_PAY);
-    const prev=Number(c.prevPurchaseDone)||0;
-    const done=PAY_ST_RECS?countPrepaidPurchaseDone(c.id, PAY_ST_RECS):null;
-    const used=done==null?null:prev+done;
-    const remain=used==null?null:total-used;
-    let remColor='var(--text)';
-    if(remain!=null&&remain<=0) remColor='#dc2626';
-    else if(remain!=null&&remain<=5) remColor='#ea580c';
-    const usedText=used==null?'—':fmtN(used);
-    const remText=remain==null?'—':fmtN(remain);
+    const bal=payDetailBalance(c, 'prepaid');
+    const total=bal.charged;
+    const done=bal.used;
+    const used=bal.prevDone+done;
+    const remain=bal.remaining;
     const by=c.prevPurchaseDoneBy?('<div style="font-size:10px;color:var(--text3);margin-top:2px">'+escHtml(c.prevPurchaseDoneBy)+' '+escHtml(payKstStamp(c.prevPurchaseDoneAt))+'</div>'):'';
-    let bar='';
-    if(used!=null){
-      const pct=total>0?used/total*100:(used>0?100:0);
-      const width=Math.max(0, Math.min(100, pct));
-      const barColor=remain<=0?'#dc2626':(remain<=5?'#ea580c':'#2563eb');
-      bar='<div style="margin-top:8px;height:8px;border-radius:99px;background:#e7e5e4;overflow:hidden"><div style="height:100%;width:'+width.toFixed(1)+'%;background:'+barColor+';border-radius:99px"></div></div>'
-        +'<div style="margin-top:4px;font-size:10px;color:var(--text3);text-align:right">사용 '+Math.round(pct)+'%</div>';
-    }
+    const pct=total>0?used/total*100:(used>0?100:0);
+    const width=Math.max(0, Math.min(100, pct));
+    const barColor=remain<=0?'#dc2626':(remain<=5?'#ea580c':'#2563eb');
+    const bar='<div style="margin-top:8px;height:8px;border-radius:99px;background:#e7e5e4;overflow:hidden"><div style="height:100%;width:'+width.toFixed(1)+'%;background:'+barColor+';border-radius:99px"></div></div>'
+      +'<div style="margin-top:4px;font-size:10px;color:var(--text3);text-align:right">사용 '+Math.round(pct)+'%</div>';
     return '<div style="margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--card2)">'
-      +'<div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;font-size:20px;font-weight:800;line-height:1.35">'
-      +'<span>충전 '+fmtN(total)+'</span><span style="color:var(--text3);font-weight:700">−</span>'
-      +'<span>사용 '+usedText+'</span><span style="color:var(--text3);font-weight:700">=</span>'
-      +'<span style="color:'+remColor+'">잔여 '+remText+'</span></div>'
-      +'<div style="margin-top:6px;font-size:12px;color:var(--text2);line-height:1.7">기존 구매완료 '+payPrevEditorHtml(c)+' + 선결제 차감 프로젝트 <b>'+(done==null?'—':fmtN(done))+'</b></div>'
+      +'<div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;font-size:20px;font-weight:800;line-height:1.35">'+payBalanceLineHtml(bal)+'</div>'
+      +'<div style="margin-top:6px;font-size:12px;color:var(--text2);line-height:1.7">기존 구매완료 '+payPrevEditorHtml(c)+' + 선결제 차감 프로젝트 <b>'+fmtN(done)+'</b></div>'
       +by+bar+'</div>';
   }
   const live=(PAY_ST_PAY||[]).filter(r=>r&&!r.deleted);
@@ -14678,10 +14828,17 @@ function renderPayStatusDetail(){
     +'</div></div>'
     +'<button type="button" class="btn btn-sm btn-gray" style="flex:none" onclick="payToggleCond()">'+(PAY_ST_COND?'조건 닫기':'조건 변경')+'</button></div>'
     +cond
+    +(PAY_CONVERT_OPEN?payConvertDialogHtml():'')
     +payKeyNumbersHtml(c, snap)
     +(kmongInHead?kmongEditor:'')
     +payClientMemoHtml(c, f.payMemo)
-    +'<div style="margin-top:10px"><div style="font-size:11px;font-weight:800;color:var(--text3);margin-bottom:4px">현재 단가</div>'+payPriceTableHtml(snap.price)+'</div>'
+    +(function(){
+      const price='<div><div style="font-size:11px;font-weight:800;color:var(--text3);margin-bottom:4px">현재 단가</div>'+payPriceTableHtml(snap.price)+'</div>';
+      const kmong=payKmongSummaryHtml();
+      return kmong
+        ? '<div class="pay-price-row">'+price+'<div>'+kmong+'</div></div>'
+        : '<div style="margin-top:10px">'+price+'</div>';
+    })()
     +'</div></div><div class="pay-tabs">'+payTabBtn('records','결제 기록')+payTabBtn('projects','프로젝트')+payTabBtn('history','변경 이력')+payTabBtn('inflow','유입')+'</div></div>'
     +'<div id="paystatus-scroll" style="padding-top:10px">'+panel+'</div>';
   const focus=document.getElementById('pr-date');
@@ -14697,6 +14854,7 @@ async function openPayStatusDetail(clientId){
   PAY_ST_EDIT='';
   PAY_EDIT=null;
   PAY_ST_FILTER='all';
+  PAY_REC_ROUTE='';
     PAY_ST_HIST=[];
     PAY_ST_PAY=[];
     PAY_ST_RECS=null;
@@ -14708,6 +14866,10 @@ async function openPayStatusDetail(clientId){
   PAY_REC_OPEN=false;
   PAY_PREV_OPEN=false;
   PAY_PREV_DRAFT=null;
+  PAY_CONVERT_OPEN=false;
+  PAY_CONVERT_READY=false;
+  PAY_CONVERT_IDS=[];
+  PAY_CONVERT_LIST=[];
   PAY_ST_TAB=payStTabLoad();
   openMd('paystatus');
   const title=document.getElementById('paystatus-title');
@@ -15374,28 +15536,6 @@ function inflowToggle(key, depth){
   const host=document.getElementById('inflow-tree');
   if(host) host.innerHTML=tree.roots.map(n=>inflowTreeNode(n,0)).join('');
 }
-async function saveKmongPrepaidCounts(){
-  if(PAY_ST_BUSY) return;
-  payReadDetailForm();
-  const c=payClient(PAY_ST_ID);
-  if(!c||!PAY_ST_FORM) return;
-  if(!document.getElementById('ps-kmong-qty')) return;
-  const rawQ=String(PAY_ST_FORM.kmongQty==null?'':PAY_ST_FORM.kmongQty).trim();
-  if(rawQ===''){ toast('선결제 총 건수를 0 이상의 숫자로 입력하세요','error'); return; }
-  const parsed=payKmongDraftPatch(c);
-  if(parsed.error){ toast('선결제 총 건수를 0 이상의 숫자로 입력하세요','error'); return; }
-  if(!parsed.patch){ toast('변경사항이 없습니다','error'); return; }
-  PAY_ST_BUSY=true;
-  try{
-    await sv('cl', [Object.assign({}, c, parsed.patch)]);
-    payRefreshScreens();
-    if(CUR_CLIENT===c.id) refreshQuotePaySticky();
-    toast('선결제 건수를 저장했습니다');
-  }catch(e){
-    console.error(e);
-    toast('저장에 실패했습니다','error');
-  }finally{ PAY_ST_BUSY=false; }
-}
 async function savePayClientMemo(){
   if(PAY_ST_BUSY) return;
   payReadDetailForm();
@@ -15416,6 +15556,34 @@ async function savePayClientMemo(){
     toast('저장에 실패했습니다','error');
   }finally{ PAY_ST_BUSY=false; }
 }
+function payConvertDialogHtml(){
+  const list=PAY_CONVERT_LIST||[];
+  const rows=list.map(p=>'<label style="display:flex;gap:8px;align-items:flex-start;padding:4px 0;font-size:12px">'
+    +'<input type="checkbox" data-pay-convert="'+escHtml(p.id)+'" checked>'
+    +'<span>'+escHtml(p.name||'(이름 없음)')+' · 구매완료 '+fmtN(p.done)+'건</span></label>').join('');
+  return '<div style="margin-top:10px;padding:12px;border:1px solid #fdba74;border-radius:10px;background:#fff7ed">'
+    +'<div style="font-size:13px;font-weight:800;line-height:1.45">기존 프로젝트 '+fmtN(list.length)+'개가 별도 결제로 되어 있습니다. 선결제 차감으로 전환할까요?</div>'
+    +'<div style="margin-top:8px">'+rows+'</div>'
+    +'<div style="display:flex;gap:6px;justify-content:flex-end;margin-top:10px">'
+    +'<button type="button" class="btn btn-sm btn-gray" onclick="payCancelConvert()">취소</button>'
+    +'<button type="button" class="btn btn-sm btn-blue" onclick="payConfirmConvert()">전환 후 저장</button></div></div>';
+}
+function payCancelConvert(){
+  PAY_CONVERT_OPEN=false;
+  PAY_CONVERT_READY=false;
+  PAY_CONVERT_IDS=[];
+  PAY_CONVERT_LIST=[];
+  renderPayStatusDetail();
+}
+function payConfirmConvert(){
+  const ids=[];
+  document.querySelectorAll('[data-pay-convert]').forEach(el=>{
+    if(el.checked) ids.push(el.getAttribute('data-pay-convert')||'');
+  });
+  PAY_CONVERT_IDS=ids.filter(Boolean);
+  PAY_CONVERT_READY=true;
+  savePayStatusUpdate();
+}
 async function savePayStatusUpdate(){
   if(PAY_ST_BUSY) return;
   payReadDetailForm();
@@ -15425,16 +15593,37 @@ async function savePayStatusUpdate(){
   const cur=payCurrentSnapshot(c, PAY_ST_HIST);
   const next=payFormSnapshot(PAY_ST_FORM);
   const types=payChangedTypes(cur, next);
-  let kmongPatch=null;
-  if(payIsKmongDeductRouteMode(PAY_ST_FORM.route, PAY_ST_FORM.mode)&&document.getElementById('ps-kmong-qty')){
-    const parsed=payKmongDraftPatch(c);
-    if(parsed.error){ toast('선결제 총 건수를 0 이상의 숫자로 입력하세요','error'); return; }
-    kmongPatch=parsed.patch;
-  }
-  if(!types.length&&!kmongPatch){ toast('변경사항이 없습니다','error'); return; }
+  if(!types.length){ toast('변경사항이 없습니다','error'); return; }
   if(cur.mode&&cur.mode.mode==='prepaid'&&next.mode.mode==='perItem'){
     const rem=payRemainingCount(c, PAY_ST_RECS);
     if(rem>0&&!confirm('잔여 '+rem+'건이 남아 있습니다. 이월/정산 여부를 메모에 남겨주세요')) return;
+  }
+  let convertIds=null;
+  const toPrepaid=next.mode&&next.mode.mode==='prepaid'&&!(cur.mode&&cur.mode.mode==='prepaid');
+  if(!(toPrepaid&&types.indexOf('mode')>=0)){
+    PAY_CONVERT_READY=false;
+    PAY_CONVERT_OPEN=false;
+    PAY_CONVERT_IDS=[];
+    PAY_CONVERT_LIST=[];
+  }
+  if(toPrepaid&&types.indexOf('mode')>=0){
+    const seps=payClientProjects(c.id).filter(p=>p&&p.id&&p.payMode==='separate');
+    if(seps.length&&!PAY_CONVERT_READY){
+      PAY_CONVERT_LIST=seps.map(p=>({
+        id:p.id,
+        name:p.name||'',
+        done:(PAY_ST_RECS||[]).filter(r=>r&&r.projectId===p.id&&recordIsPurchaseDone(r)).length,
+      }));
+      PAY_CONVERT_OPEN=true;
+      renderPayStatusDetail();
+      return;
+    }
+    if(PAY_CONVERT_READY){
+      convertIds=(PAY_CONVERT_IDS||[]).slice();
+      PAY_CONVERT_READY=false;
+      PAY_CONVERT_OPEN=false;
+      PAY_CONVERT_LIST=[];
+    }
   }
   const iso=new Date().toISOString();
   const memo=payTrim(PAY_ST_FORM.memo);
@@ -15442,12 +15631,24 @@ async function savePayStatusUpdate(){
     id:gid()+type, clientId:c.id, type, effectiveDate:PAY_ST_FORM.date,
     value:next[type], memo,
   }, payAuditStamp(iso)));
+  const projOps=[];
+  (convertIds||[]).forEach(id=>{
+    const p=(PROJECTS_CACHE||[]).find(x=>x&&x.id===id);
+    if(!p||p.payMode!=='separate') return;
+    projOps.push({key:'pr', id:p.id, data:Object.assign({}, p, {payMode:'prepaid'})});
+  });
+  if(projOps.length){
+    docs.push(Object.assign({
+      id:gid()+'proj', clientId:c.id, type:'projConvert', effectiveDate:PAY_ST_FORM.date,
+      value:{count:projOps.length}, memo:'',
+    }, payAuditStamp(iso)));
+  }
   const hist=PAY_ST_HIST.concat(docs);
-  const base=kmongPatch?Object.assign({}, c, kmongPatch):c;
+  const extra=docs.map(doc=>({key:'payh', id:doc.id, data:doc})).concat(projOps);
   PAY_ST_BUSY=true;
   try{
-    if(types.length) await payCommitClient(base, hist, docs.map(doc=>({key:'payh', id:doc.id, data:doc})));
-    else await sv('cl', [base]);
+    await payCommitClient(c, hist, extra);
+    if(projOps.length) await flushPrepaidDoneCache(c.id, PAY_ST_RECS||[]);
     PAY_ST_EDIT='';
     PAY_EDIT=null;
     PAY_ST_FORM=payFormFromCurrent(c.id, PAY_ST_HIST);
