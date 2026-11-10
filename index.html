@@ -5028,7 +5028,7 @@ function initDailyListKeys(container){
           if(dateStr){ d.records[idx].purchaseDate=dateStr; }
           any=true;
         }
-        if(any){ sv('rc',d.records); }
+        if(any){ sv('rc',d.records); schedulePrepaidDoneForProjects(wrap?wrap.dataset.cid||CUR_CLIENT:CUR_CLIENT, cellsToClear.filter(function(td){ return td&&(td.dataset.field==='nickname'||td.dataset.field==='tracking'); }).map(function(td){ var rec=d.records.find(function(r){ return r.id===td.dataset.recordId; }); return rec&&rec.projectId; })); }
         _dailySelStart=null;_dailySelEnd=null;
         if(wrap&&wrap.dataset.mode&&wrap.dataset.date){ selectDailyDate(wrap.dataset.mode,wrap.dataset.cid||CUR_CLIENT,wrap.dataset.date); }
         toast(cellsToClear.length+'개 셀 삭제됨');
@@ -5051,7 +5051,7 @@ function initDailyListKeys(container){
         var item=_dailyUndoStack.pop();
         var d=ld();
         var idx=d.records.findIndex(function(r){return r.id===item.recId;});
-        if(idx>=0){ d.records[idx][item.field]=item.prevVal; sv('rc',d.records); try{ scheduleRerender(); }catch(e){} }
+        if(idx>=0){ d.records[idx][item.field]=item.prevVal; sv('rc',d.records); if(item.field==='nickname'||item.field==='tracking') schedulePrepaidDoneForProjects(CUR_CLIENT, [d.records[idx].projectId]); try{ scheduleRerender(); }catch(e){} }
         var wrap=document.getElementById('daily-table-wrap');
         if(wrap&&wrap.dataset.mode&&wrap.dataset.date) selectDailyDate(wrap.dataset.mode,wrap.dataset.cid||CUR_CLIENT,wrap.dataset.date);
         toast('실행 취소됨');
@@ -5076,6 +5076,7 @@ function initDailyListKeys(container){
     var startCol=Array.prototype.indexOf.call(tr.cells,startCell);
     if(startRow<0||startCol<0)return;
     var updates=[];
+    var touchProjects=[];
     var rowCount=tbody.rows.length;
     var colCount=tr.cells.length;
     for(var r=0;r<rows.length;r++){
@@ -5107,10 +5108,12 @@ function initDailyListKeys(container){
       var idx=d.records.findIndex(function(r){ return r.id===u.recId; });
       if(idx>=0){
         d.records[idx][u.field]=u.val;
+        if(u.field==='nickname'||u.field==='tracking') touchProjects.push(d.records[idx].projectId);
         if(dateStr){ d.records[idx].purchaseDate=dateStr; }
       }
     }
     sv('rc',d.records);
+    schedulePrepaidDoneForProjects((wrap&&wrap.dataset.cid)||CUR_CLIENT, touchProjects);
     if(wrap&&wrap.dataset.mode&&wrap.dataset.date) selectDailyDate(wrap.dataset.mode,wrap.dataset.cid||CUR_CLIENT,wrap.dataset.date);
     try{ scheduleRerender(); }catch(e){}
     toast(updates.length+'개 셀 반영됨');
@@ -5138,6 +5141,7 @@ function onDailyCellBlur(td){
   d.records[idx][field]=newVal;
   if(dateStr&&field!=='day'){ d.records[idx].purchaseDate=dateStr; }
   sv('rc',d.records);
+  if(field==='nickname'||field==='tracking') schedulePrepaidDoneForProjects((wrap&&wrap.dataset.cid)||CUR_CLIENT, [d.records[idx].projectId]);
   if(wrap){
     const mode=wrap.dataset.mode;
     const cid=wrap.dataset.cid||CUR_CLIENT;
@@ -13519,6 +13523,21 @@ function payEarliestStart(clientId){
   });
   return best;
 }
+function rosterNickTrackChanged(prev, next){
+  const nick=v=>v&&v.nickname!=null?String(v.nickname):'';
+  const track=v=>v&&v.tracking!=null?String(v.tracking):'';
+  return nick(prev)!==nick(next)||track(prev)!==track(next);
+}
+function schedulePrepaidDoneForProjects(clientId, projectIds){
+  if(!clientId) return;
+  const hit=(projectIds||[]).some(id=>{
+    if(!id) return false;
+    const p=(PROJECTS_CACHE||[]).find(x=>x&&x.id===id);
+    return !!(p&&p.payMode==='prepaid');
+  });
+  if(!hit) return;
+  schedulePrepaidDoneCache(clientId);
+}
 function schedulePrepaidDoneCache(clientId){
   if(!clientId) return;
   const c=payClient(clientId);
@@ -13528,7 +13547,7 @@ function schedulePrepaidDoneCache(clientId){
     _prepaidDoneTimer=null;
     if(RECORDS_CLIENT_ID!==clientId||!_recordsChunksReady) return;
     flushPrepaidDoneCache(clientId, RECORDS_CACHE).catch(function(e){ console.error('prepaidDoneCache', e); });
-  }, 1000);
+  }, 2000);
 }
 async function flushPrepaidDoneCache(clientId, records){
   const c=payClient(clientId);
@@ -13537,6 +13556,9 @@ async function flushPrepaidDoneCache(clientId, records){
   if(c.prepaidDoneCache!=null&&c.prepaidDoneCache!==''&&Number(c.prepaidDoneCache)===done) return false;
   const latest=payClient(clientId)||c;
   await sv('cl', [Object.assign({}, latest, {prepaidDoneCache:done, prepaidDoneAt:new Date().toISOString()})]);
+  if(clientId===CUR_CLIENT){
+    try{ refreshQuotePaySticky(); }catch(e){}
+  }
   return true;
 }
 async function payLoadRecordsOnce(clientId){
@@ -13555,7 +13577,7 @@ function payBlankForm(){
     price:payNormPrice(payPriceValue(null)),
     taxYn:false, fee:false, delivery:false, product:false, memo:'',
     inflowRoute:'', referrerClientId:'', referrerName:'', referrerQuery:'', inflowMemo:'', firstContractDate:'',
-    kmongQty:'', kmongUsed:'', payMemo:'',
+    kmongQty:'', payMemo:'',
   };
 }
 function payFormFromCurrent(clientId, history){
@@ -13576,7 +13598,7 @@ function payFormFromCurrent(clientId, history){
     memo:'',
     inflowRoute:inf.route, referrerClientId:inf.referrerClientId, referrerName:inf.referrerName,
     referrerQuery:refQuery, inflowMemo:inf.memo, firstContractDate:inf.firstContractDate||'',
-    kmongQty:payKmongInput(c,'kmongPrepaidQty'), kmongUsed:payKmongInput(c,'kmongPrepaidUsed'),
+    kmongQty:payKmongTotalInput(c),
     payMemo:c&&c.payMemo!=null?String(c.payMemo):'',
   };
 }
@@ -13644,7 +13666,6 @@ function payReadDetailForm(){
   if(g('ps-mode-memo')!=null) f.modeMemo=g('ps-mode-memo');
   if(g('ps-memo')!=null) f.memo=g('ps-memo');
   if(g('ps-kmong-qty')!=null) f.kmongQty=g('ps-kmong-qty');
-  if(g('ps-kmong-used')!=null) f.kmongUsed=g('ps-kmong-used');
   if(g('ps-client-memo')!=null) f.payMemo=g('ps-client-memo');
   if(g('ps-in-memo')!=null) f.inflowMemo=g('ps-in-memo');
   if(g('ps-first-date')!=null) f.firstContractDate=g('ps-first-date');
@@ -14476,10 +14497,19 @@ function payIsKmongDeduct(c){
   const mode=payShownMode(c);
   return payIsKmongDeductRouteMode(route.route, mode.mode);
 }
-function payKmongInput(c, key){
-  if(!c||c[key]==null||c[key]==='') return '';
+function payKmongNumOrNull(c, key){
+  if(!c||c[key]==null||c[key]==='') return null;
   const n=Number(c[key]);
-  return Number.isFinite(n)?String(n):'';
+  return Number.isFinite(n)?n:null;
+}
+function payKmongInput(c, key){
+  const n=payKmongNumOrNull(c, key);
+  return n==null?'':String(n);
+}
+function payKmongTotalInput(c){
+  const prepaid=payKmongNumOrNull(c, 'prepaidTotal');
+  if(prepaid!=null) return String(prepaid);
+  return payKmongInput(c, 'kmongPrepaidQty');
 }
 function payKmongParse(raw){
   const s=String(raw==null?'':raw).trim();
@@ -14489,21 +14519,21 @@ function payKmongParse(raw){
   return n;
 }
 function payKmongState(c){
-  const hasTotal=!!(c&&c.kmongPrepaidQty!=null&&c.kmongPrepaidQty!==''&&Number.isFinite(Number(c.kmongPrepaidQty)));
-  const hasUsed=!!(c&&c.kmongPrepaidUsed!=null&&c.kmongPrepaidUsed!==''&&Number.isFinite(Number(c.kmongPrepaidUsed)));
-  const total=hasTotal?Number(c.kmongPrepaidQty):0;
-  const used=hasUsed?Number(c.kmongPrepaidUsed):0;
-  return {known:hasTotal||hasUsed, total, used, remain:total-used};
+  const prepaid=payKmongNumOrNull(c, 'prepaidTotal');
+  const fallback=payKmongNumOrNull(c, 'kmongPrepaidQty');
+  const total=prepaid!=null?prepaid:fallback;
+  const cache=payKmongNumOrNull(c, 'prepaidDoneCache');
+  const used=cache==null?0:cache;
+  if(total==null) return {known:false, total:0, used, remain:0-used};
+  return {known:true, total, used, remain:total-used};
 }
 function payKmongDraftPatch(c){
   const rawQ=String(PAY_ST_FORM&&PAY_ST_FORM.kmongQty==null?'':PAY_ST_FORM.kmongQty).trim();
-  const rawU=String(PAY_ST_FORM&&PAY_ST_FORM.kmongUsed==null?'':PAY_ST_FORM.kmongUsed).trim();
-  if(rawQ===''&&rawU==='') return {error:false, patch:null};
+  if(rawQ==='') return {error:false, patch:null};
   const qty=payKmongParse(rawQ);
-  const used=payKmongParse(rawU);
-  if(qty==null||used==null) return {error:true};
-  const same=c&&c.kmongPrepaidQty!=null&&c.kmongPrepaidUsed!=null&&Number(c.kmongPrepaidQty)===qty&&Number(c.kmongPrepaidUsed)===used;
-  return {error:false, patch:same?null:{kmongPrepaidQty:qty, kmongPrepaidUsed:used}};
+  if(qty==null) return {error:true};
+  if(payKmongNumOrNull(c, 'prepaidTotal')===qty) return {error:false, patch:null};
+  return {error:false, patch:{prepaidTotal:qty}};
 }
 function payKmongRemainText(state){
   if(!state||!state.known) return {text:'잔여 — / 총 —', color:''};
@@ -14513,21 +14543,19 @@ function payKmongRemainText(state){
   return {text, color:''};
 }
 function payKmongEditorHtml(f){
+  const c=payClient(PAY_ST_ID);
   const qty=f&&f.kmongQty!=null?f.kmongQty:'';
-  const used=f&&f.kmongUsed!=null?f.kmongUsed:'';
-  const preview=payKmongRemainText({
-    known:String(qty).trim()!==''||String(used).trim()!=='',
-    total:payKmongParse(qty)||0,
-    used:payKmongParse(used)||0,
-    remain:(payKmongParse(qty)||0)-(payKmongParse(used)||0),
-  });
+  const saved=payKmongState(c);
+  const typed=payKmongParse(qty);
+  const total=typed==null?saved.total:typed;
+  const preview=payKmongRemainText({known:typed!=null||saved.known, total, used:saved.used, remain:total-saved.used});
   const previewStyle=preview.color?' style="color:'+preview.color+';font-weight:800"':'';
+  const cache=payKmongNumOrNull(c, 'prepaidDoneCache');
+  const usedText=cache==null?'자동 집계: —':'자동 집계: '+fmtN(cache)+'건';
   return '<div style="margin-top:10px;padding:10px;border:1px solid #bae6fd;border-radius:10px;background:#f0f9ff">'
     +'<div style="font-size:12px;font-weight:800;margin-bottom:6px">크몽 선결제 후 차감</div>'
-    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr));gap:8px">'
-    +'<label style="font-size:11px;font-weight:700">선결제 건수<input id="ps-kmong-qty" class="fi" type="number" min="0" step="1" style="margin-top:4px" value="'+escHtml(qty)+'"></label>'
-    +'<label style="font-size:11px;font-weight:700">사용 건수<input id="ps-kmong-used" class="fi" type="number" min="0" step="1" style="margin-top:4px" value="'+escHtml(used)+'"></label>'
-    +'</div>'
+    +'<label style="font-size:11px;font-weight:700;display:block;max-width:220px">선결제 총 건수<input id="ps-kmong-qty" class="fi" type="number" min="0" step="1" style="margin-top:4px" value="'+escHtml(qty)+'"></label>'
+    +'<div style="margin-top:8px;font-size:12px;color:var(--text2)">'+escHtml(usedText)+'</div>'
     +'<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;margin-top:8px">'
     +'<div style="font-size:12px">'+escHtml('크몽 선결제 후 차감')+' · <span'+previewStyle+'>'+escHtml(preview.text)+'</span></div>'
     +'<button type="button" class="btn btn-xs btn-blue" onclick="saveKmongPrepaidCounts()">건수 저장</button></div></div>';
@@ -15353,10 +15381,9 @@ async function saveKmongPrepaidCounts(){
   if(!c||!PAY_ST_FORM) return;
   if(!document.getElementById('ps-kmong-qty')) return;
   const rawQ=String(PAY_ST_FORM.kmongQty==null?'':PAY_ST_FORM.kmongQty).trim();
-  const rawU=String(PAY_ST_FORM.kmongUsed==null?'':PAY_ST_FORM.kmongUsed).trim();
-  if(rawQ===''||rawU===''){ toast('선결제 건수와 사용 건수를 0 이상의 숫자로 입력하세요','error'); return; }
+  if(rawQ===''){ toast('선결제 총 건수를 0 이상의 숫자로 입력하세요','error'); return; }
   const parsed=payKmongDraftPatch(c);
-  if(parsed.error){ toast('선결제 건수와 사용 건수를 0 이상의 숫자로 입력하세요','error'); return; }
+  if(parsed.error){ toast('선결제 총 건수를 0 이상의 숫자로 입력하세요','error'); return; }
   if(!parsed.patch){ toast('변경사항이 없습니다','error'); return; }
   PAY_ST_BUSY=true;
   try{
@@ -15401,7 +15428,7 @@ async function savePayStatusUpdate(){
   let kmongPatch=null;
   if(payIsKmongDeductRouteMode(PAY_ST_FORM.route, PAY_ST_FORM.mode)&&document.getElementById('ps-kmong-qty')){
     const parsed=payKmongDraftPatch(c);
-    if(parsed.error){ toast('선결제 건수와 사용 건수를 0 이상의 숫자로 입력하세요','error'); return; }
+    if(parsed.error){ toast('선결제 총 건수를 0 이상의 숫자로 입력하세요','error'); return; }
     kmongPatch=parsed.patch;
   }
   if(!types.length&&!kmongPatch){ toast('변경사항이 없습니다','error'); return; }
@@ -19586,12 +19613,25 @@ async function saveSheet(){
   (d.records||[]).forEach(r=>{
     if(r&&removedIds.includes(r.id)&&r.projectId!=null) removedProjIds.add(r.projectId);
   });
+  const prepaidTouch=[];
+  const prevById=new Map();
+  (d.records||[]).forEach(r=>{ if(r&&r.id) prevById.set(r.id, r); });
+  nr.forEach(r=>{
+    if(!r||!r.projectId||!rosterNickTrackChanged(prevById.get(r.id), r)) return;
+    prepaidTouch.push(r.projectId);
+  });
+  removedIds.forEach(id=>{
+    const prev=prevById.get(id);
+    if(!prev||!prev.projectId||!(prev.nickname||prev.tracking)) return;
+    prepaidTouch.push(prev.projectId);
+  });
   const saveBtn=document.querySelector('#dp-input .btn.btn-green.btn-sm[onclick="saveSheet()"]');
   if(saveBtn){saveBtn.disabled=true;saveBtn.textContent='저장 중...';}
   try{
     await sv('rc', nr);
     if(removedIds.length) await svDelete('rc', removedIds);
     if(removedProjIds.size){ try{ invalidateRecordsCacheByProjectIds(removedProjIds); }catch(_){} }
+    schedulePrepaidDoneForProjects(CUR_CLIENT, prepaidTouch);
     SHEET_ORIG_IDS=nr.map(r=>r&&r.id).filter(Boolean);
     SHEET_DIRTY=false;
     const el=document.getElementById('sheet-dirty-ind');if(el){el.textContent='✓ 저장됨';el.style.color='var(--green)';}
