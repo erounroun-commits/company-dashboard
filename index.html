@@ -2860,6 +2860,69 @@ function unsubscribeRecords(){
   _recordsChunksReady=false;
   if(_projAutoStatusTimer){ clearTimeout(_projAutoStatusTimer); _projAutoStatusTimer=null; }
 }
+const _purchaseDateNormOnce=new Set();
+async function maybeNormalizeCachedPurchaseDates(clientId){
+  if(!clientId||_purchaseDateNormOnce.has(clientId)) return;
+  if(typeof CV_CURRENT_CODE!=='undefined'&&CV_CURRENT_CODE) return;
+  if(typeof _recordsAdminVisible==='function'&&!_recordsAdminVisible()) return;
+  if(RECORDS_CLIENT_ID!==clientId) return;
+  const rows=Array.isArray(RECORDS_CACHE)?RECORDS_CACHE:[];
+  if(!rows.length) return;
+  const updates=[];
+  rows.forEach(r=>{
+    if(!r||!r.id) return;
+    const cur=r.purchaseDate;
+    if(cur==null||cur==='') return;
+    if(isIsoPurchaseDate(cur)) return;
+    const norm=normPurchaseDate(cur);
+    if(!isIsoPurchaseDate(norm)||norm===cur) return;
+    updates.push({id:r.id, from:cur, purchaseDate:norm});
+  });
+  _purchaseDateNormOnce.add(clientId);
+  if(!updates.length) return;
+  const client=(ld().clients||[]).find(c=>c&&c.id===clientId);
+  console.log((client&&client.name||clientId)+': '+updates.length+'건 날짜 형식 정리');
+  const nextById=new Map(updates.map(u=>[u.id,u.purchaseDate]));
+  const prevById=new Map(updates.map(u=>[u.id,u.from]));
+  rows.forEach(r=>{
+    if(r&&nextById.has(r.id)) r.purchaseDate=nextById.get(r.id);
+  });
+  const sync=_svSync.rc||(_svSync.rc=new Map());
+  const remember=()=>{
+    rows.forEach(r=>{
+      if(!r||!nextById.has(r.id)) return;
+      const json=_svItemJson(r);
+      if(json!=null) sync.set(r.id, json);
+    });
+  };
+  remember();
+  try{
+    if(typeof db==='undefined') return;
+    const col=db.collection('records');
+    for(let i=0;i<updates.length;i+=400){
+      const chunk=updates.slice(i,i+400);
+      await fsCommitWithRetry(async ()=>{
+        const batch=db.batch();
+        chunk.forEach(u=>batch.update(col.doc(u.id), {purchaseDate:u.purchaseDate}));
+        await batch.commit();
+      }, '구매날짜 형식 정리');
+    }
+    remember();
+    const wrap=document.getElementById('daily-wrap-dp');
+    if(wrap&&wrap.dataset.cid===clientId&&wrap.dataset.qmode!=='range'){
+      const inp=document.getElementById('daily-custom-dp');
+      const dateStr=(inp&&inp.value)||getKSTDate();
+      try{ selectDailyDate('dp', clientId, dateStr); }catch(e){}
+    }
+  }catch(e){
+    console.error('날짜 형식 정리 실패', e);
+    rows.forEach(r=>{
+      if(!r||!prevById.has(r.id)) return;
+      if(r.purchaseDate===nextById.get(r.id)) r.purchaseDate=prevById.get(r.id);
+    });
+    remember();
+  }
+}
 function _applyRecordsRows(clientId, rows){
   if(CUR_CLIENT && clientId!==CUR_CLIENT) return;
   RECORDS_CACHE=Array.isArray(rows)?rows:[];
@@ -2870,6 +2933,7 @@ function _applyRecordsRows(clientId, rows){
   if(SHEET_PROJ && CUR_CLIENT===clientId){
     try{ loadSheet(SHEET_PROJ); }catch(e){ console.error(e); }
   }
+  maybeNormalizeCachedPurchaseDates(clientId).catch(e=>console.error(e));
 }
 function _patchRecordsCache(clientId, changes){
   if(!changes||!changes.length) return;
@@ -3588,6 +3652,7 @@ async function sv(key, value){
   _svRequireLoaded(key);
   fsBegin('저장 1회 (sv '+key+')');
   const rows=Array.isArray(value)?value.slice():[];
+  if(key==='rc') rows.forEach(applyRecordPurchaseDate);
   const col=db.collection(SV_COL[key]);
   rows.forEach(item=>{
     if(!item||typeof item!=='object') return;
@@ -3618,6 +3683,8 @@ async function sv(key, value){
       const scope=new Set();
       rows.forEach(r=>{ if(r&&r.projectId!=null) scope.add(r.projectId); });
       _svInvalidateRc(scope);
+      const bad=changed.map(c=>c.cleaned).filter(purchaseDateUnparsed);
+      if(bad.length) queueUnparsedPurchaseDateWarn(bad);
     }
     if(key==='bp') _svBackupBlog();
   }catch(e){
@@ -3697,6 +3764,7 @@ async function commitSvOps(ops){
   list.forEach(op=>{
     if(op.del) return;
     const item={...(op.data||{}), id:op.id};
+    if(op.key==='rc') applyRecordPurchaseDate(item);
     (setByKey[op.key]||(setByKey[op.key]=[])).push(item);
     op.item=item;
   });
@@ -4296,29 +4364,119 @@ function purchaseDateToYYYYMMDD(s){
 }
 function normDateD(s){ return purchaseDateToYYYYMMDD(s); }
 
+let _dailyScreen=null;
+let _dailyRangeToken=0;
+
+function buildDailyListCols(){
+  const dailyColsBase=[
+    {key:'_proj',label:'프로젝트',align:'left',ed:false},
+    {key:'day',label:'일자',align:'left',ed:true},
+    {key:'purchaseDate',label:'구매날짜',align:'left',ed:true},
+    {key:'product',label:'품명',align:'left',ed:true},
+    {key:'option',label:'옵션',align:'left',ed:true},
+    {key:'reviewType',label:'리뷰종류',align:'left',ed:true},
+    {key:'nickname',label:'닉네임',align:'left',ed:true},
+    {key:'receiver',label:'수취인',align:'left',ed:true},
+    {key:'email',label:'아이디',align:'left',ed:true},
+    {key:'address',label:'주소',align:'left',ed:true},
+    {key:'phone',label:'연락처',align:'left',ed:true},
+    {key:'amount',label:'상품금액',align:'right',ed:true},
+    {key:'tracking',label:'송장번호(CJ대한통운)',align:'left',ed:true},
+    {key:'accountNo',label:'계좌번호',align:'left',ed:true},
+    {key:'reviewUrl',label:'리뷰URL',align:'left',ed:true}
+  ];
+  let dailyCols=dailyColsBase.slice();
+  try{
+    const ui=uiColsLd();
+    const extra=(ui && Array.isArray(ui.extraCols))?ui.extraCols:[];
+    const extraForDaily=extra.map(ec=>({
+      key:ec.k,
+      label:ec.lb||ec.k,
+      align:'left',
+      ed:true,
+    }));
+    const colOrder=Array.isArray(ui?.colOrder)?ui.colOrder:[];
+    if(extraForDaily.length || colOrder.length){
+      const projCol=dailyColsBase[0];
+      const others=[...dailyColsBase.slice(1),...extraForDaily];
+      const map={};
+      others.forEach(c=>{map[c.key]=c;});
+      const ordered=[];
+      if(colOrder.length){
+        colOrder.forEach(k=>{
+          if(map[k]){
+            ordered.push(map[k]);
+            delete map[k];
+          }
+        });
+      }
+      Object.keys(map).forEach(k=>{ordered.push(map[k]);});
+      dailyCols=[projCol,...ordered];
+    }
+  }catch(e){}
+  return dailyCols;
+}
+function dailyClientName(clientId){
+  try{
+    const c=(ld().clients||[]).find(x=>x&&x.id===clientId);
+    if(c&&c.name) return String(c.name);
+  }catch(e){}
+  return '거래처';
+}
+function safeDailyFilePart(s){
+  return String(s||'거래처').replace(/[\\/:*?"<>|\u0000-\u001f]/g,'_').replace(/\s+/g,' ').trim()||'거래처';
+}
+function kstMonthBounds(offsetMonths){
+  const base=getKSTDateObj(0);
+  let y=base.y;
+  let m=base.m+(offsetMonths||0);
+  while(m<1){ m+=12; y-=1; }
+  while(m>12){ m-=12; y+=1; }
+  const mm=String(m).padStart(2,'0');
+  const last=new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return {start:y+'-'+mm+'-01', end:y+'-'+mm+'-'+String(last).padStart(2,'0')};
+}
+function dailySpanDays(start, end){
+  const a=Date.parse(start+'T00:00:00Z');
+  const b=Date.parse(end+'T00:00:00Z');
+  if(!isFinite(a)||!isFinite(b)) return NaN;
+  return Math.round((b-a)/86400000);
+}
+function dailyAmountSum(recs){
+  let sum=0;
+  (recs||[]).forEach(r=>{
+    if(r==null||r.amount==null||r.amount==='') return;
+    const n=Number(String(r.amount).replace(/[원,\s]/g,''));
+    if(!isNaN(n)) sum+=n;
+  });
+  return sum;
+}
+function dailyProjOrderMap(projs){
+  const sorted=(projs||[]).slice().sort((a,b)=>{
+    const ao=(typeof a.order==='number'?a.order:999999);
+    const bo=(typeof b.order==='number'?b.order:999999);
+    if(ao!==bo) return ao-bo;
+    return new Date(b.createdAt||0)-new Date(a.createdAt||0);
+  });
+  const projOrder={};
+  sorted.forEach((p,i)=>{projOrder[p.id]=i;});
+  return projOrder;
+}
+
 function renderDailyPanel(mode, clientId){
   const todayISO=getKSTDate();
   const ystISO=getKSTDate(-1);
   const tmrISO=getKSTDate(1);
 
   const wrapperId=mode==='cv'?'cvpanel-daily':'dp-daily-inner';
-  const fnName=`renderDailyTable_${mode}`;
-
-  const d=ld();
-  const projs=d.projects.filter(p=>p.clientId===clientId);
-  const allRecs=d.records.filter(r=>projs.some(p=>p.id===r.projectId));
-
-  // 날짜별 카운트 (구매날짜 → YYYY-MM-DD 통일)
-  const dateMap={};
-  allRecs.forEach(r=>{
-    const dt=purchaseDateToYYYYMMDD(r.purchaseDate);
-    if(dt)dateMap[dt]=(dateMap[dt]||0)+1;
-  });
-
-  // 작일/금일/익일 + 달력만 유지 (드롭다운 제거)
-  const _m=mode, _cid=clientId;
-  const html='<div style="max-width:960px" id="daily-wrap-'+_m+'" data-mode="'+_m+'" data-cid="'+_cid+'">'
-    +'<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:var(--sh)">'
+  const _m=mode, _cid=clientId||'';
+  const html='<div style="max-width:100%" id="daily-wrap-'+_m+'" data-mode="'+_m+'" data-cid="'+_cid+'" data-qmode="day">'
+    +'<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:var(--sh)">'
+    +'<div style="display:flex;gap:4px;padding:3px;background:var(--bg2);border-radius:8px">'
+    +'<button type="button" id="daily-qmode-'+_m+'-day" class="btn btn-sm btn-blue" style="font-size:12px" onclick="setDailyQueryMode(\''+_m+'\',\'day\')">일별</button>'
+    +'<button type="button" id="daily-qmode-'+_m+'-range" class="btn btn-sm btn-gray" style="font-size:12px" onclick="setDailyQueryMode(\''+_m+'\',\'range\')">기간</button>'
+    +'</div>'
+    +'<div id="daily-day-controls-'+_m+'" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
     +'<div style="font-size:12px;font-weight:700;color:var(--text2);margin-right:4px">📅 날짜 선택</div>'
     +'<button id="daily-btn-'+_m+'-yest" data-date="'+ystISO+'" data-mode="'+_m+'" class="btn btn-sm btn-gray" style="font-size:12px" onclick="handleDailyBtn(this)">◀ 작일 ('+ystISO.slice(5)+')</button>'
     +'<button id="daily-btn-'+_m+'-today" data-date="'+todayISO+'" data-mode="'+_m+'" class="btn btn-sm btn-blue" style="font-size:12px" onclick="handleDailyBtn(this)">금일 ('+todayISO.slice(5)+')</button>'
@@ -4327,6 +4485,19 @@ function renderDailyPanel(mode, clientId){
     +'<span style="font-size:11px;color:var(--text2)">날짜:</span>'
     +'<input type="date" class="fi" id="daily-custom-'+_m+'" data-mode="'+_m+'" style="font-size:12px;padding:5px 8px;width:150px" onchange="handleDailySel(this)">'
     +'</div></div>'
+    +'<div id="daily-range-controls-'+_m+'" style="display:none;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<span style="font-size:11px;color:var(--text2)">시작일</span>'
+    +'<input type="date" class="fi" id="daily-range-start-'+_m+'" style="font-size:12px;padding:5px 8px;width:142px">'
+    +'<span style="font-size:12px;color:var(--text3)">~</span>'
+    +'<span style="font-size:11px;color:var(--text2)">종료일</span>'
+    +'<input type="date" class="fi" id="daily-range-end-'+_m+'" style="font-size:12px;padding:5px 8px;width:142px">'
+    +'<button type="button" class="btn btn-sm btn-gray" style="font-size:12px" onclick="handleDailyRangeQuick(\''+_m+'\',\'today\')">오늘</button>'
+    +'<button type="button" class="btn btn-sm btn-gray" style="font-size:12px" onclick="handleDailyRangeQuick(\''+_m+'\',\'7d\')">최근 7일</button>'
+    +'<button type="button" class="btn btn-sm btn-gray" style="font-size:12px" onclick="handleDailyRangeQuick(\''+_m+'\',\'thisMonth\')">이번 달</button>'
+    +'<button type="button" class="btn btn-sm btn-gray" style="font-size:12px" onclick="handleDailyRangeQuick(\''+_m+'\',\'lastMonth\')">지난 달</button>'
+    +'<button type="button" class="btn btn-sm btn-blue" style="font-size:12px" onclick="runDailyRangeQuery(\''+_m+'\')">조회</button>'
+    +'</div></div>'
+    +'<div id="daily-range-msg-'+_m+'" style="display:none;margin:0 0 10px 2px;font-size:12px;font-weight:700;color:#b91c1c"></div>'
     +(_m==='cv'
        ?'<div style="font-size:11px;color:var(--text3);margin:4px 0 10px 2px">데이터가 갑자기 가려지면, 다른 탭을 눌렀다가 다시 <b>일별 명단</b> 탭을 눌러주세요.</div>'
        :'')
@@ -4334,8 +4505,224 @@ function renderDailyPanel(mode, clientId){
     +'</div>';
 
   document.getElementById(wrapperId).innerHTML=html;
-  // DOM 삽입 후 금일 명단 바로 렌더
   setTimeout(()=>selectDailyDate(_m,_cid,todayISO),20);
+}
+
+function setDailyRangeMsg(mode, text){
+  const msg=document.getElementById('daily-range-msg-'+mode);
+  if(!msg) return;
+  if(!text){ msg.style.display='none'; msg.textContent=''; return; }
+  msg.style.display='block';
+  msg.textContent=text;
+}
+function setDailyQueryMode(mode, qmode){
+  const wrap=document.getElementById('daily-wrap-'+mode);
+  if(!wrap) return;
+  _dailyRangeToken++;
+  wrap.dataset.qmode=qmode==='range'?'range':'day';
+  const dayBtn=document.getElementById('daily-qmode-'+mode+'-day');
+  const rangeBtn=document.getElementById('daily-qmode-'+mode+'-range');
+  if(dayBtn) dayBtn.className='btn btn-sm '+(qmode==='range'?'btn-gray':'btn-blue');
+  if(rangeBtn) rangeBtn.className='btn btn-sm '+(qmode==='range'?'btn-blue':'btn-gray');
+  const dayCtl=document.getElementById('daily-day-controls-'+mode);
+  const rangeCtl=document.getElementById('daily-range-controls-'+mode);
+  if(dayCtl) dayCtl.style.display=qmode==='range'?'none':'flex';
+  if(rangeCtl) rangeCtl.style.display=qmode==='range'?'flex':'none';
+  setDailyRangeMsg(mode,'');
+  _dailyScreen=null;
+  const clientId=wrap.dataset.cid||CUR_CLIENT;
+  if(qmode==='range'){
+    const result=document.getElementById('daily-result-'+mode);
+    if(result) result.innerHTML='<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:28px;text-align:center;color:var(--text3);box-shadow:var(--sh)">시작일과 종료일을 선택한 뒤 조회를 눌러주세요.</div>';
+    return;
+  }
+  const inp=document.getElementById('daily-custom-'+mode);
+  const dateStr=(inp&&inp.value)||getKSTDate();
+  selectDailyDate(mode, clientId, dateStr);
+}
+function handleDailyRangeQuick(mode, preset){
+  let start='', end='';
+  if(preset==='today'){ start=end=getKSTDate(); }
+  else if(preset==='7d'){ start=getKSTDate(-6); end=getKSTDate(); }
+  else if(preset==='thisMonth'){ const r=kstMonthBounds(0); start=r.start; end=r.end; }
+  else if(preset==='lastMonth'){ const r=kstMonthBounds(-1); start=r.start; end=r.end; }
+  else return;
+  const s=document.getElementById('daily-range-start-'+mode);
+  const e=document.getElementById('daily-range-end-'+mode);
+  if(s) s.value=start;
+  if(e) e.value=end;
+  const wrap=document.getElementById('daily-wrap-'+mode);
+  if(wrap) wrap.dataset.qmode='range';
+  runDailyRangeQuery(mode);
+}
+async function runDailyRangeQuery(mode){
+  const wrap=document.getElementById('daily-wrap-'+mode);
+  if(!wrap||wrap.dataset.qmode!=='range') return;
+  const startEl=document.getElementById('daily-range-start-'+mode);
+  const endEl=document.getElementById('daily-range-end-'+mode);
+  const start=startEl?startEl.value:'';
+  const end=endEl?endEl.value:'';
+  const result=document.getElementById('daily-result-'+mode);
+  if(!start||!end){
+    setDailyRangeMsg(mode,'시작일과 종료일을 모두 선택해주세요.');
+    _dailyScreen=null;
+    if(result) result.innerHTML='';
+    return;
+  }
+  if(start>end){
+    setDailyRangeMsg(mode,'시작일이 종료일보다 이후입니다. 날짜를 바꾼 뒤 다시 조회해주세요.');
+    _dailyScreen=null;
+    if(result) result.innerHTML='';
+    return;
+  }
+  setDailyRangeMsg(mode,'');
+  const span=dailySpanDays(start, end);
+  const inclusiveDays=span+1;
+  if(inclusiveDays>90){
+    const ok=confirm('조회 기간이 90일을 넘습니다 ('+inclusiveDays+'일, 시작일·종료일 포함).\n읽어 오는 문서가 많아져 Firestore 비용이 커질 수 있습니다.\n계속 조회할까요?');
+    if(!ok) return;
+    if(!wrap.isConnected||wrap.dataset.qmode!=='range') return;
+  }
+  const clientId=wrap.dataset.cid||CUR_CLIENT;
+  if(!clientId){ toast('거래처를 선택해주세요','error'); return; }
+  const token=++_dailyRangeToken;
+  if(result) result.innerHTML='<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:28px;text-align:center;color:var(--text3)">기간 명단을 조회하는 중...</div>';
+  try{
+    try{ await ensureFirebaseReadAuth(); }catch(e){ console.warn('daily range auth', e); }
+    const recs=await fetchRecordsByPurchaseRange(clientId, start, end);
+    if(token!==_dailyRangeToken) return;
+    if(!wrap.isConnected||wrap.dataset.qmode!=='range') return;
+    renderDailyRangeResult(mode, clientId, start, end, recs);
+  }catch(e){
+    if(token!==_dailyRangeToken) return;
+    console.error('daily range query', e);
+    _dailyScreen=null;
+    if(result) result.innerHTML=dailyQueryErrorHtml(e);
+    toast('기간 조회에 실패했습니다','error');
+  }
+}
+function dailyQueryErrorHtml(e){
+  const em=(e&&e.message)?String(e.message):String(e||'');
+  const url=em.match(/https:\/\/console\.firebase\.google\.com\S+/);
+  const indexHint=/index/i.test(em);
+  let html='<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:12px;padding:16px 18px;color:#991b1b;font-size:13px;line-height:1.55">';
+  html+='<div style="font-weight:800;margin-bottom:6px">기간 조회에 실패했습니다</div>';
+  if(indexHint){
+    html+='<div>Firestore 복합 인덱스가 필요합니다. <b>records</b> 컬렉션에 <b>projectId 오름차순 + purchaseDate 오름차순</b> 인덱스를 만든 뒤 다시 조회해주세요.</div>';
+  }
+  if(url) html+='<div style="margin-top:8px"><a href="'+escHtml(url[0])+'" target="_blank" rel="noopener">인덱스 생성 링크 열기</a></div>';
+  html+='<div style="margin-top:8px;font-size:11px;word-break:break-all">'+escHtml(em)+'</div></div>';
+  return html;
+}
+// records에는 clientId가 없다. 거래처 범위는 그 거래처 프로젝트 id(in, 30개씩)로 서버에서 걸고,
+// 날짜는 purchaseDate 문자열 범위로 서버에서 건다. 복합 인덱스: projectId ASC, purchaseDate ASC.
+async function fetchRecordsByPurchaseRange(clientId, startISO, endISO){
+  if(typeof db==='undefined') throw new Error('Firestore에 연결되지 않았습니다');
+  const projIds=_clientProjectIds(clientId);
+  if(!projIds.length) return [];
+  const endBound=endISO+'\uf8ff';
+  const out=[];
+  const seen=new Set();
+  for(let i=0;i<projIds.length;i+=30){
+    const chunk=projIds.slice(i, i+30);
+    const snap=await db.collection('records')
+      .where('projectId','in',chunk)
+      .where('purchaseDate','>=',startISO)
+      .where('purchaseDate','<=',endBound)
+      .get();
+    snap.docs.forEach(dd=>{
+      if(!dd||seen.has(dd.id)) return;
+      const rec={id:dd.id, ...(dd.data()||{})};
+      const dt=purchaseDateToYYYYMMDD(rec.purchaseDate);
+      if(!dt||dt<startISO||dt>endISO) return;
+      seen.add(dd.id);
+      out.push(rec);
+    });
+  }
+  return out;
+}
+function renderDailyRangeResult(mode, clientId, start, end, rawRecs){
+  const d=ld();
+  const projs=d.projects.filter(p=>p.clientId===clientId);
+  const projMap={};projs.forEach(p=>{projMap[p.id]=p;});
+  const stoppedProjIds=new Set(projs.filter(p=>p.status==='진행중단').map(p=>p.id));
+  const stoppedRecs=(rawRecs||[]).filter(r=>stoppedProjIds.has(r.projectId));
+  let dayRecs=(rawRecs||[]).filter(r=>r&&!stoppedProjIds.has(r.projectId));
+  const projOrder=dailyProjOrderMap(projs);
+  dayRecs.sort((a,b)=>{
+    const da=purchaseDateToYYYYMMDD(a.purchaseDate)||'';
+    const dbuy=purchaseDateToYYYYMMDD(b.purchaseDate)||'';
+    if(da!==dbuy) return da<dbuy?-1:1;
+    const pa=projOrder[a.projectId]!==undefined?projOrder[a.projectId]:999;
+    const pb=projOrder[b.projectId]!==undefined?projOrder[b.projectId]:999;
+    if(pa!==pb) return pa-pb;
+    return (Number(a.no)||0)-(Number(b.no)||0);
+  });
+  _dailyScreen={qmode:'range',mode:mode,clientId:clientId||'',dateStr:'',start:start,end:end,recs:dayRecs};
+  const el=document.getElementById('daily-result-'+mode);
+  if(!el) return;
+  let stoppedWarnHtml='';
+  if(stoppedRecs.length){
+    const spSet={};
+    stoppedRecs.forEach(r=>{spSet[r.projectId]=(spSet[r.projectId]||0)+1;});
+    stoppedWarnHtml='<div style="margin-bottom:12px">'
+      +Object.keys(spSet).map(pid=>{
+        const pp=projMap[pid];
+        return '<div style="background:#fef2f2;border:2px solid #fca5a5;border-radius:10px;padding:10px 14px;display:flex;align-items:flex-start;gap:10px;margin-bottom:6px">'
+          +'<span style="font-size:18px;flex-shrink:0">⚠️</span>'
+          +'<div><div style="font-size:12px;font-weight:800;color:#b91c1c">현재 진행중단중인 ['+escHtml(pp?.name||pid)+'] 프로젝트 '+spSet[pid]+'건이 있습니다</div>'
+          +(pp?.statusReason?'<div style="font-size:11px;color:#dc2626;margin-top:2px">사유: '+escHtml(pp.statusReason)+'</div>':'')
+          +'</div></div>';
+      }).join('')+'</div>';
+  }
+  if(!dayRecs.length){
+    el.innerHTML=stoppedWarnHtml+'<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:40px;text-align:center;color:var(--text3);box-shadow:var(--sh)">'
+      +'<div style="font-size:32px;margin-bottom:10px">📭</div>'
+      +'<div style="font-size:14px;font-weight:700">조회된 건이 없습니다</div>'
+      +'<div style="font-size:12px;margin-top:6px">'+escHtml(start)+' ~ '+escHtml(end)+' 구매날짜가 등록된 데이터가 없습니다</div>'
+      +'</div>';
+    return;
+  }
+  const buyDone=dayRecs.filter(r=>r.nickname||r.tracking).length;
+  const rvDone=dayRecs.filter(r=>r.reviewUrl).length;
+  const totalAmt=dailyAmountSum(dayRecs);
+  const dailyCols=[{key:'_buyDay',label:'구매일',align:'left',ed:false}].concat(buildDailyListCols());
+  const fmtVal=(r,key)=>{
+    if(key==='_buyDay'||key==='purchaseDate') return purchaseDateToYYYYMMDD(r.purchaseDate)||(r.purchaseDate?String(r.purchaseDate):'—');
+    if(key==='_proj') return projMap[r.projectId]?.name||'—';
+    if(key==='amount') return r.amount?fmtN(r.amount)+'원':'—';
+    if(key==='reviewUrl'&&r.reviewUrl) return r.reviewUrl;
+    const v=r[key];
+    return v===undefined||v===null||v===''?'—':String(v).trim();
+  };
+  const tbodyRows=dayRecs.map((r,i)=>{
+    const proj=projMap[r.projectId];
+    let cells='<td style="padding:7px 10px;text-align:center;font-size:11px;color:var(--text3);font-weight:700">'+(i+1)+'</td>';
+    dailyCols.forEach(col=>{
+      const val=col.key==='_proj'?(proj?.name||'—'):fmtVal(r,col.key);
+      const displayVal=col.key==='reviewUrl'&&r.reviewUrl?'<a href="'+r.reviewUrl+'" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent)">링크</a>':(col.key==='amount'?val:escHtml(val));
+      const style='padding:7px 10px;text-align:'+col.align+';font-size:11px;max-width:'+(mode==='cv'?'none':'260px')+';white-space:nowrap;overflow:'+(mode==='cv'?'visible':'hidden')+';text-overflow:'+(mode==='cv'?'clip':'ellipsis');
+      cells+='<td class="daily-cell" style="'+style+'" data-record-id="'+escHtml(r.id||'')+'" title="'+escHtml(val)+'">'+displayVal+'</td>';
+    });
+    return '<tr style="border-top:1px solid var(--border);background:'+(i%2===0?'':'var(--bg2)')+'">'+cells+'</tr>';
+  }).join('');
+  el.innerHTML=stoppedWarnHtml+'<div id="daily-table-wrap" style="background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh)" data-mode="'+mode+'" data-cid="'+escHtml(clientId||'')+'" data-qmode="range" data-start="'+escHtml(start)+'" data-end="'+escHtml(end)+'">'
+    +'<div style="padding:14px 18px;background:linear-gradient(90deg,#eff6ff,#f0fdf4);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">'
+    +'<div>'
+    +'<div style="font-size:15px;font-weight:800;color:var(--accent)">'+escHtml(start)+' ~ '+escHtml(end)+' 진행 명단</div>'
+    +'<div style="font-size:11px;color:var(--text2);margin-top:2px">총 '+dayRecs.length+'건 · 총 금액 '+fmtN(totalAmt)+'원 · 구매완료 '+buyDone+'건 · 리뷰완료 '+rvDone+'건</div>'
+    +'</div>'
+    +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<button type="button" class="btn btn-sm btn-blue" onclick="exportDailyListXlsx()">📥 엑셀 다운로드</button>'
+    +'<span style="font-size:11px;padding:4px 10px;background:#dbeafe;color:#1e40af;border-radius:99px;font-weight:700">전체 '+dayRecs.length+'건</span>'
+    +'<span style="font-size:11px;padding:4px 10px;background:#fef3c7;color:#92400e;border-radius:99px;font-weight:700">금액 '+fmtN(totalAmt)+'원</span>'
+    +'</div></div>'
+    +'<div style="overflow-x:auto">'
+    +'<table style="width:100%;border-collapse:collapse;font-size:12px" id="daily-list-tbl">'
+    +'<thead><tr style="background:var(--bg2)">'
+    +'<th style="padding:8px 10px;text-align:center;width:38px">NO</th>'+dailyCols.map(c=>'<th style="padding:8px 10px;text-align:'+c.align+';min-width:'+(c.key==='reviewUrl'?120:75)+'px">'+escHtml(c.label)+'</th>').join('')
+    +'</tr></thead><tbody>'+tbodyRows+'</tbody></table></div></div>';
+  initDailyListKeys(el);
 }
 
 
@@ -4421,6 +4808,7 @@ function selectDailyDate(mode,clientId,dateStr){
 
   const el=document.getElementById(`daily-result-${mode}`);
   if(!el)return;
+  _dailyScreen={qmode:'day',mode:mode,clientId:clientId||'',dateStr:targetDate,start:targetDate,end:targetDate,recs:dayRecs};
 
   // 진행중단 경고
   let stoppedWarnHtml='';
@@ -4450,56 +4838,7 @@ function selectDailyDate(mode,clientId,dateStr){
   const rvDone=dayRecs.filter(r=>r.reviewUrl).length;
   // 로그인 사용자(관리자·일반) 화면(dp)에서는 수정 가능, 업체뷰(cv)는 조회만
   const isAdminEdit=mode!=='cv';
-
-  const dailyColsBase=[
-    {key:'_proj',label:'프로젝트',align:'left',ed:false},
-    {key:'day',label:'일자',align:'left',ed:true},
-    {key:'purchaseDate',label:'구매날짜',align:'left',ed:true},
-    {key:'product',label:'품명',align:'left',ed:true},
-    {key:'option',label:'옵션',align:'left',ed:true},
-    {key:'reviewType',label:'리뷰종류',align:'left',ed:true},
-    {key:'nickname',label:'닉네임',align:'left',ed:true},
-    {key:'receiver',label:'수취인',align:'left',ed:true},
-    {key:'email',label:'아이디',align:'left',ed:true},
-    {key:'address',label:'주소',align:'left',ed:true},
-    {key:'phone',label:'연락처',align:'left',ed:true},
-    {key:'amount',label:'상품금액',align:'right',ed:true},
-    {key:'tracking',label:'송장번호(CJ대한통운)',align:'left',ed:true},
-    {key:'accountNo',label:'계좌번호',align:'left',ed:true},
-    {key:'reviewUrl',label:'리뷰URL',align:'left',ed:true}
-  ];
-  // 데이터 입력 시트에서 추가한 열(EXTRA_COLS)도 일별명단에서 함께 보여주고,
-  // 열 순서는 데이터 입력 시트에서 설정한 순서(colOrder)를 최대한 따름
-  let dailyCols=dailyColsBase.slice();
-  try{
-    const ui=uiColsLd();
-    const extra=(ui && Array.isArray(ui.extraCols))?ui.extraCols:[];
-    const extraForDaily=extra.map(ec=>({
-      key:ec.k,
-      label:ec.lb||ec.k,
-      align:'left',
-      ed:true,
-    }));
-    const colOrder=Array.isArray(ui?.colOrder)?ui.colOrder:[];
-    if(extraForDaily.length || colOrder.length){
-      const projCol=dailyColsBase[0];
-      const others=[...dailyColsBase.slice(1),...extraForDaily];
-      const map={};
-      others.forEach(c=>{map[c.key]=c;});
-      const ordered=[];
-      if(colOrder.length){
-        colOrder.forEach(k=>{
-          if(map[k]){
-            ordered.push(map[k]);
-            delete map[k];
-          }
-        });
-      }
-      // 남은 컬럼들은 기본 순서대로 뒤에 붙이기
-      Object.keys(map).forEach(k=>{ordered.push(map[k]);});
-      dailyCols=[projCol,...ordered];
-    }
-  }catch(e){}
+  const dailyCols=buildDailyListCols();
   const fmtVal=(r,key)=>{
     if(key==='_proj')return projMap[r.projectId]?.name||'—';
     if(key==='amount')return r.amount?fmtN(r.amount)+'원':'—';
@@ -4523,14 +4862,14 @@ function selectDailyDate(mode,clientId,dateStr){
     return `<tr style="border-top:1px solid var(--border);background:${i%2===0?'':'var(--bg2)'}">${cells}</tr>`;
   }).join('');
 
-  el.innerHTML=stoppedWarnHtml+`<div id="daily-table-wrap" style="background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh)" data-mode="${mode}" data-cid="${clientId||''}" data-date="${dateStr}">
+  el.innerHTML=stoppedWarnHtml+`<div id="daily-table-wrap" style="background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh)" data-mode="${mode}" data-cid="${clientId||''}" data-date="${dateStr}" data-qmode="day">
     <div style="padding:14px 18px;background:linear-gradient(90deg,#eff6ff,#f0fdf4);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
       <div>
         <div style="font-size:15px;font-weight:800;color:var(--accent)">${dateStr} 진행 명단</div>
         <div style="font-size:11px;color:var(--text2);margin-top:2px">총 ${dayRecs.length}건 · 구매완료 ${buyDone}건 · 리뷰완료 ${rvDone}건</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <button type="button" class="btn btn-sm btn-blue" onclick="exportDailyListXlsx('${mode}','${dateStr}')">📥 엑셀 추출</button>
+        <button type="button" class="btn btn-sm btn-blue" onclick="exportDailyListXlsx()">📥 엑셀 다운로드</button>
         <span style="font-size:11px;padding:4px 10px;background:#dbeafe;color:#1e40af;border-radius:99px;font-weight:700">전체 ${dayRecs.length}건</span>
         <span style="font-size:11px;padding:4px 10px;background:#dcfce7;color:#065f46;border-radius:99px;font-weight:700">완료 ${rvDone}건</span>
       </div>
@@ -4663,7 +5002,7 @@ function initDailyListKeys(container){
         }
       }
     }
-    if(mode==='cv')return; // 업체뷰: 복사만 허용
+    if(mode==='cv' || (wrap&&wrap.dataset.qmode==='range'))return; // 업체뷰·기간조회: 복사만 허용
     if(e.key==='Delete'||e.key==='Backspace'){
       var cellsToClear=getDailyCellsInRange(tbl,mode,false);
       if(cellsToClear.length>0){
@@ -4716,6 +5055,8 @@ function initDailyListKeys(container){
     }
   });
   tbl.addEventListener('paste',function(e){
+    var wrapRange=document.getElementById('daily-table-wrap');
+    if(wrapRange&&wrapRange.dataset.qmode==='range')return;
     var startCell=e.target.closest('.daily-edit-cell');
     if(!startCell){return;}
     e.preventDefault();
@@ -4802,99 +5143,37 @@ function onDailyCellBlur(td){
   toast('저장됨 (모든 화면에 반영)');
 }
 
-function exportDailyListXlsx(mode,dateStr){
+function exportDailyListXlsx(){
   if(typeof XLSX==='undefined'){toast('XLSX 라이브러리 로딩 중...','error');return;}
+  const screen=_dailyScreen;
+  const dayRecs=screen&&Array.isArray(screen.recs)?screen.recs:[];
+  if(!dayRecs.length){toast('조회된 건이 없습니다','error');return;}
   const d=ld();
-  const cid=CUR_CLIENT||(document.getElementById('daily-table-wrap')&&document.getElementById('daily-table-wrap').dataset.cid)||'';
-  if(!cid){toast('거래처를 선택해주세요','error');return;}
-  const projs=d.projects.filter(p=>p.clientId===cid);
-  const allRecs=d.records.filter(r=>projs.some(p=>p.id===r.projectId));
-  const stoppedProjIds=new Set(projs.filter(p=>p.status==='진행중단').map(p=>p.id));
-  const targetDate=purchaseDateToYYYYMMDD(dateStr)||dateStr;
-  let dayRecs=allRecs.filter(r=>!stoppedProjIds.has(r.projectId)&&(purchaseDateToYYYYMMDD(r.purchaseDate)===targetDate));
-  if(!dayRecs.length){toast('해당 날짜에 명단이 없습니다','error');return;}
-  const projMap={};projs.forEach(p=>{projMap[p.id]=p;});
-  // 화면에 보이는 순서대로 엑셀 추출: 현재 일별 명단 테이블의 tr 순서를 기준으로 재정렬
-  try{
-    const tbl=document.getElementById('daily-list-tbl');
-    if(tbl){
-      const orderedIds=[];
-      tbl.querySelectorAll('tbody tr').forEach(tr=>{
-        const td=tr.querySelector('td[data-record-id]');
-        if(td&&td.dataset.recordId) orderedIds.push(td.dataset.recordId);
-      });
-      if(orderedIds.length){
-        const orderMap={};
-        orderedIds.forEach((id,idx)=>{orderMap[id]=idx;});
-        dayRecs=dayRecs.slice().sort((a,b)=>{
-          const oa=orderMap[a.id]!=null?orderMap[a.id]:999999;
-          const ob=orderMap[b.id]!=null?orderMap[b.id]:999999;
-          return oa-ob;
-        });
-      }
-    }
-  }catch(e){ console.warn('exportDailyListXlsx order fallback:',e); }
-  // 일별 명단 화면과 동일한 컬럼 순서로 헤더/데이터 구성 (추가 열 포함)
-  const dailyColsBase=[
-    {key:'_proj',label:'프로젝트'},
-    {key:'day',label:'일자'},
-    {key:'purchaseDate',label:'구매날짜'},
-    {key:'product',label:'품명'},
-    {key:'option',label:'옵션'},
-    {key:'reviewType',label:'리뷰종류'},
-    {key:'nickname',label:'닉네임'},
-    {key:'receiver',label:'수취인'},
-    {key:'email',label:'아이디'},
-    {key:'address',label:'주소'},
-    {key:'phone',label:'연락처'},
-    {key:'amount',label:'상품금액'},
-    {key:'tracking',label:'송장번호(CJ대한통운)'},
-    {key:'accountNo',label:'계좌번호'},
-    {key:'reviewUrl',label:'리뷰URL'}
-  ];
-  let dailyCols=dailyColsBase.slice();
-  try{
-    const ui=uiColsLd();
-    const extra=(ui && Array.isArray(ui.extraCols))?ui.extraCols:[];
-    const extraForDaily=extra.map(ec=>({key:ec.k,label:ec.lb||ec.k}));
-    const colOrder=Array.isArray(ui?.colOrder)?ui.colOrder:[];
-    if(extraForDaily.length || colOrder.length){
-      const projCol=dailyColsBase[0];
-      const others=[...dailyColsBase.slice(1),...extraForDaily];
-      const map={};
-      others.forEach(c=>{map[c.key]=c;});
-      const ordered=[];
-      if(colOrder.length){
-        colOrder.forEach(k=>{
-          if(map[k]){
-            ordered.push(map[k]);
-            delete map[k];
-          }
-        });
-      }
-      Object.keys(map).forEach(k=>{ordered.push(map[k]);});
-      dailyCols=[projCol,...ordered];
-    }
-  }catch(e){}
-  const headers=['NO',...dailyCols.map(c=>c.label)];
+  const projMap={};
+  (d.projects||[]).forEach(p=>{ if(p&&p.id) projMap[p.id]=p; });
+  const dailyCols=buildDailyListCols();
+  const headers=['NO'];
+  if(screen.qmode==='range') headers.push('구매일');
+  dailyCols.forEach(c=>headers.push(c.label));
   const rows=dayRecs.map((r,i)=>{
     const proj=projMap[r.projectId];
-    const base=[
-      i+1,
-    ];
-    const cols=dailyCols.map(c=>{
+    const base=[i+1];
+    if(screen.qmode==='range') base.push(purchaseDateToYYYYMMDD(r.purchaseDate)||r.purchaseDate||'');
+    dailyCols.forEach(c=>{
       const k=c.key;
-      if(k==='_proj') return proj?.name||'';
-      if(k==='purchaseDate') return purchaseDateToYYYYMMDD(r.purchaseDate)||r.purchaseDate||'';
-      return r[k]||'';
+      if(k==='_proj') base.push(proj?.name||'');
+      else if(k==='purchaseDate') base.push(purchaseDateToYYYYMMDD(r.purchaseDate)||r.purchaseDate||'');
+      else base.push(r[k]||'');
     });
-    return base.concat(cols);
+    return base;
   });
   const wb=XLSX.utils.book_new();
   const ws=XLSX.utils.aoa_to_sheet([headers,...rows]);
-  ws['!cols']=headers.map((_,i)=>({wch:Math.min(30,Math.max(10,(rows[0]&&String(rows[0][i]||'').length)||headers[i].length)+2)}));
+  ws['!cols']=headers.map((h,i)=>({wch:Math.min(30,Math.max(10,(rows[0]&&String(rows[0][i]||'').length)||String(h).length)+2)}));
   XLSX.utils.book_append_sheet(wb,ws,'일별명단');
-  XLSX.writeFile(wb,'일별명단_'+dateStr+'.xlsx');
+  const client=safeDailyFilePart(dailyClientName(screen.clientId));
+  const datePart=screen.qmode==='range'?(screen.start+'~'+screen.end):(screen.dateStr||screen.start||'');
+  XLSX.writeFile(wb,'일별명단_'+client+'_'+datePart+'.xlsx');
   toast('엑셀 다운로드 완료');
 }
 
@@ -17738,27 +18017,120 @@ function moveCol(ci, dir){ // dir: -1(왼) +1(오)
 let COLS=BASE_COLS;
 
 
-// 구매날짜 입력값 자동 정규화
+// 구매날짜 → YYYY-MM-DD. 해석 불가면 원문(문자열은 trim)을 유지한다.
+function isoFromYmd(y, mo, dd){
+  const yy=+y, mm=+mo, day=+dd;
+  if(!yy || mm<1||mm>12||day<1||day>31) return '';
+  const dt=new Date(Date.UTC(yy, mm-1, day));
+  if(dt.getUTCFullYear()!==yy||dt.getUTCMonth()!==mm-1||dt.getUTCDate()!==day) return '';
+  return yy+'-'+String(mm).padStart(2,'0')+'-'+String(day).padStart(2,'0');
+}
+function formatYmdSeoul(d){
+  if(!(d instanceof Date)||isNaN(d.getTime())) return '';
+  try{ return d.toLocaleDateString('sv-SE',{timeZone:'Asia/Seoul'}); }
+  catch(_){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+}
+function isIsoPurchaseDate(v){
+  return typeof v==='string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+}
 function normPurchaseDate(s){
-  if(!s)return s;
+  if(s==null || s==='') return s;
+  if(typeof s==='number' && isFinite(s)){
+    const n=Math.round(s);
+    if(n>=36526 && n<=73050){
+      const d=new Date((n-25569)*86400*1000);
+      const iso=isoFromYmd(d.getUTCFullYear(), d.getUTCMonth()+1, d.getUTCDate());
+      if(iso) return iso;
+    }
+    return s;
+  }
+  if(typeof s==='object'){
+    let d=null;
+    if(s instanceof Date) d=s;
+    else if(typeof s.toDate==='function'){ try{ d=s.toDate(); }catch(e){ d=null; } }
+    else if(typeof s.seconds==='number') d=new Date(s.seconds*1000);
+    if(d){
+      const iso=formatYmdSeoul(d);
+      if(iso) return iso;
+    }
+    return s;
+  }
   const raw=String(s).trim();
-  // 이미 yyyy-mm-dd
-  if(/^\d{4}-\d{2}-\d{2}$/.test(raw))return raw;
-  // yyyy. mm. dd or yyyy.mm.dd
-  let m=raw.match(/^(\d{4})[.\-\/\s](\d{1,2})[.\-\/\s](\d{1,2})\.?$/);
-  if(m)return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
-  // m/d or m.d or m-d (현재 연도)
+  if(!raw) return '';
+  if(/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  let m=raw.match(/^(\d{4})\s*[.\-\/년]\s*(\d{1,2})\s*[.\-\/월]\s*(\d{1,2})\s*일?\s*\.?$/);
+  if(m){
+    const iso=isoFromYmd(m[1], m[2], m[3]);
+    if(iso) return iso;
+  }
+  m=raw.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if(m){
+    const iso=isoFromYmd(m[1], m[2], m[3]);
+    if(iso) return iso;
+  }
   m=raw.match(/^(\d{1,2})[\/\.\-](\d{1,2})\.?$/);
   if(m){
-    const yr=new Date().getFullYear();
-    return `${yr}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+    const iso=isoFromYmd(new Date().getFullYear(), m[1], m[2]);
+    if(iso) return iso;
   }
-  // 숫자만 4자리 mmdd
   m=raw.match(/^(\d{2})(\d{2})$/);
   if(m){
-    return `${new Date().getFullYear()}-${m[1]}-${m[2]}`;
+    const iso=isoFromYmd(new Date().getFullYear(), m[1], m[2]);
+    if(iso) return iso;
   }
-  return raw; // 파싱 안되면 원문
+  return raw;
+}
+function applyRecordPurchaseDate(row){
+  if(!row||typeof row!=='object'||!Object.prototype.hasOwnProperty.call(row,'purchaseDate')) return;
+  const cur=row.purchaseDate;
+  if(cur==null||cur==='') return;
+  const norm=normPurchaseDate(cur);
+  if(norm!==cur) row.purchaseDate=norm;
+}
+function purchaseDateUnparsed(row){
+  if(!row) return false;
+  const v=row.purchaseDate;
+  if(v==null||v==='') return false;
+  return !isIsoPurchaseDate(v);
+}
+function purchaseDateRowLabel(r){
+  const bits=[];
+  if(r&&r.no!=null&&r.no!=='') bits.push('NO '+r.no);
+  const who=(r&&(r.nickname||r.receiver||r.product))||'';
+  if(who) bits.push(String(who));
+  const head=bits.join(' ')||'행';
+  let shown=r?r.purchaseDate:'';
+  if(shown&&typeof shown==='object'){
+    shown=typeof shown.toDate==='function'?'Timestamp':(shown instanceof Date?'Date':'날짜');
+  }
+  return head+' ['+shown+']';
+}
+function warnUnparsedPurchaseDates(rows, prefix){
+  const list=(rows||[]).filter(purchaseDateUnparsed);
+  if(!list.length) return;
+  const labels=list.slice(0,6).map(purchaseDateRowLabel);
+  const more=list.length>6?' 외 '+(list.length-6)+'건':'';
+  const head=prefix?String(prefix)+' ':'';
+  toast(head+'날짜 형식을 확인하지 못한 행 '+list.length+'건: '+labels.join(', ')+more,'warn');
+}
+let _rcUnparsedTimer=null;
+let _rcUnparsedPending=[];
+function queueUnparsedPurchaseDateWarn(rows){
+  _rcUnparsedPending=(rows||[]).filter(purchaseDateUnparsed);
+  if(_rcUnparsedTimer) clearTimeout(_rcUnparsedTimer);
+  if(!_rcUnparsedPending.length) return;
+  _rcUnparsedTimer=setTimeout(function(){
+    _rcUnparsedTimer=null;
+    const list=_rcUnparsedPending;
+    _rcUnparsedPending=[];
+    warnUnparsedPurchaseDates(list);
+  }, 0);
+}
+function consumeUnparsedPurchaseDateWarn(){
+  if(_rcUnparsedTimer){ clearTimeout(_rcUnparsedTimer); _rcUnparsedTimer=null; }
+  const list=_rcUnparsedPending;
+  _rcUnparsedPending=[];
+  return list;
 }
 function clearSheetScope(){
   SHEET_PROJ=null;
@@ -19005,7 +19377,26 @@ async function saveSheet(){
     const el=document.getElementById('sheet-dirty-ind');if(el){el.textContent='✓ 저장됨';el.style.color='var(--green)';}
     try{renderDetDash();}catch(e){}
     try{renderDetProjView();}catch(e){}
-    toast(`${nr.length}건 저장 완료`);
+    const queued=consumeUnparsedPurchaseDateWarn();
+    const byId=new Map();
+    nr.forEach(r=>{ if(r&&r.id) byId.set(r.id, r.purchaseDate); });
+    (SHEET_ROWS||[]).forEach((r,ri)=>{
+      if(!r||!byId.has(r.id)) return;
+      r.purchaseDate=byId.get(r.id);
+      const inp=document.querySelector('#sheet-tbl input[data-ri="'+ri+'"][data-k="purchaseDate"]');
+      if(inp&&document.activeElement!==inp) inp.value=r.purchaseDate==null?'':String(r.purchaseDate);
+    });
+    const seen=new Set();
+    const bad=[];
+    nr.concat(queued).forEach(r=>{
+      if(!purchaseDateUnparsed(r)) return;
+      const key=r.id||purchaseDateRowLabel(r);
+      if(seen.has(key)) return;
+      seen.add(key);
+      bad.push(r);
+    });
+    if(bad.length) warnUnparsedPurchaseDates(bad);
+    else toast(`${nr.length}건 저장 완료`);
   }catch(e){
     console.error(e);
     toast('저장 중 오류가 발생했습니다: '+(e&&e.message?e.message:e),'error');
@@ -19305,7 +19696,7 @@ function previewBulkUpload(input){
           id:           gid(),
           no:           noVal,
           day:          dayVal,
-          purchaseDate: purchaseVal,
+          purchaseDate: normPurchaseDate(purchaseVal),
           product:      cell(4),
           option:       cell(5),
           reviewType:   cell(6),
@@ -19412,6 +19803,7 @@ async function confirmBulkUpload(){
 
   // 프로젝트별 레코드 추가
   let addedProj=0, addedRec=0;
+  const addedRows=[];
   BU_DATA.forEach(group=>{
     let proj=d.projects.find(p=>p.clientId===client.id&&p.name===group.projName);
     if(!proj){
@@ -19428,9 +19820,13 @@ async function confirmBulkUpload(){
     }
     const recs=group.records.map(r=>({...r,projectId:proj.id}));
     d.records.push(...recs);
+    addedRows.push(...recs);
     addedRec+=recs.length;
   });
-  sv('pr',d.projects);sv('rc',d.records);
+  await sv('pr',d.projects);
+  await sv('rc',d.records);
+  consumeUnparsedPurchaseDateWarn();
+  const badDates=addedRows.filter(purchaseDateUnparsed);
 
   BU_DATA=[];
   document.getElementById('bu-preview').style.display='none';
@@ -19441,7 +19837,8 @@ async function confirmBulkUpload(){
 
   closeMd('bulk-upload');
   renderClients();renderOverview();
-  toast(`"${clientName}" — 프로젝트 ${addedProj}개 / 명단 ${addedRec}건 업로드 완료`,'success');
+  if(badDates.length) warnUnparsedPurchaseDates(badDates,'업로드 완료.');
+  else toast(`"${clientName}" — 프로젝트 ${addedProj}개 / 명단 ${addedRec}건 업로드 완료`,'success');
 }
 
 function previewImport(){
@@ -19451,7 +19848,7 @@ function previewImport(){
     const wb=XLSX.read(e.target.result,{type:'binary'});
     const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:'',raw:false});
     IMP_DATA=rows.slice(1).filter(r=>r.some(c=>c!=='')).map((r,i)=>({
-      id:gid(),no:r[0]||i+1,day:r[1]||'',purchaseDate:String(r[2]||''), // raw:false 로 원문 유지
+      id:gid(),no:r[0]||i+1,day:r[1]||'',purchaseDate:normPurchaseDate(String(r[2]||'')),
       product:r[3]||'',nickname:r[4]||'',receiver:r[5]||'',phone:r[6]||'',email:r[7]||'',
       address:r[8]||'',amount:parseInt(r[9])||0,tracking:r[10]||'',reviewType:r[11]||'',reviewUrl:r[12]||'',reviewDate:String(r[13]||''),
     }));
@@ -19464,11 +19861,14 @@ function previewImport(){
   };
   reader.readAsBinaryString(file);
 }
-function confirmImport(){
+async function confirmImport(){
   const d=ld(),pid=document.getElementById('imp-proj').value;
   if(!pid){toast('프로젝트 선택 필요','error');return;}
   const nr=IMP_DATA.map(r=>({...r,projectId:pid,createdAt:new Date().toISOString()}));
-  d.records.push(...nr);sv('rc',d.records);
+  d.records.push(...nr);
+  await sv('rc',d.records);
+  consumeUnparsedPurchaseDateWarn();
+  const badDates=nr.filter(purchaseDateUnparsed);
   IMP_DATA=[];
   document.getElementById('imp-preview').style.display='none';
   document.getElementById('imp-confirm').classList.add('hidden');
@@ -19476,7 +19876,8 @@ function confirmImport(){
   closeMd('import-excel');
   if(SHEET_PROJ===pid)loadSheet(pid);
   renderOverview();renderDetDash();renderDetProjView();
-  toast(`${nr.length}건 가져오기 완료`);
+  if(badDates.length) warnUnparsedPurchaseDates(badDates,'가져오기 완료.');
+  else toast(`${nr.length}건 가져오기 완료`);
 }
 
 // ═══════════════════════════════════════════
@@ -19569,8 +19970,11 @@ function closeMd(n){document.getElementById('modal-'+n).classList.add('hidden');
 document.addEventListener('click',e=>{if(e.target.classList.contains('mo'))e.target.classList.add('hidden');});
 function toast(msg,t='success'){
   const el=document.getElementById('toast');
-  el.textContent=msg;el.style.background=t==='error'?'var(--red)':'var(--green)';
-  el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2600);
+  el.textContent=msg;
+  el.style.background=t==='error'?'var(--red)':t==='warn'?'#b45309':'var(--green)';
+  el.classList.add('show');
+  if(toast._t) clearTimeout(toast._t);
+  toast._t=setTimeout(()=>el.classList.remove('show'), t==='warn'?6000:2600);
 }
 window.addEventListener('load',()=>{
   if(checkRoute()) return;
