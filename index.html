@@ -58,6 +58,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
   .qt-pay-sticky-empty{cursor:pointer;background:#fff7ed;border-color:#fdba74;color:#9a3412;font-weight:800;width:100%;text-align:left;font-family:var(--font);font-size:13px;}
   .qt-pay-warn{margin:0 0 8px;padding:10px 14px;border-radius:10px;background:#fff7ed;border:1px solid #fb923c;color:#9a3412;font-size:13px;font-weight:800;line-height:1.5;}
   .qt-pay-verified{font-size:11px;color:#78716c;font-weight:600;margin:0 0 6px;}
+  .qt-pay-memo{margin:-4px 0 12px;padding:8px 14px;border-radius:10px;background:#f8fafc;border:1px solid var(--border);font-size:12px;line-height:1.45;color:var(--text);}
+  .qt-pay-memo-text{white-space:pre-wrap;word-break:break-word;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;}
+  .qt-pay-memo-text.open{display:block;-webkit-line-clamp:unset;}
+  .qt-pay-memo-more{display:none;margin-top:4px;background:none;border:none;padding:0;color:#0e7490;font-size:11px;font-weight:800;cursor:pointer;font-family:var(--font);}
   .pay-verify-need{display:inline-flex;align-items:center;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:800;background:#ffedd5;color:#b91c1c;border:1px solid #fb923c;white-space:nowrap;}
   .pay-verify-ok{font-size:11px;color:#78716c;font-weight:500;white-space:nowrap;}
   .btn-warn{background:#ea580c;color:#fff;border:1px solid #c2410c;}
@@ -13390,6 +13394,14 @@ function payKstStamp(iso){
   const p=payKstParts(iso);
   return p?p.mm+'/'+p.dd+' '+p.hh+':'+p.mi:'';
 }
+function payKstFull(iso){
+  if(!iso) return '';
+  const d=new Date(iso);
+  if(isNaN(d.getTime())) return '';
+  const k=new Date(d.getTime()+9*3600*1000);
+  const p=n=>String(n).padStart(2,'0');
+  return k.getUTCFullYear()+'-'+p(k.getUTCMonth()+1)+'-'+p(k.getUTCDate())+' '+p(k.getUTCHours())+':'+p(k.getUTCMinutes());
+}
 function payKstMd(iso){
   const p=payKstParts(iso);
   return p?p.mm+'/'+p.dd:'';
@@ -13543,6 +13555,7 @@ function payBlankForm(){
     price:payNormPrice(payPriceValue(null)),
     taxYn:false, fee:false, delivery:false, product:false, memo:'',
     inflowRoute:'', referrerClientId:'', referrerName:'', referrerQuery:'', inflowMemo:'', firstContractDate:'',
+    kmongQty:'', kmongUsed:'', payMemo:'',
   };
 }
 function payFormFromCurrent(clientId, history){
@@ -13563,6 +13576,8 @@ function payFormFromCurrent(clientId, history){
     memo:'',
     inflowRoute:inf.route, referrerClientId:inf.referrerClientId, referrerName:inf.referrerName,
     referrerQuery:refQuery, inflowMemo:inf.memo, firstContractDate:inf.firstContractDate||'',
+    kmongQty:payKmongInput(c,'kmongPrepaidQty'), kmongUsed:payKmongInput(c,'kmongPrepaidUsed'),
+    payMemo:c&&c.payMemo!=null?String(c.payMemo):'',
   };
 }
 function payInflowFromForm(f){
@@ -13628,6 +13643,9 @@ function payReadDetailForm(){
   if(g('ps-route-memo')!=null) f.routeMemo=g('ps-route-memo');
   if(g('ps-mode-memo')!=null) f.modeMemo=g('ps-mode-memo');
   if(g('ps-memo')!=null) f.memo=g('ps-memo');
+  if(g('ps-kmong-qty')!=null) f.kmongQty=g('ps-kmong-qty');
+  if(g('ps-kmong-used')!=null) f.kmongUsed=g('ps-kmong-used');
+  if(g('ps-client-memo')!=null) f.payMemo=g('ps-client-memo');
   if(g('ps-in-memo')!=null) f.inflowMemo=g('ps-in-memo');
   if(g('ps-first-date')!=null) f.firstContractDate=g('ps-first-date');
   if(document.getElementById('ps-tax-yn')){
@@ -14449,6 +14467,82 @@ function payPrevEditorHtml(c){
     +'<button type="button" class="btn btn-xs btn-blue" style="margin-left:4px;vertical-align:middle" onclick="paySavePrevDoneUi()">저장</button>'
     +'<button type="button" class="btn btn-xs btn-gray" style="margin-left:4px;vertical-align:middle" onclick="payCancelPrevEdit()">취소</button>';
 }
+function payIsKmongDeductRouteMode(route, mode){
+  return route==='크몽' && mode==='prepaid';
+}
+function payIsKmongDeduct(c){
+  if(!c) return false;
+  const route=payShownRoute(c);
+  const mode=payShownMode(c);
+  return payIsKmongDeductRouteMode(route.route, mode.mode);
+}
+function payKmongInput(c, key){
+  if(!c||c[key]==null||c[key]==='') return '';
+  const n=Number(c[key]);
+  return Number.isFinite(n)?String(n):'';
+}
+function payKmongParse(raw){
+  const s=String(raw==null?'':raw).trim();
+  if(s==='') return null;
+  const n=Number(s);
+  if(!Number.isFinite(n)||n<0) return null;
+  return n;
+}
+function payKmongState(c){
+  const hasTotal=!!(c&&c.kmongPrepaidQty!=null&&c.kmongPrepaidQty!==''&&Number.isFinite(Number(c.kmongPrepaidQty)));
+  const hasUsed=!!(c&&c.kmongPrepaidUsed!=null&&c.kmongPrepaidUsed!==''&&Number.isFinite(Number(c.kmongPrepaidUsed)));
+  const total=hasTotal?Number(c.kmongPrepaidQty):0;
+  const used=hasUsed?Number(c.kmongPrepaidUsed):0;
+  return {known:hasTotal||hasUsed, total, used, remain:total-used};
+}
+function payKmongDraftPatch(c){
+  const rawQ=String(PAY_ST_FORM&&PAY_ST_FORM.kmongQty==null?'':PAY_ST_FORM.kmongQty).trim();
+  const rawU=String(PAY_ST_FORM&&PAY_ST_FORM.kmongUsed==null?'':PAY_ST_FORM.kmongUsed).trim();
+  if(rawQ===''&&rawU==='') return {error:false, patch:null};
+  const qty=payKmongParse(rawQ);
+  const used=payKmongParse(rawU);
+  if(qty==null||used==null) return {error:true};
+  const same=c&&c.kmongPrepaidQty!=null&&c.kmongPrepaidUsed!=null&&Number(c.kmongPrepaidQty)===qty&&Number(c.kmongPrepaidUsed)===used;
+  return {error:false, patch:same?null:{kmongPrepaidQty:qty, kmongPrepaidUsed:used}};
+}
+function payKmongRemainText(state){
+  if(!state||!state.known) return {text:'잔여 — / 총 —', color:''};
+  if(state.remain<=0) return {text:'잔여 '+fmtN(state.remain)+'건 — 추가 결제 필요', color:'#dc2626'};
+  const text='잔여 '+fmtN(state.remain)+'건 / 총 '+fmtN(state.total)+'건';
+  if(state.remain<=2) return {text, color:'#ea580c'};
+  return {text, color:''};
+}
+function payKmongEditorHtml(f){
+  const qty=f&&f.kmongQty!=null?f.kmongQty:'';
+  const used=f&&f.kmongUsed!=null?f.kmongUsed:'';
+  const preview=payKmongRemainText({
+    known:String(qty).trim()!==''||String(used).trim()!=='',
+    total:payKmongParse(qty)||0,
+    used:payKmongParse(used)||0,
+    remain:(payKmongParse(qty)||0)-(payKmongParse(used)||0),
+  });
+  const previewStyle=preview.color?' style="color:'+preview.color+';font-weight:800"':'';
+  return '<div style="margin-top:10px;padding:10px;border:1px solid #bae6fd;border-radius:10px;background:#f0f9ff">'
+    +'<div style="font-size:12px;font-weight:800;margin-bottom:6px">크몽 선결제 후 차감</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr));gap:8px">'
+    +'<label style="font-size:11px;font-weight:700">선결제 건수<input id="ps-kmong-qty" class="fi" type="number" min="0" step="1" style="margin-top:4px" value="'+escHtml(qty)+'"></label>'
+    +'<label style="font-size:11px;font-weight:700">사용 건수<input id="ps-kmong-used" class="fi" type="number" min="0" step="1" style="margin-top:4px" value="'+escHtml(used)+'"></label>'
+    +'</div>'
+    +'<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;margin-top:8px">'
+    +'<div style="font-size:12px">'+escHtml('크몽 선결제 후 차감')+' · <span'+previewStyle+'>'+escHtml(preview.text)+'</span></div>'
+    +'<button type="button" class="btn btn-xs btn-blue" onclick="saveKmongPrepaidCounts()">건수 저장</button></div></div>';
+}
+function payClientMemoHtml(c, draft){
+  const text=draft!=null?String(draft):(c&&c.payMemo!=null?String(c.payMemo):'');
+  const by=c&&String(c.payMemoBy||'').trim();
+  const at=c&&c.payMemoAt?payKstFull(c.payMemoAt):'';
+  const foot=(by||at)?'<div style="margin-top:6px;font-size:11px;color:var(--text3)">마지막 수정: '+escHtml(by||'—')+' · '+escHtml(at||'—')+'</div>':'';
+  return '<div style="margin-top:12px">'
+    +'<div class="fl">메모</div>'
+    +'<textarea id="ps-client-memo" class="fta" placeholder="이 업체의 결제 현황 메모">'+escHtml(text)+'</textarea>'
+    +'<div style="text-align:right;margin-top:6px"><button type="button" class="btn btn-sm btn-blue" onclick="savePayClientMemo()">저장</button></div>'
+    +foot+'</div>';
+}
 function payKeyNumbersHtml(c, snap){
   const prepaid=!!(snap.mode&&snap.mode.mode==='prepaid');
   if(prepaid){
@@ -14520,10 +14614,14 @@ function renderPayStatusDetail(){
   const taxText=issued.length?issued.join('·'):'미발행';
   const routeText=(snap.route.route||'미입력')+(snap.route.routeMemo?' · '+snap.route.routeMemo:'');
   const modeText=snap.mode.mode?(payModeLabel(snap.mode.mode)+(snap.mode.modeMemo?' · '+snap.mode.modeMemo:'')):'미입력';
+  const kmongInForm=!!(PAY_ST_COND&&payIsKmongDeductRouteMode(f.route, f.mode));
+  const kmongInHead=!kmongInForm&&payIsKmongDeductRouteMode(snap.route&&snap.route.route, snap.mode&&snap.mode.mode);
+  const kmongEditor=(kmongInForm||kmongInHead)?payKmongEditorHtml(f):'';
   const cond=PAY_ST_COND?('<div style="margin-top:10px;padding:12px;border:1px dashed var(--border);border-radius:10px;background:#fff">'
     +'<label style="font-size:11px;font-weight:700">적용일<input id="ps-date" class="fi" type="date" style="margin-top:4px" value="'+escHtml(f.date||'')+'"></label>'
     +'<div class="fl" style="margin-top:10px">결제경로</div>'+payChipRow(false,'route',f.route,[['크몽','크몽'],['계좌이체','계좌이체'],['카드결제','카드결제'],['기타','기타']])+routeMemo
     +'<div class="fl" style="margin-top:10px">결제방식</div>'+payChipRow(false,'mode',f.mode,[['perItem','건별결제'],['prepaid','선결제 후 차감'],['etc','기타']])+modeMemo
+    +(kmongInForm?kmongEditor:'')
     +'<div class="fl" style="margin-top:10px">단가표</div>'+payPriceFields('ps', f.price)
     +'<div class="fl" style="margin-top:10px">계산서</div>'+payTaxFields('ps', f)
     +'<label style="display:block;margin-top:10px;font-size:11px;font-weight:700">메모<textarea id="ps-memo" class="fta" style="margin-top:4px" placeholder="이번 변경 메모">'+escHtml(f.memo||'')+'</textarea></label>'
@@ -14553,6 +14651,8 @@ function renderPayStatusDetail(){
     +'<button type="button" class="btn btn-sm btn-gray" style="flex:none" onclick="payToggleCond()">'+(PAY_ST_COND?'조건 닫기':'조건 변경')+'</button></div>'
     +cond
     +payKeyNumbersHtml(c, snap)
+    +(kmongInHead?kmongEditor:'')
+    +payClientMemoHtml(c, f.payMemo)
     +'<div style="margin-top:10px"><div style="font-size:11px;font-weight:800;color:var(--text3);margin-bottom:4px">현재 단가</div>'+payPriceTableHtml(snap.price)+'</div>'
     +'</div></div><div class="pay-tabs">'+payTabBtn('records','결제 기록')+payTabBtn('projects','프로젝트')+payTabBtn('history','변경 이력')+payTabBtn('inflow','유입')+'</div></div>'
     +'<div id="paystatus-scroll" style="padding-top:10px">'+panel+'</div>';
@@ -15246,6 +15346,49 @@ function inflowToggle(key, depth){
   const host=document.getElementById('inflow-tree');
   if(host) host.innerHTML=tree.roots.map(n=>inflowTreeNode(n,0)).join('');
 }
+async function saveKmongPrepaidCounts(){
+  if(PAY_ST_BUSY) return;
+  payReadDetailForm();
+  const c=payClient(PAY_ST_ID);
+  if(!c||!PAY_ST_FORM) return;
+  if(!document.getElementById('ps-kmong-qty')) return;
+  const rawQ=String(PAY_ST_FORM.kmongQty==null?'':PAY_ST_FORM.kmongQty).trim();
+  const rawU=String(PAY_ST_FORM.kmongUsed==null?'':PAY_ST_FORM.kmongUsed).trim();
+  if(rawQ===''||rawU===''){ toast('선결제 건수와 사용 건수를 0 이상의 숫자로 입력하세요','error'); return; }
+  const parsed=payKmongDraftPatch(c);
+  if(parsed.error){ toast('선결제 건수와 사용 건수를 0 이상의 숫자로 입력하세요','error'); return; }
+  if(!parsed.patch){ toast('변경사항이 없습니다','error'); return; }
+  PAY_ST_BUSY=true;
+  try{
+    await sv('cl', [Object.assign({}, c, parsed.patch)]);
+    payRefreshScreens();
+    if(CUR_CLIENT===c.id) refreshQuotePaySticky();
+    toast('선결제 건수를 저장했습니다');
+  }catch(e){
+    console.error(e);
+    toast('저장에 실패했습니다','error');
+  }finally{ PAY_ST_BUSY=false; }
+}
+async function savePayClientMemo(){
+  if(PAY_ST_BUSY) return;
+  payReadDetailForm();
+  const c=payClient(PAY_ST_ID);
+  if(!c||!PAY_ST_FORM) return;
+  const text=PAY_ST_FORM.payMemo==null?'':String(PAY_ST_FORM.payMemo);
+  const prev=c.payMemo==null?'':String(c.payMemo);
+  if(text===prev){ toast('변경사항이 없습니다','error'); return; }
+  const iso=new Date().toISOString();
+  PAY_ST_BUSY=true;
+  try{
+    await sv('cl', [Object.assign({}, c, {payMemo:text, payMemoBy:payWho()||'', payMemoAt:iso})]);
+    payRefreshScreens();
+    if(CUR_CLIENT===c.id) refreshQuotePaySticky();
+    toast('메모를 저장했습니다');
+  }catch(e){
+    console.error(e);
+    toast('저장에 실패했습니다','error');
+  }finally{ PAY_ST_BUSY=false; }
+}
 async function savePayStatusUpdate(){
   if(PAY_ST_BUSY) return;
   payReadDetailForm();
@@ -15255,7 +15398,13 @@ async function savePayStatusUpdate(){
   const cur=payCurrentSnapshot(c, PAY_ST_HIST);
   const next=payFormSnapshot(PAY_ST_FORM);
   const types=payChangedTypes(cur, next);
-  if(!types.length){ toast('변경사항이 없습니다','error'); return; }
+  let kmongPatch=null;
+  if(payIsKmongDeductRouteMode(PAY_ST_FORM.route, PAY_ST_FORM.mode)&&document.getElementById('ps-kmong-qty')){
+    const parsed=payKmongDraftPatch(c);
+    if(parsed.error){ toast('선결제 건수와 사용 건수를 0 이상의 숫자로 입력하세요','error'); return; }
+    kmongPatch=parsed.patch;
+  }
+  if(!types.length&&!kmongPatch){ toast('변경사항이 없습니다','error'); return; }
   if(cur.mode&&cur.mode.mode==='prepaid'&&next.mode.mode==='perItem'){
     const rem=payRemainingCount(c, PAY_ST_RECS);
     if(rem>0&&!confirm('잔여 '+rem+'건이 남아 있습니다. 이월/정산 여부를 메모에 남겨주세요')) return;
@@ -15267,15 +15416,18 @@ async function savePayStatusUpdate(){
     value:next[type], memo,
   }, payAuditStamp(iso)));
   const hist=PAY_ST_HIST.concat(docs);
+  const base=kmongPatch?Object.assign({}, c, kmongPatch):c;
   PAY_ST_BUSY=true;
   try{
-    await payCommitClient(c, hist, docs.map(doc=>({key:'payh', id:doc.id, data:doc})));
+    if(types.length) await payCommitClient(base, hist, docs.map(doc=>({key:'payh', id:doc.id, data:doc})));
+    else await sv('cl', [base]);
     PAY_ST_EDIT='';
     PAY_EDIT=null;
     PAY_ST_FORM=payFormFromCurrent(c.id, PAY_ST_HIST);
     renderPayStatusDetail();
     renderPayStatus();
     payRefreshDash();
+    if(CUR_CLIENT===c.id) refreshQuotePaySticky();
     toast('저장했습니다');
   }catch(e){
     console.error(e);
@@ -15763,6 +15915,7 @@ let QT_ITEMS={}; // 임시 항목 상태 {qtId:[{type,label,qty,unitPrice,memo}]
 let QT_EDIT_ID=null; // 편집 중인 견적서 id
 let QT_FORM_OPEN=false; // 견적서 작성/수정 폼 열림 여부 (다른 사용자 변경으로 인한 리렌더 차단용)
 
+let QT_PAY_MEMO_OPEN_ID='';
 function quotePayVerifyHtml(c){
   if(!c) return '';
   if(!payIsVerified(c)){
@@ -15776,6 +15929,51 @@ function quotePayVerifyHtml(c){
   const who=c.verifiedBy||'—';
   return '<div class="qt-pay-verified">✓ 마지막 확인 '+(when?escHtml(when)+' ':'')+escHtml(who)+'</div>';
 }
+function quotePayRemainHtml(c){
+  if(!payIsKmongDeduct(c)) return '';
+  const state=payKmongState(c);
+  const view=payKmongRemainText(state);
+  const status=view.color?'<b style="color:'+view.color+'">'+escHtml(view.text)+'</b>':'<b>'+escHtml(view.text)+'</b>';
+  return '<div style="margin-top:2px">크몽 선결제 후 차감 <span style="color:var(--text3);margin:0 6px">·</span>'+status+'</div>';
+}
+function quotePayMemoHtml(c){
+  const text=c&&c.payMemo!=null?String(c.payMemo):'';
+  if(!text.trim()) return '';
+  const open=!!(c&&QT_PAY_MEMO_OPEN_ID&&QT_PAY_MEMO_OPEN_ID===c.id);
+  return '<div class="qt-pay-memo"><div class="qt-pay-memo-text'+(open?' open':'')+'">'+escHtml(text)+'</div><button type="button" class="qt-pay-memo-more" onclick="toggleQuotePayMemo()">'+(open?'접기':'더보기')+'</button></div>';
+}
+function quotePayMemoOverflows(el){
+  if(!el) return false;
+  if(el.clientHeight>0){
+    el.classList.add('open');
+    const full=el.scrollHeight;
+    el.classList.remove('open');
+    return full>el.clientHeight+1;
+  }
+  const probe=document.createElement('div');
+  probe.style.cssText='position:absolute;left:-9999px;top:0;visibility:hidden;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.45;width:860px;';
+  probe.textContent=el.textContent||'';
+  document.body.appendChild(probe);
+  const line=parseFloat(getComputedStyle(probe).lineHeight)||18;
+  const over=probe.scrollHeight>line*2+1;
+  probe.remove();
+  return over;
+}
+function quotePayMemoApply(){
+  const text=document.querySelector('#qt-pay-block .qt-pay-memo-text');
+  const btn=document.querySelector('#qt-pay-block .qt-pay-memo-more');
+  if(!text||!btn) return;
+  const open=!!(QT_PAY_MEMO_OPEN_ID&&QT_PAY_MEMO_OPEN_ID===CUR_CLIENT);
+  text.classList.toggle('open', open);
+  btn.textContent=open?'접기':'더보기';
+  if(open){ btn.style.display=''; return; }
+  btn.style.display=quotePayMemoOverflows(text)?'':'none';
+}
+function toggleQuotePayMemo(){
+  const id=CUR_CLIENT||'';
+  QT_PAY_MEMO_OPEN_ID=QT_PAY_MEMO_OPEN_ID===id?'':id;
+  quotePayMemoApply();
+}
 function quotePayStickyBar(c){
   const route=c?payShownRoute(c):{route:'',routeMemo:''};
   const mode=c?payShownMode(c):{mode:'',modeMemo:''};
@@ -15786,16 +15984,17 @@ function quotePayStickyBar(c){
   }
   const routeLabel=hasRoute?escHtml(route.route)+(route.route==='기타'&&route.routeMemo?' · '+escHtml(route.routeMemo):''):'—';
   const modeLabel=hasMode?escHtml(payModeLabel(mode.mode))+(mode.mode==='etc'&&mode.modeMemo?' · '+escHtml(mode.modeMemo):''):'—';
-  return '<div class="qt-pay-sticky"><div style="font-size:12px;line-height:1.5"><span style="font-size:10px;font-weight:800;color:#0e7490;margin-right:8px">현재 결제</span>경로 <b>'+routeLabel+'</b><span style="color:var(--text3);margin:0 8px">·</span>방식 <b>'+modeLabel+'</b></div><button type="button" class="btn btn-xs btn-gray" onclick="openQuotePayStatus()">결제 현황</button></div>';
+  return '<div class="qt-pay-sticky"><div style="font-size:12px;line-height:1.5"><span style="font-size:10px;font-weight:800;color:#0e7490;margin-right:8px">현재 결제</span>경로 <b>'+routeLabel+'</b><span style="color:var(--text3);margin:0 8px">·</span>방식 <b>'+modeLabel+'</b>'+quotePayRemainHtml(c)+'</div><button type="button" class="btn btn-xs btn-gray" onclick="openQuotePayStatus()">결제 현황</button></div>';
 }
 function quoteCurrentPayHtml(c){
-  return '<div id="qt-pay-block" class="qt-pay-block">'+quotePayVerifyHtml(c)+quotePayStickyBar(c)+'</div>';
+  return '<div id="qt-pay-block" class="qt-pay-block">'+quotePayVerifyHtml(c)+quotePayStickyBar(c)+quotePayMemoHtml(c)+'</div>';
 }
 function refreshQuotePaySticky(){
   const el=document.getElementById('qt-pay-block');
   if(!el) return;
   const c=(ld().clients||[]).find(x=>x.id===CUR_CLIENT);
   el.outerHTML=quoteCurrentPayHtml(c);
+  quotePayMemoApply();
 }
 function openQuotePayStatus(){
   const id=CUR_CLIENT;
@@ -15970,6 +16169,8 @@ function renderDetQuote(){
 
   html+=`</div></div>`;
   document.getElementById('dp-quote-inner').innerHTML=html;
+  quotePayMemoApply();
+  requestAnimationFrame(quotePayMemoApply);
 }
 
 // ── 견적서 항목 관리 ──
