@@ -10302,25 +10302,36 @@ async function exportSettleExcel(){
       alert('정산 데이터를 불러오는 중입니다. 잠시 후 다시 시도하세요');
       return;
     }
-    const scope=settleExcelScopeValue();
-    const useFilter=scope!=='all';
-    const filter=readSettleAllFilter();
-    let rows=settleAllSourceRows();
-    if(useFilter) rows=rows.filter(s=>rowPassesSettleAllFilter(s, filter));
-    else rows=rows.slice();
-    rows.sort(compareSettleAllRows);
+    const clientId=settleExportClientId();
+    let rows;
+    let useCarry;
+    let fileName;
+    if(clientId){
+      rows=clientSettleViewRows(clientId);
+      useCarry=false;
+      fileName='거래처정산_'+safeDailyFilePart(dailyClientName(clientId))+'_'+getKSTDate()+'.xlsx';
+    }else{
+      const scope=settleExcelScopeValue();
+      const useFilter=scope!=='all';
+      const filter=readSettleAllFilter();
+      rows=settleAllSourceRows();
+      if(useFilter) rows=rows.filter(s=>rowPassesSettleAllFilter(s, filter));
+      else rows=rows.slice();
+      rows.sort(compareSettleAllRows);
+      useCarry=useFilter;
+      const day=String(getKSTDate()||'').replace(/-/g,'');
+      const narrowed=useFilter && settleAllFilterActive(filter);
+      fileName='웨이프로젝트_거래처정산_'+day+(narrowed?'_필터적용':'')+'.xlsx';
+    }
     if(!rows.length){
       alert('추출할 데이터가 없습니다');
       return;
     }
     const summary=settleSummarySheetRows(rows);
-    const detail=settleDetailSheetRows(rows, useFilter);
+    const detail=settleDetailSheetRows(rows, useCarry);
     const wb=new ExcelJS.Workbook();
     settleExcelSheet(wb, '정산요약', summary, [2,3,5], settleExcelRedRows(summary,'summary'));
     settleExcelSheet(wb, '견적내역', detail, [5,11], settleExcelRedRows(detail,'detail'));
-    const day=String(getKSTDate()||'').replace(/-/g,'');
-    const narrowed=useFilter && settleAllFilterActive(filter);
-    const fileName='웨이프로젝트_거래처정산_'+day+(narrowed?'_필터적용':'')+'.xlsx';
     settleExcelDownload(await wb.xlsx.writeBuffer(), fileName);
     toast('엑셀 다운로드 완료');
   }catch(e){
@@ -11412,16 +11423,28 @@ function renderProdStat(){
 // ════════════════════════════════════════════
 // 거래처 정산 탭 (수정 6)
 // ════════════════════════════════════════════
+function clientSettleViewRows(clientId){
+  const quoteOrder={};
+  (ld().quotes||[]).forEach(q=>{ quoteOrder[q.id]=q.order!=null?q.order:9999; });
+  return listSettleRowsForView(clientId).sort((a,b)=>{
+    const oa=quoteOrder[a.qtId]!=null?quoteOrder[a.qtId]:9999;
+    const ob=quoteOrder[b.qtId]!=null?quoteOrder[b.qtId]:9999;
+    if(oa!==ob) return oa-ob;
+    return (b.date||'').localeCompare(a.date||'');
+  });
+}
+function settleExportClientId(){
+  const page=document.getElementById('page-clients');
+  const detail=document.getElementById('cl-detail');
+  const panel=document.getElementById('dp-settle');
+  if(!page||!page.classList.contains('active')) return '';
+  if(!detail||detail.classList.contains('hidden')) return '';
+  if(!panel||!panel.classList.contains('active')) return '';
+  return CUR_CLIENT||'';
+}
 function renderDetSettle(){
   const d=ld(),c=d.clients.find(x=>x.id===CUR_CLIENT);if(!c)return;
-  const quoteOrder={};
-  (d.quotes||[]).forEach(q=>{ quoteOrder[q.id]=q.order!=null?q.order:9999; });
-  const settles=listSettleRowsForView(CUR_CLIENT)
-    .sort((a,b)=>{
-      const oa=quoteOrder[a.qtId]!=null?quoteOrder[a.qtId]:9999, ob=quoteOrder[b.qtId]!=null?quoteOrder[b.qtId]:9999;
-      if(oa!==ob)return oa-ob;
-      return (b.date||'').localeCompare(a.date||'');
-    });
+  const settles=clientSettleViewRows(CUR_CLIENT);
 
   const totalAmt=settles.reduce((s,x)=>s+x.total,0);
   const settledAmt=settles.filter(x=>x.settled).reduce((s,x)=>s+x.total,0);
@@ -11436,10 +11459,6 @@ function renderDetSettle(){
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
       <button class="btn btn-sm btn-green" id="det-settle-bulk-btn" onclick="bulkMarkSettleDone()" disabled>선택 항목 일괄 정산완료</button>
       <span style="margin-left:auto;display:inline-flex;align-items:center;gap:6px">
-        <select data-settle-excel-scope title="엑셀에 넣을 범위" style="background:var(--bg2);border:1px solid var(--border);padding:5px 8px;border-radius:6px;font-size:12px;font-family:var(--font)">
-          <option value="filtered">현재 필터 결과</option>
-          <option value="all">전체</option>
-        </select>
         <button type="button" class="btn btn-green btn-sm" onclick="exportSettleExcel()">📥 엑셀 다운로드</button>
       </span>
     </div>
