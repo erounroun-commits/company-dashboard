@@ -62,6 +62,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
   .qt-pay-memo-text{white-space:pre-wrap;word-break:break-word;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;}
   .qt-pay-memo-text.open{display:block;-webkit-line-clamp:unset;}
   .qt-pay-memo-more{display:none;margin-top:4px;background:none;border:none;padding:0;color:#0e7490;font-size:11px;font-weight:800;cursor:pointer;font-family:var(--font);}
+  .qt-type-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:0 0 14px;}
+  .qt-type-chips{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;}
+  .qt-type-label{font-size:11px;font-weight:800;color:var(--text2);}
+  .qt-type-count{font-size:12px;font-weight:700;color:var(--text);margin-left:2px;}
+  .qt-type-chip{border-radius:99px;}
+  .btn.btn-blue.qt-type-chip{border:1px solid var(--accent2);}
   .pay-verify-need{display:inline-flex;align-items:center;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:800;background:#ffedd5;color:#b91c1c;border:1px solid #fb923c;white-space:nowrap;}
   .pay-verify-ok{font-size:11px;color:#78716c;font-weight:500;white-space:nowrap;}
   .btn-warn{background:#ea580c;color:#fff;border:1px solid #c2410c;}
@@ -16169,6 +16175,8 @@ function showProjDetailModal(projId){
 let QT_ITEMS={}; // 임시 항목 상태 {qtId:[{type,label,qty,unitPrice,memo}]}
 let QT_EDIT_ID=null; // 편집 중인 견적서 id
 let QT_FORM_OPEN=false; // 견적서 작성/수정 폼 열림 여부 (다른 사용자 변경으로 인한 리렌더 차단용)
+let QT_QUOTE_TYPE_FILTER='all';
+let QT_QUOTE_TYPE_FILTER_CLIENT='';
 
 let QT_PAY_MEMO_OPEN_ID='';
 function quotePayVerifyHtml(c){
@@ -16256,6 +16264,322 @@ function openQuotePayStatus(){
   showPage('paystatus');
   if(id) openPayStatusDetail(id);
 }
+// 견적 항목 유형 — 저장 필드 calc만 읽고, 문서는 수정하지 않는다.
+// fee1/fee2=진행비, delivery=택배대행비, product=상품금액, custom=직접추가(작성 화면의 '직접 입력')
+// calc가 비어 있을 때만 품명이 작성 화면 유형 라벨과 같은지 보고, 아니면 직접추가로 본다.
+const QT_TYPE_FILTERS=[
+  {key:'all', label:'전체'},
+  {key:'fee', label:'진행비'},
+  {key:'delivery', label:'택배대행비'},
+  {key:'product', label:'상품금액'},
+  {key:'custom', label:'직접추가'},
+];
+function quoteItemTypeKey(it){
+  const calc=it&&it.calc!=null?String(it.calc).trim():'';
+  if(calc==='fee1'||calc==='fee2') return 'fee';
+  if(calc==='delivery') return 'delivery';
+  if(calc==='product') return 'product';
+  if(calc==='custom') return 'custom';
+  const label=it&&it.label!=null?String(it.label).trim():'';
+  if(label.startsWith('진행비')) return 'fee';
+  if(label==='택배대행비'||label.startsWith('택배대행비')) return 'delivery';
+  if(label==='상품금액'||label.startsWith('상품금액')) return 'product';
+  return 'custom';
+}
+function quoteItemTypeLabel(key){
+  const f=QT_TYPE_FILTERS.find(x=>x.key===key);
+  return f?f.label:'직접추가';
+}
+function quoteMatchesTypeFilter(q, key){
+  if(!key||key==='all') return true;
+  return orderedQuoteItems((q&&q.items)||[]).some(it=>quoteItemTypeKey(it)===key);
+}
+function clientQuotesSorted(d, clientId){
+  return ((d&&d.quotes)||[]).filter(q=>q&&q.clientId===clientId).sort((a,b)=>{
+    const oa=a.order!=null?a.order:9999, ob=b.order!=null?b.order:9999;
+    if(oa!==ob) return oa-ob;
+    return String(b.date||'').localeCompare(String(a.date||''));
+  });
+}
+function quoteTypeFilterBarHtml(count){
+  const cur=QT_QUOTE_TYPE_FILTER||'all';
+  const chips=QT_TYPE_FILTERS.map(f=>{
+    const on=f.key===cur;
+    return '<button type="button" class="btn btn-sm qt-type-chip '+(on?'btn-blue':'btn-gray')+'" onclick="setQuoteTypeFilter(\''+f.key+'\')">'+f.label+'</button>';
+  }).join('');
+  return '<div id="qt-type-bar" class="qt-type-bar"><div class="qt-type-chips"><span class="qt-type-label">유형</span>'+chips+'<span class="qt-type-count">'+count+'건</span></div><button type="button" class="btn btn-green btn-sm" onclick="downloadFilteredQuotesExcel()">엑셀 다운로드</button></div>';
+}
+function quoteListInnerHtml(allQuotes, myQuotes, c){
+  if(!allQuotes.length){
+    return `<div style="text-align:center;padding:40px;color:var(--text3)">📄 작성된 견적서가 없습니다<br><button class="btn btn-blue btn-sm" style="margin-top:12px" onclick="openNewQuoteForm()">견적서 작성하기</button></div>`;
+  }
+  if(!myQuotes.length){
+    return `<div style="text-align:center;padding:40px;color:var(--text3)">선택한 유형이 포함된 견적서가 없습니다</div>`;
+  }
+  const canSort=(QT_QUOTE_TYPE_FILTER||'all')==='all';
+  let html=canSort?`<div style="font-size:10px;color:var(--text3);margin-bottom:8px">⋮⋮ 드래그하여 순서 변경</div>`:'';
+  myQuotes.forEach(q=>{
+    const settled=q.settled||false;
+    const collapsed=qtUiCollapsed(q,'quote');
+    html+=`<div class="qt-card-dragover-target" data-quote-id="${q.id}" style="background:var(--card);border:1px solid ${settled?'#86efac':'var(--border)'};border-radius:12px;margin-bottom:10px;overflow:hidden;box-shadow:var(--sh)" ondragover="event.preventDefault();this.classList.add('qt-card-dragover')" ondragleave="this.classList.remove('qt-card-dragover')" ondrop="qtDrop(event)">
+        <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;background:${settled?'#f0fdf4':'var(--bg2)'}" onclick="toggleQt('${q.id}')">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span class="qt-drag-handle" ${canSort?'draggable="true"':''} data-quote-id="${q.id}" onclick="event.stopPropagation()" ondragstart="qtDragStart(event)" title="${canSort?'드래그하여 순서 변경':'순서 변경은 유형이 전체일 때 가능합니다'}">⋮⋮</span>
+            <span style="font-size:11px;font-family:monospace;color:var(--text3)">${q.date}</span>
+            <span style="font-size:13px;font-weight:700">${q.toName||c.name} 견적서</span>
+            <span style="font-size:10px;color:var(--text3)">#${q.no||'-'}</span>
+            ${settled?'<span class="badge bg">✅ 정산완료</span>':'<span class="badge by">대기중</span>'}
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <span style="font-size:12px;font-weight:700;color:${settled?'var(--green)':'var(--accent)'}">${fmtN(calcQtTotal(q))}원</span>
+            <button class="btn btn-xs btn-gray" onclick="event.stopPropagation();openEditQuoteForm('${q.id}')">수정</button>
+            <button class="btn btn-xs btn-blue" onclick="event.stopPropagation();openDuplicateQuoteForm('${q.id}')">복제</button>
+            ${!settled?`<button class="btn btn-xs btn-green" onclick="event.stopPropagation();markQtSettled('${q.id}')">정산완료</button>`:''}
+            <button class="btn btn-xs btn-red" onclick="event.stopPropagation();delQt('${q.id}')">삭제</button>
+            <span style="font-size:12px;color:var(--text3)">${collapsed?'▼':'▲'}</span>
+          </div>
+        </div>
+        <div id="qt-body-${q.id}" style="${collapsed?'display:none':''}">
+          <div style="padding:18px">
+            ${buildQtDoc(q)}
+          </div>
+        </div>
+      </div>`;
+  });
+  return html;
+}
+function refreshQuoteTypeFilterDom(){
+  const d=ld();
+  const c=(d.clients||[]).find(x=>x.id===CUR_CLIENT);
+  if(!c) return;
+  const allQuotes=clientQuotesSorted(d, CUR_CLIENT);
+  const myQuotes=allQuotes.filter(q=>quoteMatchesTypeFilter(q, QT_QUOTE_TYPE_FILTER));
+  const bar=document.getElementById('qt-type-bar');
+  if(bar) bar.outerHTML=quoteTypeFilterBarHtml(myQuotes.length);
+  const list=document.getElementById('qt-list');
+  if(list) list.innerHTML=quoteListInnerHtml(allQuotes, myQuotes, c);
+}
+function setQuoteTypeFilter(key){
+  if(!QT_TYPE_FILTERS.some(f=>f.key===key)) key='all';
+  QT_QUOTE_TYPE_FILTER=key;
+  QT_QUOTE_TYPE_FILTER_CLIENT=CUR_CLIENT||'';
+  if(QT_FORM_OPEN){
+    refreshQuoteTypeFilterDom();
+    return;
+  }
+  renderDetQuote();
+}
+function quotePayExcelText(c){
+  const route=c?payShownRoute(c):{route:'',routeMemo:''};
+  const mode=c?payShownMode(c):{mode:'',modeMemo:''};
+  const hasRoute=!!(route.route&&String(route.route).trim());
+  const hasMode=!!(mode.mode&&String(mode.mode).trim());
+  if(!hasRoute && !hasMode) return '결제 방식 미등록';
+  const routeLabel=hasRoute?String(route.route)+(route.route==='기타'&&route.routeMemo?' · '+route.routeMemo:''):'—';
+  const modeLabel=hasMode?payModeLabel(mode.mode)+(mode.mode==='etc'&&mode.modeMemo?' · '+mode.modeMemo:''):'—';
+  return '경로 '+routeLabel+' · 방식 '+modeLabel;
+}
+function quoteExportStamp(){
+  const d=new Date(Date.now()+9*3600*1000);
+  const p=n=>String(n).padStart(2,'0');
+  return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate())+' '+p(d.getUTCHours())+':'+p(d.getUTCMinutes());
+}
+function quoteFilterSheetRows(quotes, c){
+  const header=['견적일','견적서명','번호','상태','유형','품명','수량','단가','공급가액','수수료','부가세','금액','견적합계'];
+  const rows=[];
+  const push=(q, settled, kind, values)=>{
+    const quoteStart=!rows.length||rows[rows.length-1].qid!==q.id;
+    const next=values.slice();
+    if(!quoteStart){
+      next[0]=''; next[1]=''; next[2]=''; next[3]=''; next[12]='';
+    }
+    rows.push({qid:q.id, settled:!!settled, kind, quoteStart, values:next});
+  };
+  quotes.forEach(q=>{
+    const taxYn=!!q.taxYn;
+    const qti=q.taxItems||{};
+    const quoteTotal=calcQtTotal(q)||0;
+    const head=[q.date||'', (q.toName||c.name||'')+' 견적서', '#'+(q.no||'-'), q.settled?'정산완료':'대기중'];
+    const groups=groupQuoteItems(orderedQuoteItems(q.items||[]));
+    if(!groups.length){
+      push(q, q.settled, 'empty', head.concat(['','','','','','','','', quoteTotal]));
+      return;
+    }
+    groups.forEach(g=>{
+      const lines=g.items.map(it=>({it, amt:qtDocLine(it, taxYn, qti)}));
+      lines.forEach((line,i)=>{
+        const it=line.it, amt=line.amt;
+        const name=g.kind==='product'
+          ? (i===0 ? (g.key||it.label||'상품') : '')
+          : (it.label||'');
+        push(q, q.settled, 'line', head.concat([
+          quoteItemTypeLabel(quoteItemTypeKey(it)),
+          name,
+          Number(it.qty)||1,
+          Number(it.unitPrice)||0,
+          amt.supply,
+          amt.commission?amt.commission:null,
+          amt.applyTax?amt.vat:null,
+          amt.total,
+          quoteTotal
+        ]));
+      });
+      if(quoteGroupShowsSubtotal(g)){
+        const sub=lines.reduce((s,l)=>({
+          supply:s.supply+l.amt.supply, commission:s.commission+l.amt.commission, vat:s.vat+l.amt.vat, total:s.total+l.amt.total
+        }),{supply:0,commission:0,vat:0,total:0});
+        push(q, q.settled, 'subtotal', head.concat([
+          '',
+          (g.key||'상품')+' 소계',
+          '', '',
+          sub.supply,
+          taxYn?sub.commission:null,
+          taxYn?sub.vat:null,
+          sub.total,
+          quoteTotal
+        ]));
+      }
+    });
+  });
+  const sum={supply:0, fee:0, vat:0, total:0, quote:0};
+  const seen={};
+  rows.forEach(r=>{
+    if(r.kind==='line'){
+      sum.supply+=Number(r.values[8])||0;
+      sum.fee+=Number(r.values[9])||0;
+      sum.vat+=Number(r.values[10])||0;
+      sum.total+=Number(r.values[11])||0;
+    }
+    if(r.quoteStart && !seen[r.qid]){
+      seen[r.qid]=1;
+      sum.quote+=Number(r.values[12])||0;
+    }
+  });
+  return {header, rows, sum};
+}
+function quoteExcelBorder(topStyle){
+  const side={style:'thin', color:{argb:'FFDDD9D0'}};
+  return {top:topStyle||side, left:side, bottom:side, right:side};
+}
+async function downloadFilteredQuotesExcel(){
+  try{
+    if(typeof ExcelJS==='undefined'){ toast('엑셀 라이브러리 로딩 중...','error'); return; }
+    const d=ld();
+    const c=(d.clients||[]).find(x=>x.id===CUR_CLIENT);
+    if(!c){ toast('거래처를 선택해주세요','error'); return; }
+    if(QT_QUOTE_TYPE_FILTER_CLIENT!==CUR_CLIENT){
+      QT_QUOTE_TYPE_FILTER='all';
+      QT_QUOTE_TYPE_FILTER_CLIENT=CUR_CLIENT||'';
+    }
+    const filterKey=QT_QUOTE_TYPE_FILTER||'all';
+    const quotes=clientQuotesSorted(d, CUR_CLIENT).filter(q=>quoteMatchesTypeFilter(q, filterKey));
+    if(!quotes.length){ toast('다운로드할 견적서가 없습니다','error'); return; }
+    const filterLabel=quoteItemTypeLabel(filterKey);
+    const model=quoteFilterSheetRows(quotes, c);
+    const cols=model.header.length;
+    const wb=new ExcelJS.Workbook();
+    const ws=wb.addWorksheet('견적서');
+    const meta=[
+      '거래처명 : '+(c.name||''),
+      '현재 결제방식 : '+quotePayExcelText(c),
+      '유형 필터 : '+filterLabel,
+      '출력일시 : '+quoteExportStamp(),
+    ];
+    meta.forEach(text=>{
+      const row=ws.addRow([text]);
+      ws.mergeCells(row.number, 1, row.number, cols);
+      row.height=18;
+      const cell=row.getCell(1);
+      cell.font={name:'Malgun Gothic', size:11, bold:true, color:{argb:'FF1C1917'}};
+      cell.alignment={vertical:'middle', horizontal:'left'};
+    });
+    ws.addRow([]);
+    const headerRow=ws.addRow(model.header);
+    headerRow.height=20;
+    const thin=quoteExcelBorder();
+    for(let col=1; col<=cols; col++){
+      const cell=headerRow.getCell(col);
+      cell.font={name:'Malgun Gothic', size:10, bold:true, color:{argb:'FF1C1917'}};
+      cell.fill={type:'pattern', pattern:'solid', fgColor:{argb:'FFEDEAE3'}};
+      cell.alignment={vertical:'middle', horizontal:'center'};
+      cell.border=thin;
+    }
+    const moneyCols={8:1,9:1,10:1,11:1,12:1,13:1};
+    const centerCols={1:1,3:1,4:1,5:1,7:1};
+    const spans=[];
+    let span=null;
+    let qIndex=-1;
+    let lastQid=null;
+    model.rows.forEach(r=>{
+      if(r.qid!==lastQid){ qIndex++; lastQid=r.qid; }
+      const zebra=qIndex%2?'FFF8F5F0':'FFFFFFFF';
+      const excelRow=ws.addRow(r.values.map(v=>v==null?'—':v));
+      excelRow.height=18;
+      if(r.quoteStart){
+        if(span) spans.push(span);
+        span={start:excelRow.number, end:excelRow.number};
+      } else if(span){
+        span.end=excelRow.number;
+      }
+      const top=r.quoteStart?{style:'medium', color:{argb:'FF2563EB'}}:null;
+      for(let col=1; col<=cols; col++){
+        const cell=excelRow.getCell(col);
+        const raw=r.values[col-1];
+        const isDash=raw==null;
+        let color='FF1C1917';
+        let bold=r.kind==='subtotal'||col===12||col===13;
+        if(col===12) color='FF2563EB';
+        if(r.kind==='subtotal') color='FF92400E';
+        cell.font={name:'Malgun Gothic', size:10, bold, color:{argb:isDash?'FFA8A29E':color}};
+        let fill=r.kind==='subtotal'?'FFFFFBEB':zebra;
+        if(col===4 && r.quoteStart) fill=r.settled?'FFD1FAE5':'FFFEF3C7';
+        cell.fill={type:'pattern', pattern:'solid', fgColor:{argb:fill}};
+        const horizontal=r.kind==='subtotal'&&col===6?'right':(centerCols[col]?'center':(moneyCols[col]?'right':'left'));
+        cell.alignment={vertical:'middle', horizontal};
+        cell.border=quoteExcelBorder(top);
+        if(typeof raw==='number' && moneyCols[col]) cell.numFmt='#,##0';
+        if(typeof raw==='number' && col===7) cell.numFmt='#,##0.##';
+        if(col===4 && r.quoteStart){
+          cell.font={name:'Malgun Gothic', size:10, bold:true, color:{argb:r.settled?'FF065F46':'FF92400E'}};
+        }
+      }
+    });
+    if(span) spans.push(span);
+    spans.forEach(sp=>{
+      if(sp.end>sp.start){
+        [1,2,3,4,13].forEach(col=>ws.mergeCells(sp.start, col, sp.end, col));
+      }
+    });
+    const totalValues=['합계','','','','','','','', model.sum.supply, model.sum.fee, model.sum.vat, model.sum.total, model.sum.quote];
+    const totalRow=ws.addRow(totalValues);
+    totalRow.height=22;
+    ws.mergeCells(totalRow.number, 1, totalRow.number, 8);
+    const totalTop={style:'medium', color:{argb:'FFD97706'}};
+    for(let col=1; col<=cols; col++){
+      const cell=totalRow.getCell(col);
+      const raw=totalValues[col-1];
+      cell.font={name:'Malgun Gothic', size:col===12||col===13?12:10, bold:true, color:{argb:col===12||col===13?'FFDC2626':'FF1C1917'}};
+      cell.fill={type:'pattern', pattern:'solid', fgColor:{argb:'FFFEF3C7'}};
+      cell.alignment={vertical:'middle', horizontal:col===1?'right':(typeof raw==='number'?'right':'center')};
+      cell.border=quoteExcelBorder(totalTop);
+      if(typeof raw==='number') cell.numFmt='#,##0';
+    }
+    const widthRows=[model.header];
+    model.rows.forEach(r=>widthRows.push(r.values.map(v=>v==null?'—':v)));
+    widthRows.push(totalValues);
+    settleExcelColWidths(widthRows).forEach((col,i)=>{
+      ws.getColumn(i+1).width=col.wch===9?9.01:col.wch;
+    });
+    ws.views=[{state:'frozen', ySplit:headerRow.number}];
+    const day=String(getKSTDate()||'').replace(/-/g,'');
+    const fileName='견적서_'+safeDailyFilePart(c.name)+'_'+safeDailyFilePart(filterLabel)+'_'+day+'.xlsx';
+    settleExcelDownload(await wb.xlsx.writeBuffer(), fileName);
+    toast('견적서 '+quotes.length+'건 엑셀 다운로드 완료');
+  }catch(e){
+    console.error(e);
+    toast('엑셀 다운로드 실패: '+(e&&e.message?e.message:e),'error');
+  }
+}
 function renderDetQuote(){
   // 견적서 작성/수정 폼이 열려 있을 때는
   // 사용자가 입력 중인 내용을 건드리지 않도록 리스트 리렌더를 건너뛴다.
@@ -16266,11 +16590,12 @@ function renderDetQuote(){
   // 주의: 예전에 정산 데이터로 견적을 자동 복구하며 품명을 '정산 내역 합계'로
   // 덮어쓰던 로직은 제거함. (캐시 미동기화 시 실제 견적 품명이 파괴되는 버그 원인)
 
-  const myQuotes=(d.quotes||[]).filter(q=>q.clientId===CUR_CLIENT).sort((a,b)=>{
-    const oa=a.order!=null?a.order:9999, ob=b.order!=null?b.order:9999;
-    if(oa!==ob)return oa-ob;
-    return b.date.localeCompare(a.date);
-  });
+  if(QT_QUOTE_TYPE_FILTER_CLIENT!==CUR_CLIENT){
+    QT_QUOTE_TYPE_FILTER='all';
+    QT_QUOTE_TYPE_FILTER_CLIENT=CUR_CLIENT||'';
+  }
+  const allQuotes=clientQuotesSorted(d, CUR_CLIENT);
+  const myQuotes=allQuotes.filter(q=>quoteMatchesTypeFilter(q, QT_QUOTE_TYPE_FILTER));
   const bizList=c.bizInfoList||[];
   const bizOptions=bizList.map((b,i)=>`<option value="${i}">${b.bizName} (${b.bizNo})</option>`).join('');
   const bizOptHtml=bizList.length===0
@@ -16279,6 +16604,7 @@ function renderDetQuote(){
 
   let html=`<div style="max-width:920px">
     ${quoteCurrentPayHtml(c)}
+    ${quoteTypeFilterBarHtml(myQuotes.length)}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
       <div style="font-size:13px;font-weight:700">📄 견적서 관리</div>
       <div style="display:flex;gap:8px;align-items:center">
@@ -16388,39 +16714,7 @@ function renderDetQuote(){
     <!-- 견적서 목록 -->
     <div id="qt-list">`;
 
-  if(!myQuotes.length){
-    html+=`<div style="text-align:center;padding:40px;color:var(--text3)">📄 작성된 견적서가 없습니다<br><button class="btn btn-blue btn-sm" style="margin-top:12px" onclick="openNewQuoteForm()">견적서 작성하기</button></div>`;
-  } else {
-    html+=`<div style="font-size:10px;color:var(--text3);margin-bottom:8px">⋮⋮ 드래그하여 순서 변경</div>`;
-    myQuotes.forEach(q=>{
-      const settled=q.settled||false;
-      const collapsed=qtUiCollapsed(q,'quote');
-      html+=`<div class="qt-card-dragover-target" data-quote-id="${q.id}" style="background:var(--card);border:1px solid ${settled?'#86efac':'var(--border)'};border-radius:12px;margin-bottom:10px;overflow:hidden;box-shadow:var(--sh)" ondragover="event.preventDefault();this.classList.add('qt-card-dragover')" ondragleave="this.classList.remove('qt-card-dragover')" ondrop="qtDrop(event)">
-        <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;background:${settled?'#f0fdf4':'var(--bg2)'}" onclick="toggleQt('${q.id}')">
-          <div style="display:flex;align-items:center;gap:10px">
-            <span class="qt-drag-handle" draggable="true" data-quote-id="${q.id}" onclick="event.stopPropagation()" ondragstart="qtDragStart(event)" title="드래그하여 순서 변경">⋮⋮</span>
-            <span style="font-size:11px;font-family:monospace;color:var(--text3)">${q.date}</span>
-            <span style="font-size:13px;font-weight:700">${q.toName||c.name} 견적서</span>
-            <span style="font-size:10px;color:var(--text3)">#${q.no||'-'}</span>
-            ${settled?'<span class="badge bg">✅ 정산완료</span>':'<span class="badge by">대기중</span>'}
-          </div>
-          <div style="display:flex;gap:6px;align-items:center">
-            <span style="font-size:12px;font-weight:700;color:${settled?'var(--green)':'var(--accent)'}">${fmtN(calcQtTotal(q))}원</span>
-            <button class="btn btn-xs btn-gray" onclick="event.stopPropagation();openEditQuoteForm('${q.id}')">수정</button>
-            <button class="btn btn-xs btn-blue" onclick="event.stopPropagation();openDuplicateQuoteForm('${q.id}')">복제</button>
-            ${!settled?`<button class="btn btn-xs btn-green" onclick="event.stopPropagation();markQtSettled('${q.id}')">정산완료</button>`:''}
-            <button class="btn btn-xs btn-red" onclick="event.stopPropagation();delQt('${q.id}')">삭제</button>
-            <span style="font-size:12px;color:var(--text3)">${collapsed?'▼':'▲'}</span>
-          </div>
-        </div>
-        <div id="qt-body-${q.id}" style="${collapsed?'display:none':''}">
-          <div style="padding:18px">
-            ${buildQtDoc(q)}
-          </div>
-        </div>
-      </div>`;
-    });
-  }
+  html+=quoteListInnerHtml(allQuotes, myQuotes, c);
 
   html+=`</div></div>`;
   document.getElementById('dp-quote-inner').innerHTML=html;
@@ -17095,6 +17389,10 @@ function qtDragStart(ev){
 function qtDrop(ev){
   ev.preventDefault();
   ev.currentTarget.classList.remove('qt-card-dragover');
+  if((QT_QUOTE_TYPE_FILTER||'all')!=='all'){
+    toast('순서 변경은 유형이 전체일 때 가능합니다','error');
+    return;
+  }
   const fromId=ev.dataTransfer.getData('text/plain');
   const toId=ev.currentTarget.dataset.quoteId;
   if(!fromId||!toId||fromId===toId)return;
