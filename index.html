@@ -54,11 +54,20 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
   .nav-group{justify-content:space-between;font-weight:700;color:var(--text);}
   .nav-sub2{padding-left:48px !important;font-size:12px !important;}
   .admin-group-body{display:none;}
-  .qt-pay-sticky{position:sticky;top:0;z-index:30;margin:0 0 12px;padding:10px 14px;border-radius:10px;background:#ecfeff;border:1px solid #67e8f9;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;box-shadow:0 2px 8px rgba(0,0,0,.06);}
+  .qt-quote-col{max-width:920px;overflow:visible;}
+  #dp-quote,#dp-quote-inner{overflow:visible;}
+  .qt-pay-sticky{position:sticky;top:0;z-index:40;margin:0 0 12px;padding:10px 14px;border-radius:10px;background:#ecfeff;border:1px solid #67e8f9;border-bottom:1px solid #0891b2;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;box-shadow:0 1px 0 rgba(8,145,178,.35),0 4px 10px rgba(15,23,42,.08);}
+  .qt-pay-sticky::after{content:'';position:absolute;left:0;right:0;bottom:-12px;height:12px;background:var(--bg);pointer-events:none;}
   .qt-pay-sticky-empty{cursor:pointer;background:#fff7ed;border-color:#fdba74;color:#9a3412;font-weight:800;width:100%;text-align:left;font-family:var(--font);font-size:13px;}
+  .qt-pay-main{min-width:0;flex:1 1 240px;font-size:12px;line-height:1.5;word-break:keep-all;}
+  .qt-pay-unconfirmed{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:99px;font-size:10px;font-weight:800;line-height:1.5;background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;vertical-align:1px;}
+  @media (max-width:768px){
+    .qt-pay-sticky{top:0;padding:8px 10px;gap:6px;align-items:flex-start;}
+    .qt-pay-main{flex-basis:100%;}
+  }
   .qt-pay-warn{margin:0 0 8px;padding:10px 14px;border-radius:10px;background:#fff7ed;border:1px solid #fb923c;color:#9a3412;font-size:13px;font-weight:800;line-height:1.5;}
   .qt-pay-verified{font-size:11px;color:#78716c;font-weight:600;margin:0 0 6px;}
-  .qt-pay-memo{margin:-4px 0 12px;padding:8px 14px;border-radius:10px;background:#f8fafc;border:1px solid var(--border);font-size:12px;line-height:1.45;color:var(--text);}
+  .qt-pay-memo{margin:0 0 12px;padding:8px 14px;border-radius:10px;background:#f8fafc;border:1px solid var(--border);font-size:12px;line-height:1.45;color:var(--text);}
   .qt-pay-memo-text{white-space:pre-wrap;word-break:break-word;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;}
   .qt-pay-memo-text.open{display:block;-webkit-line-clamp:unset;}
   .qt-pay-memo-more{display:none;margin-top:4px;background:none;border:none;padding:0;color:#0e7490;font-size:11px;font-weight:800;cursor:pointer;font-family:var(--font);}
@@ -73,7 +82,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
   .btn-warn{background:#ea580c;color:#fff;border:1px solid #c2410c;}
   .btn-warn:hover{background:#c2410c;}
   .btn.ps-need-on,.btn.ps-need-on:hover{background:#fff7ed;color:#9a3412;border:1px solid #fdba74;}
-  @media print{ .qt-pay-sticky,.qt-pay-block{display:none !important;} }
+  @media print{ .qt-pay-sticky,#qt-pay-verify,#qt-pay-memo{display:none !important;} }
   .sidebar-footer{margin-top:auto;padding:16px 20px;border-top:1px solid var(--border);font-size:11px;color:var(--text3);}
 .btn-logout{background:none;border:1px solid var(--border);color:var(--text2);padding:6px 12px;border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--font);width:100%;margin-top:8px;transition:all .2s;}
 .btn-logout:hover{border-color:var(--red);color:var(--red);}
@@ -860,6 +869,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
             <option value="remain">잔여 적은 순</option>
           </select>
           <button type="button" id="ps-need" class="btn btn-sm btn-gray" aria-pressed="false" onclick="payToggleNeedOnly()">확인 필요만 보기</button>
+          <button type="button" id="ps-recalc" class="btn btn-sm btn-gray" style="display:none" onclick="openPrepaidSummaryRefresh()">선결제 잔여 일괄 재계산</button>
           <span id="ps-need-count" style="font-size:12px;font-weight:800;color:var(--text3)">확인 필요 0건</span>
           <span id="ps-count" style="font-size:12px;color:var(--text3)"></span>
         </div>
@@ -3023,6 +3033,7 @@ function subscribeRecordsForClient(clientId){
         return;
       }
       _patchRecordsCache(clientId, changes);
+      try{ schedulePrepaidDoneCache(clientId); }catch(e){}
       try{ scheduleRerender('records'); }catch(e){}
     }, err=>{
       console.error('records snapshot', err);
@@ -13094,7 +13105,7 @@ async function payQueryWhereIn(col, field, ids, countOnly){
 async function openPrepaidSummaryRefresh(){
   if(!CUR_ADMIN||CUR_ADMIN.role!=='admin'){ toast('관리자만 실행할 수 있습니다','error'); return; }
   if(typeof db==='undefined'){ toast('저장소를 사용할 수 없습니다','error'); return; }
-  const clients=(CLIENTS_CACHE||[]).filter(c=>c&&c.id&&c.payMode==='prepaid');
+  const clients=(CLIENTS_CACHE||[]).filter(c=>c&&c.id&&payShownMode(c).mode==='prepaid');
   const idSet={};
   clients.forEach(c=>{ idSet[c.id]=1; });
   const projects=(PROJECTS_CACHE||[]).filter(p=>p&&p.id&&idSet[p.clientId]);
@@ -13110,7 +13121,11 @@ async function openPrepaidSummaryRefresh(){
     return;
   }
   const total=payN+recN;
-  if(!confirm('선결제 거래처 '+clients.length+'곳\n예상 읽기: 결제 기록 '+payN+'건 + 업무 기록 '+recN+'건 = '+total+'건\n확인 후 이 문서만 한 번 읽고 요약을 저장합니다. 실행할까요?')) return;
+  const missing=clients.filter(c=>{
+    const s=c.prepaidSummary;
+    return prepaidFiniteNum(s&&s.charged)==null||prepaidFiniteNum(s&&s.remaining)==null;
+  }).length;
+  if(!confirm('선결제 거래처 '+clients.length+'곳 (요약 없음 '+missing+'곳)\n예상 읽기: 결제 기록 '+payN+'건 + 명단 '+recN+'건 = '+total+'건\n확인 후 이 문서만 한 번 읽고 요약을 저장합니다. 실행할까요?')) return;
   try{
     const payRows=await payQueryWhereIn('payRecords','clientId',clientIds,false);
     const recRows=await payQueryWhereIn('records','projectId',projIds,false);
@@ -13395,6 +13410,9 @@ function payShownMode(c){
   }
   return payNormMode({});
 }
+function defaultProjectPayMode(c){
+  return payShownMode(c).mode==='prepaid'?'prepaid':'separate';
+}
 function payCurrentSnapshot(c, history){
   const latest=payLatestMap(history);
   const route=latest.route?payNormRoute(latest.route.value):payShownRoute(c);
@@ -13668,6 +13686,54 @@ function schedulePrepaidDoneCache(clientId){
     flushPrepaidDoneCache(clientId, RECORDS_CACHE).catch(function(e){ console.error('prepaidSummary', e); });
   }, 2000);
 }
+function prepaidFiniteNum(v){
+  if(v==null||v==='') return null;
+  const n=Number(v);
+  return Number.isFinite(n)?n:null;
+}
+function prepaidChargedOf(list){
+  return (list||[]).filter(r=>r&&!r.deleted&&r.kind==='prepaid').reduce((a,r)=>a+(Number(r.qty)||0),0);
+}
+function prepaidUsedOf(clientId, records){
+  const eligible=new Set();
+  payClientProjects(clientId).forEach(p=>{
+    if(!p||!p.id||p.payMode==='separate') return;
+    eligible.add(p.id);
+  });
+  let used=0;
+  (records||[]).forEach(r=>{
+    if(!recordIsPurchaseDone(r)||!eligible.has(r.projectId)) return;
+    used++;
+  });
+  return used;
+}
+function prepaidPayRecordsInMemory(clientId){
+  if(clientId&&PAY_ST_ID===clientId&&Array.isArray(PAY_ST_PAY)) return PAY_ST_PAY;
+  const cached=(PAY_RECORDS_CACHE||[]).filter(r=>r&&r.clientId===clientId);
+  return cached.length?cached:null;
+}
+function prepaidRecordsInMemory(clientId){
+  if(clientId&&PAY_ST_ID===clientId&&Array.isArray(PAY_ST_RECS)) return PAY_ST_RECS;
+  if(clientId&&RECORDS_CLIENT_ID===clientId&&_recordsChunksReady&&Array.isArray(RECORDS_CACHE)) return RECORDS_CACHE;
+  return null;
+}
+function prepaidSummaryFromMemory(clientId, opts){
+  const c=payClient(clientId);
+  if(!c||payShownMode(c).mode!=='prepaid') return null;
+  opts=opts||{};
+  const payRecords=(Object.prototype.hasOwnProperty.call(opts,'payRecords')&&Array.isArray(opts.payRecords))
+    ? opts.payRecords
+    : prepaidPayRecordsInMemory(clientId);
+  const records=(Object.prototype.hasOwnProperty.call(opts,'records')&&Array.isArray(opts.records))
+    ? opts.records
+    : prepaidRecordsInMemory(clientId);
+  const prev=c.prepaidSummary||{};
+  const charged=payRecords?prepaidChargedOf(payRecords):prepaidFiniteNum(prev.charged);
+  const used=records?prepaidUsedOf(clientId, records):prepaidFiniteNum(prev.used);
+  if(charged==null||used==null) return null;
+  const prevDone=(opts.prevDone!=null)?(Number(opts.prevDone)||0):((c.prevPurchaseDone!=null)?(Number(c.prevPurchaseDone)||0):0);
+  return {charged, used, remaining:charged-(prevDone+used)};
+}
 function prepaidSummaryPayload(bal){
   return {charged:bal.charged, used:bal.used, remaining:bal.remaining, calcAt:new Date().toISOString()};
 }
@@ -13680,12 +13746,13 @@ function prepaidSummaryChanged(prev, next){
 async function flushPrepaidDoneCache(clientId, records){
   const c=payClient(clientId);
   if(!c||payShownMode(c).mode!=='prepaid') return false;
-  const ctx={client:c, mode:'prepaid'};
-  if(Array.isArray(records)) ctx.records=records;
-  if(PAY_ST_ID===clientId&&Array.isArray(PAY_ST_PAY)) ctx.payRecords=PAY_ST_PAY;
-  const bal=calcPrepaidBalance(clientId, ctx);
-  if(!bal.payLoaded) return false;
-  const summary=prepaidSummaryPayload(bal);
+  const opts={};
+  if(Array.isArray(records)) opts.records=records;
+  const pays=prepaidPayRecordsInMemory(clientId);
+  if(pays) opts.payRecords=pays;
+  const built=prepaidSummaryFromMemory(clientId, opts);
+  if(!built) return false;
+  const summary=prepaidSummaryPayload(built);
   if(!prepaidSummaryChanged(c.prepaidSummary, summary)) return false;
   const latest=payClient(clientId)||c;
   await sv('cl', [Object.assign({}, latest, {prepaidSummary:summary})]);
@@ -14046,6 +14113,8 @@ function payFirstLine(hist){
 function payYn(v){ return v?'Y':'N'; }
 function renderPayStatus(){
   const tbody=document.getElementById('paystatus-tbody');
+  const recalc=document.getElementById('ps-recalc');
+  if(recalc) recalc.style.display=(CUR_ADMIN&&CUR_ADMIN.role==='admin')?'':'none';
   if(!tbody) return;
   const q=String((document.getElementById('ps-q')||{}).value||'').trim().toLowerCase();
   const routeF=String((document.getElementById('ps-route')||{}).value||'');
@@ -14365,23 +14434,25 @@ function payProjectSection(c){
     const explicit=p.payMode==='prepaid'?'prepaid':(p.payMode==='separate'?'separate':'');
     const mode=explicit==='separate'?'separate':(explicit==='prepaid'||clientPrepaid?'prepaid':'separate');
     const prepaidLabel=(explicit===''&&clientPrepaid)?'선결제(기본)':'선결제 차감';
+    const badge=mode==='prepaid'
+      ? '<span class="pay-badge" style="background:#ede9fe;color:#5b21b6">차감</span>'
+      : '<span class="pay-badge" style="background:#f3f4f6;color:#57534e">별도</span>';
+    const skip=(clientPrepaid&&mode==='separate')?'<span class="pay-badge" style="background:#fafaf9;color:#78716c;border:1px solid #d6d3d1">잔여 미차감</span>':'';
     const btn=(val,label)=>'<button type="button" class="btn btn-xs '+(mode===val?'btn-blue':'btn-gray')+'" onclick="paySetProjMode(\''+payJs(p.id)+'\',\''+val+'\')">'+label+'</button>';
     return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'
-      +'<div style="font-weight:700;word-break:break-word">'+escHtml(p.name||'')+'</div>'
+      +'<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-weight:700;word-break:break-word">'+escHtml(p.name||'')+badge+skip+'</div>'
       +'<div style="font-size:12px;color:var(--text2);margin-top:2px">'+(p.status?escHtml(p.status)+' · ':'')+'구매완료 '+fmtN(done)+'</div>'
       +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">'+btn('prepaid',prepaidLabel)+btn('separate','별도 결제')+'</div></div>';
   }).join('');
 }
 async function payCommitRecords(c, list, doc, okMsg){
   const merged=payApplyRecordTotals(payClient(c.id)||c, list);
-  const bal=calcPrepaidBalance(c.id, {
-    client:merged,
-    payRecords:list,
-    records:Array.isArray(PAY_ST_RECS)?PAY_ST_RECS:(RECORDS_CLIENT_ID===c.id?RECORDS_CACHE:[]),
-    mode:payShownMode(merged).mode,
-  });
-  if(bal.isPrepaid&&bal.payLoaded){
-    const summary=prepaidSummaryPayload(bal);
+  const opts={payRecords:list};
+  if(Array.isArray(PAY_ST_RECS)) opts.records=PAY_ST_RECS;
+  else if(RECORDS_CLIENT_ID===c.id&&_recordsChunksReady&&Array.isArray(RECORDS_CACHE)) opts.records=RECORDS_CACHE;
+  const built=prepaidSummaryFromMemory(c.id, opts);
+  if(built){
+    const summary=prepaidSummaryPayload(built);
     if(prepaidSummaryChanged(merged.prepaidSummary, summary)) merged.prepaidSummary=summary;
   }
   const group='payrec_'+c.id;
@@ -14502,6 +14573,8 @@ async function savePayPrevDone(){
   if(!c) return;
   if((Number(c.prevPurchaseDone)||0)===num){ toast('변경사항이 없습니다','error'); return; }
   const next=Object.assign({}, c, {prevPurchaseDone:num, prevPurchaseDoneBy:payWho(), prevPurchaseDoneAt:new Date().toISOString()});
+  const built=prepaidSummaryFromMemory(c.id, {prevDone:num});
+  if(built) next.prepaidSummary=prepaidSummaryPayload(built);
   PAY_ST_BUSY=true;
   try{
     await sv('cl', [next]);
@@ -14521,10 +14594,9 @@ async function paySetProjMode(projId, mode){
   PAY_ST_BUSY=true;
   try{
     await sv('pr', [next]);
-    const c=payClient(PAY_ST_ID);
+    const c=payClient(p.clientId||PAY_ST_ID);
     if(c&&payShownMode(c).mode==='prepaid'){
-      if(!PAY_ST_RECS) PAY_ST_RECS=await payLoadRecordsOnce(c.id);
-      await flushPrepaidDoneCache(c.id, PAY_ST_RECS||[]);
+      await flushPrepaidDoneCache(c.id, Array.isArray(PAY_ST_RECS)?PAY_ST_RECS:undefined);
     }
     payRefreshScreens();
     toast('프로젝트 구분을 저장했습니다');
@@ -16193,11 +16265,24 @@ function quotePayVerifyHtml(c){
   return '<div class="qt-pay-verified">✓ 마지막 확인 '+(when?escHtml(when)+' ':'')+escHtml(who)+'</div>';
 }
 function quotePayRemainHtml(c){
-  if(!payIsKmongDeduct(c)) return '';
-  const state=payKmongState(c);
-  const view=payKmongRemainText(state);
-  const status=view.color?'<b style="color:'+view.color+'">'+escHtml(view.text)+'</b>':'<b>'+escHtml(view.text)+'</b>';
-  return '<div style="margin-top:2px">크몽 선결제 후 차감 <span style="color:var(--text3);margin:0 6px">·</span>'+status+'</div>';
+  if(!c||payShownMode(c).mode!=='prepaid') return '';
+  const s=c.prepaidSummary;
+  const total=s&&s.charged!=null&&s.charged!==''?Number(s.charged):NaN;
+  const remaining=s&&s.remaining!=null&&s.remaining!==''?Number(s.remaining):NaN;
+  const known=Number.isFinite(total)&&Number.isFinite(remaining);
+  const text=known?('잔여 '+fmtN(remaining)+'건 / 총 '+fmtN(total)+'건'):'잔여 — / 총 —';
+  const verified=payIsVerified(c);
+  let color='';
+  if(verified&&known){
+    if(remaining<=0) color='#dc2626';
+    else if(remaining<=5) color='#ea580c';
+  }
+  const tip=known&&s.calcAt?(' title="결제 현황 기준 '+escHtml(payKstStamp(s.calcAt))+'"'):'';
+  const body=color
+    ? '<b style="color:'+color+'"'+tip+'>'+escHtml(text)+'</b>'
+    : '<b style="color:'+(known?'inherit':'var(--text3)')+'"'+tip+'>'+escHtml(text)+'</b>';
+  const badge=verified?'':'<span class="qt-pay-unconfirmed">미확인</span>';
+  return '<span style="display:inline-block;white-space:nowrap"><span style="color:var(--text3);margin:0 8px">·</span>'+body+badge+'</span>';
 }
 function quotePayMemoHtml(c){
   const text=c&&c.payMemo!=null?String(c.payMemo):'';
@@ -16223,8 +16308,8 @@ function quotePayMemoOverflows(el){
   return over;
 }
 function quotePayMemoApply(){
-  const text=document.querySelector('#qt-pay-block .qt-pay-memo-text');
-  const btn=document.querySelector('#qt-pay-block .qt-pay-memo-more');
+  const text=document.querySelector('#qt-pay-memo .qt-pay-memo-text');
+  const btn=document.querySelector('#qt-pay-memo .qt-pay-memo-more');
   if(!text||!btn) return;
   const open=!!(QT_PAY_MEMO_OPEN_ID&&QT_PAY_MEMO_OPEN_ID===CUR_CLIENT);
   text.classList.toggle('open', open);
@@ -16243,20 +16328,28 @@ function quotePayStickyBar(c){
   const hasRoute=!!(route.route&&String(route.route).trim());
   const hasMode=!!(mode.mode&&String(mode.mode).trim());
   if(!hasRoute && !hasMode){
-    return '<button type="button" class="qt-pay-sticky qt-pay-sticky-empty" onclick="openQuotePayStatus()">결제 방식 미등록</button>';
+    return '<button type="button" id="qt-pay-sticky" class="qt-pay-sticky qt-pay-sticky-empty" onclick="openQuotePayStatus()">결제 방식 미등록</button>';
   }
   const routeLabel=hasRoute?escHtml(route.route)+(route.route==='기타'&&route.routeMemo?' · '+escHtml(route.routeMemo):''):'—';
   const modeLabel=hasMode?escHtml(payModeLabel(mode.mode))+(mode.mode==='etc'&&mode.modeMemo?' · '+escHtml(mode.modeMemo):''):'—';
-  return '<div class="qt-pay-sticky"><div style="font-size:12px;line-height:1.5"><span style="font-size:10px;font-weight:800;color:#0e7490;margin-right:8px">현재 결제</span>경로 <b>'+routeLabel+'</b><span style="color:var(--text3);margin:0 8px">·</span>방식 <b>'+modeLabel+'</b>'+quotePayRemainHtml(c)+'</div><button type="button" class="btn btn-xs btn-gray" onclick="openQuotePayStatus()">결제 현황</button></div>';
+  return '<div id="qt-pay-sticky" class="qt-pay-sticky"><div class="qt-pay-main"><span style="font-size:10px;font-weight:800;color:#0e7490;margin-right:8px">현재 결제</span>경로 <b>'+routeLabel+'</b><span style="color:var(--text3);margin:0 8px">·</span>방식 <b>'+modeLabel+'</b>'+quotePayRemainHtml(c)+'</div><button type="button" class="btn btn-xs btn-gray" style="flex:0 0 auto" onclick="openQuotePayStatus()">결제 현황</button></div>';
 }
 function quoteCurrentPayHtml(c){
-  return '<div id="qt-pay-block" class="qt-pay-block">'+quotePayVerifyHtml(c)+quotePayStickyBar(c)+quotePayMemoHtml(c)+'</div>';
+  return '<div id="qt-pay-verify">'+quotePayVerifyHtml(c)+'</div>'+quotePayStickyBar(c)+'<div id="qt-pay-memo">'+quotePayMemoHtml(c)+'</div>';
 }
 function refreshQuotePaySticky(){
-  const el=document.getElementById('qt-pay-block');
-  if(!el) return;
+  const anchor=document.getElementById('qt-pay-sticky');
+  if(!anchor||!anchor.parentNode) return;
   const c=(ld().clients||[]).find(x=>x.id===CUR_CLIENT);
-  el.outerHTML=quoteCurrentPayHtml(c);
+  const parent=anchor.parentNode;
+  const verify=document.getElementById('qt-pay-verify');
+  const memo=document.getElementById('qt-pay-memo');
+  const tmp=document.createElement('template');
+  tmp.innerHTML=quoteCurrentPayHtml(c);
+  parent.insertBefore(tmp.content, verify||anchor);
+  if(verify&&verify.parentNode) verify.remove();
+  if(anchor.parentNode) anchor.remove();
+  if(memo&&memo.parentNode) memo.remove();
   quotePayMemoApply();
 }
 function openQuotePayStatus(){
@@ -16602,7 +16695,7 @@ function renderDetQuote(){
     ?`<option value="">— 거래처 정보 탭에서 추가하세요 —</option>`
     :`<option value="">선택하세요</option>${bizOptions}`;
 
-  let html=`<div style="max-width:920px">
+  let html=`<div id="qt-quote-col" class="qt-quote-col">
     ${quoteCurrentPayHtml(c)}
     ${quoteTypeFilterBarHtml(myQuotes.length)}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
@@ -18716,7 +18809,7 @@ function createNewProject(){
   const name=document.getElementById('np-name').value.trim();
   if(!name){toast('프로젝트명을 입력하세요','error');return;}
   const d=ld();
-  const proj={id:gid(),name,clientId:CUR_CLIENT,platform:document.getElementById('np-platform').value,product:'',startDate:document.getElementById('np-start').value,total:parseInt(document.getElementById('np-total').value)||0,status:document.getElementById('np-status').value,memo:'',quote:null,payMode:(payClient(CUR_CLIENT)&&payClient(CUR_CLIENT).payMode==='prepaid')?'prepaid':'separate',createdAt:new Date().toISOString()};
+  const proj={id:gid(),name,clientId:CUR_CLIENT,platform:document.getElementById('np-platform').value,product:'',startDate:document.getElementById('np-start').value,total:parseInt(document.getElementById('np-total').value)||0,status:document.getElementById('np-status').value,memo:'',quote:null,payMode:defaultProjectPayMode(payClient(CUR_CLIENT)),createdAt:new Date().toISOString()};
   d.projects.push(proj);sv('pr',d.projects);
   // 새 프로젝트 생성 이력
   const changes={created:{before:null,after:proj}};
@@ -20598,7 +20691,7 @@ async function confirmBulkUpload(){
         id:gid(), clientId:client.id, name:group.projName,
         platform:'', startDate:startDates[0]||'',
         total:group.records.length, status:'완료',
-        payMode:(client.payMode==='prepaid')?'prepaid':'separate',
+        payMode:defaultProjectPayMode(client),
         createdAt:new Date().toISOString()
       };
       d.projects.push(proj);
@@ -20611,6 +20704,7 @@ async function confirmBulkUpload(){
   });
   await sv('pr',d.projects);
   await sv('rc',d.records);
+  if(client&&client.id) schedulePrepaidDoneCache(client.id);
   consumeUnparsedPurchaseDateWarn();
   const badDates=addedRows.filter(purchaseDateUnparsed);
 
@@ -20653,6 +20747,8 @@ async function confirmImport(){
   const nr=IMP_DATA.map(r=>({...r,projectId:pid,createdAt:new Date().toISOString()}));
   d.records.push(...nr);
   await sv('rc',d.records);
+  const impProj=(PROJECTS_CACHE||[]).find(p=>p&&p.id===pid);
+  if(impProj) schedulePrepaidDoneForProjects(impProj.clientId, [pid]);
   consumeUnparsedPurchaseDateWarn();
   const badDates=nr.filter(purchaseDateUnparsed);
   IMP_DATA=[];
