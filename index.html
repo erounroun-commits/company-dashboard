@@ -1148,6 +1148,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
             <option value="all">전체</option>
           </select>
           <button type="button" class="btn btn-green btn-sm" onclick="exportSettleExcel()">📥 엑셀 다운로드</button>
+          <button type="button" class="btn btn-sm btn-blue" onclick="exportTaxInvoiceExcel()">세금계산서 발급용 엑셀 다운로드</button>
         </div>
         <div class="tw" id="settle-all-table"></div>
       </div>
@@ -10371,6 +10372,544 @@ async function exportSettleExcel(){
     settleExcelSheet(wb, '견적내역', detail, [5,11], settleExcelRedRows(detail,'detail'));
     settleExcelDownload(await wb.xlsx.writeBuffer(), fileName);
     toast('엑셀 다운로드 완료');
+  }catch(e){
+    console.error(e);
+    toast('엑셀 다운로드 실패: '+(e&&e.message?e.message:e),'error');
+  }
+}
+
+// 세금계산서 발급용 엑셀. 화면 필터 결과 중 수수료·부가세가 있는 견적 항목만 거래처 ID+견적일자로 묶는다.
+const TAX_INV_S1={no:0,supplier:1,date:2,client:3,receiver:4,item:5,qty:6,unit:7,supply:8,fee:9,vat:10,total:11,note:12};
+const TAX_INV_S2={no:0,date:1,client:2,item:3,qty:4,unit:5,supply:6,fee:7,vat:8,total:9,id:10};
+function taxInvoiceHasNum(v){
+  if(typeof v==='number') return Number.isFinite(v);
+  if(typeof v!=='string') return false;
+  const s=v.trim();
+  if(!s) return false;
+  return Number.isFinite(Number(s.replace(/,/g,'')));
+}
+function taxInvoiceNum(v){
+  if(typeof v==='number') return Number.isFinite(v)?v:0;
+  const n=Number(String(v==null?'':v).replace(/,/g,'').trim());
+  return Number.isFinite(n)?n:0;
+}
+function taxInvoicePick(values){
+  for(let i=0;i<values.length;i++){
+    const s=values[i]==null?'':String(values[i]).trim();
+    if(s) return s;
+  }
+  return '';
+}
+function taxInvoiceItemName(it){
+  if(!it) return '';
+  if(it.calc==='product') return taxInvoicePick([it.productName, it.label]);
+  return taxInvoicePick([it.label]);
+}
+function taxInvoiceMemoFee(memo){
+  const m=String(memo==null?'':memo).trim().match(/^수수료\s*([0-9][0-9,]*)\s*원$/);
+  if(!m) return null;
+  return taxInvoiceNum(m[1]);
+}
+function taxInvoiceBizText(fields){
+  const parts=[];
+  fields.forEach(pair=>{
+    const label=pair[0];
+    const value=pair[1]==null?'':String(pair[1]).trim();
+    if(value) parts.push(label+' '+value);
+  });
+  return parts.join('\n');
+}
+function taxInvoiceSupplierText(biz){
+  if(!biz) return '';
+  return taxInvoiceBizText([
+    ['사업자번호', biz.bizNo],
+    ['상호', biz.bizName],
+    ['성명', biz.bizCeo],
+    ['주소', biz.bizAddr],
+    ['업태', biz.bizType],
+    ['종목', biz.bizItem],
+    ['연락처', biz.bizPhone]
+  ]);
+}
+function taxInvoiceReceiverText(qt, client){
+  const list=client&&Array.isArray(client.bizInfoList)?client.bizInfoList:[];
+  const idx=qt&&qt.taxBizIdx!=null&&qt.taxBizIdx!==''?Number(qt.taxBizIdx):0;
+  const biz=(Number.isFinite(idx)&&list[idx])?list[idx]:null;
+  return taxInvoiceBizText([
+    ['사업자번호', taxInvoicePick([qt&&qt.toBizNo, biz&&biz.bizNo, client&&client.biz])],
+    ['상호', taxInvoicePick([qt&&qt.toBizName, biz&&biz.bizName])],
+    ['대표자', taxInvoicePick([qt&&qt.toCeo, biz&&biz.bizCeo])],
+    ['주소', taxInvoicePick([biz&&biz.bizAddr])],
+    ['업태/종목', taxInvoicePick([
+      qt&&qt.toType,
+      biz?taxInvoicePick([biz.bizType])+(biz.bizItem?((biz.bizType?' / ':'')+biz.bizItem):''):''
+    ])]
+  ]);
+}
+function taxInvoiceComma(n){
+  const v=Number(n)||0;
+  return v.toLocaleString('en-US', {maximumFractionDigits:2});
+}
+function taxInvoiceSum(lines){
+  const sum={supply:0,fee:0,vat:0,total:0};
+  (lines||[]).forEach(line=>{
+    sum.supply+=line.supply;
+    sum.fee+=line.fee;
+    sum.vat+=line.vat;
+    sum.total+=line.total;
+  });
+  return sum;
+}
+function taxInvoiceSameSum(a,b){
+  return !!a&&!!b&&a.supply===b.supply&&a.fee===b.fee&&a.vat===b.vat&&a.total===b.total;
+}
+function taxInvoiceColSum(aoa, col){
+  let s=0;
+  for(let i=1;i<aoa.length-1;i++) s+=Number(aoa[i][col])||0;
+  return s;
+}
+function taxInvoiceSheetCheck(sheet1, sheet2){
+  const s1={
+    supply:taxInvoiceColSum(sheet1, TAX_INV_S1.supply),
+    fee:taxInvoiceColSum(sheet1, TAX_INV_S1.fee),
+    vat:taxInvoiceColSum(sheet1, TAX_INV_S1.vat),
+    total:taxInvoiceColSum(sheet1, TAX_INV_S1.total)
+  };
+  const s2={
+    supply:taxInvoiceColSum(sheet2, TAX_INV_S2.supply),
+    fee:taxInvoiceColSum(sheet2, TAX_INV_S2.fee),
+    vat:taxInvoiceColSum(sheet2, TAX_INV_S2.vat),
+    total:taxInvoiceColSum(sheet2, TAX_INV_S2.total)
+  };
+  const byNo=new Map();
+  for(let i=1;i<sheet2.length-1;i++){
+    const no=sheet2[i][TAX_INV_S2.no];
+    let g=byNo.get(no);
+    if(!g){
+      g={supply:0,fee:0,vat:0,total:0,settleIds:[]};
+      byNo.set(no, g);
+    }
+    g.supply+=Number(sheet2[i][TAX_INV_S2.supply])||0;
+    g.fee+=Number(sheet2[i][TAX_INV_S2.fee])||0;
+    g.vat+=Number(sheet2[i][TAX_INV_S2.vat])||0;
+    g.total+=Number(sheet2[i][TAX_INV_S2.total])||0;
+    g.settleIds.push(sheet2[i][TAX_INV_S2.id]);
+  }
+  const groups=[];
+  for(let i=1;i<sheet1.length-1;i++){
+    const no=sheet1[i][TAX_INV_S1.no];
+    const row={
+      supply:Number(sheet1[i][TAX_INV_S1.supply])||0,
+      fee:Number(sheet1[i][TAX_INV_S1.fee])||0,
+      vat:Number(sheet1[i][TAX_INV_S1.vat])||0,
+      total:Number(sheet1[i][TAX_INV_S1.total])||0
+    };
+    const detail=byNo.get(no)||{supply:0,fee:0,vat:0,total:0,settleIds:[]};
+    if(!taxInvoiceSameSum(row, detail)){
+      groups.push({
+        no:no,
+        client:sheet1[i][TAX_INV_S1.client],
+        date:sheet1[i][TAX_INV_S1.date],
+        sheet1:row,
+        sheet2:{supply:detail.supply,fee:detail.fee,vat:detail.vat,total:detail.total},
+        settleIds:detail.settleIds
+      });
+    }
+  }
+  return {ok:taxInvoiceSameSum(s1,s2)&&!groups.length, sheet1:s1, sheet2:s2, groups:groups};
+}
+function taxInvoiceGroupConflict(lines){
+  if(!lines||!lines.length) return null;
+  const clientIds=[...new Set(lines.map(line=>String(line.clientId)))];
+  const dates=[...new Set(lines.map(line=>String(line.date)))];
+  if(clientIds.length===1&&dates.length===1) return null;
+  return {
+    clientIds:clientIds,
+    dates:dates,
+    settleIds:[...new Set(lines.map(line=>line.settleId))],
+    names:lines.map(line=>line.name)
+  };
+}
+function taxInvoiceItemTaxTarget(qt, it){
+  if(!qt||!qt.taxYn||!it) return false;
+  const ti=qt.taxItems||{};
+  const calc=it.calc;
+  if(calc==='fee1'||calc==='fee2') return !!ti.fee;
+  if(calc==='delivery') return !!ti.delivery;
+  if(calc==='product') return !!ti.product;
+  if(calc==='custom') return it.taxApply!==false;
+  return false;
+}
+function taxInvoiceFeeRateMissing(it){
+  if(!it||it.feeRate==null) return true;
+  if(typeof it.feeRate==='string'&&it.feeRate.trim()==='') return true;
+  if(!taxInvoiceHasNum(it.feeRate)) return true;
+  return taxInvoiceNum(it.feeRate)===0;
+}
+function taxInvoiceDocAmounts(it, qt){
+  const supply=(Number(it&&it.qty)||0)*(Number(it&&it.unitPrice)||0);
+  const target=taxInvoiceItemTaxTarget(qt, it);
+  const isProd=!!(it&&it.calc==='product');
+  const rateMissing=taxInvoiceFeeRateMissing(it);
+  const feeRate=(isProd&&target)?(rateMissing?10:taxInvoiceNum(it.feeRate)):0;
+  const commission=target?Math.round(supply*(feeRate/100)):0;
+  const vat=target?Math.round((supply+commission)*0.1):0;
+  return {supply:supply, commission:commission, vat:vat, target:target, feeRateDefault:!!(isProd&&target&&rateMissing)};
+}
+function taxInvoiceChecksAllOff(qt){
+  if(!qt||!qt.taxYn) return false;
+  const ti=qt.taxItems||{};
+  return !ti.fee&&!ti.delivery&&!ti.product;
+}
+function taxInvoiceStoredVat(it){
+  if(!taxInvoiceHasNum(it&&it.vat)) return null;
+  const n=taxInvoiceNum(it.vat);
+  return n!==0?n:null;
+}
+function taxInvoiceEditorTotal(qt){
+  if(!qt||!Array.isArray(qt.items)) return 0;
+  const taxYn=!!qt.taxYn;
+  const taxItems=qt.taxItems||{};
+  return qt.items.reduce((sum,it)=>{
+    if(!it) return sum;
+    const supply=it.qty*it.unitPrice;
+    const applyTax=((it.calc==='fee1'||it.calc==='fee2')&&taxItems.fee)||(it.calc==='delivery'&&taxItems.delivery)||(it.calc==='product'&&taxItems.product)||(it.calc==='custom'&&taxYn&&(it.taxApply!==false));
+    const feeRate=(it.calc==='product'&&applyTax)?(it.feeRate||10):0;
+    const commission=applyTax?Math.round(supply*(feeRate/100)):0;
+    const vat=applyTax?Math.round((supply+commission)*0.1):0;
+    return sum+(supply+commission+vat);
+  },0);
+}
+function taxInvoiceReviewReasons(line, flags){
+  const reasons=[];
+  if(flags&&flags.storedVatOff) reasons.push('체크 꺼짐 - 저장된 부가세 있음');
+  if(flags&&flags.qtyEmpty) reasons.push('수량이 비어 있어 0으로 처리됨');
+  if(flags&&flags.memoFee) reasons.push('수수료가 메모 "수수료 N원"에서 읽어 옴');
+  if(flags&&flags.defaultRate) reasons.push('수수료율이 비어 있어 기본 10% 적용');
+  if(!line.clientId) reasons.push('clientId 없음');
+  if(!line.receiverText) reasons.push('공급받는자 사업자정보 빈칸');
+  return reasons;
+}
+function taxInvoiceLineOf(row, qt, it, client, meta){
+  const checked=taxInvoiceItemTaxTarget(qt, it);
+  const storedVat=taxInvoiceStoredVat(it);
+  let mode='';
+  if(!checked&&storedVat!=null) mode='storedVat';
+  else if(checked) mode='checked';
+  else return null;
+  const docAmt=taxInvoiceDocAmounts(it, qt);
+  let supply, fee, vat, supplySrc, feeSrc, vatSrc;
+  if(mode==='storedVat'){
+    if(taxInvoiceHasNum(it.supply)){ supply=taxInvoiceNum(it.supply); supplySrc='field'; }
+    else { supply=docAmt.supply; supplySrc='calc'; }
+    if(taxInvoiceHasNum(it.fee)){ fee=taxInvoiceNum(it.fee); feeSrc='field'; }
+    else if(taxInvoiceHasNum(it.commission)){ fee=taxInvoiceNum(it.commission); feeSrc='field'; }
+    else {
+      const memoFee=taxInvoiceMemoFee(it.memo);
+      if(memoFee!=null){ fee=memoFee; feeSrc='memo'; }
+      else { fee=0; feeSrc='calc'; }
+    }
+    vat=storedVat; vatSrc='field';
+  }else{
+    if(taxInvoiceHasNum(it.supply)){ supply=taxInvoiceNum(it.supply); supplySrc='field'; }
+    else { supply=docAmt.supply; supplySrc='calc'; }
+    if(taxInvoiceHasNum(it.fee)){ fee=taxInvoiceNum(it.fee); feeSrc='field'; }
+    else if(taxInvoiceHasNum(it.commission)){ fee=taxInvoiceNum(it.commission); feeSrc='field'; }
+    else {
+      const memoFee=taxInvoiceMemoFee(it.memo);
+      if(memoFee!=null&&!docAmt.commission){ fee=memoFee; feeSrc='memo'; }
+      else { fee=docAmt.commission; feeSrc='calc'; }
+    }
+    if(taxInvoiceHasNum(it.vat)){ vat=taxInvoiceNum(it.vat); vatSrc='field'; }
+    else { vat=docAmt.vat; vatSrc='calc'; }
+  }
+  const total=taxInvoiceHasNum(it.total)?taxInvoiceNum(it.total):(supply+fee+vat);
+  if(fee===0&&vat===0) return null;
+  meta.supply[supplySrc]++;
+  meta.fee[feeSrc]++;
+  meta.vat[vatSrc]++;
+  if(taxInvoiceHasNum(it.total)) meta.total.field++;
+  else meta.total.computed++;
+  const qty=taxInvoiceHasNum(it.qty)?taxInvoiceNum(it.qty):0;
+  const unitPrice=taxInvoiceHasNum(it.unitPrice)?taxInvoiceNum(it.unitPrice):0;
+  if(!taxInvoiceHasNum(it.qty)) meta.missingQty++;
+  if(!taxInvoiceHasNum(it.unitPrice)) meta.missingUnit++;
+  const name=taxInvoiceItemName(it);
+  if(!name) meta.missingName++;
+  const line=taxInvoicePackLine(row, qt, client, {name:name, qty:qty, unitPrice:unitPrice, supply:supply, fee:fee, vat:vat, total:total});
+  const rateMissing=taxInvoiceFeeRateMissing(it);
+  const defaultRate=it.calc==='product'&&feeSrc==='calc'&&!!(docAmt.feeRateDefault&&rateMissing);
+  line.reasons=taxInvoiceReviewReasons(line, {
+    storedVatOff:mode==='storedVat',
+    qtyEmpty:!taxInvoiceHasNum(it.qty),
+    memoFee:feeSrc==='memo',
+    defaultRate:!!defaultRate
+  });
+  line.solo=mode==='storedVat';
+  return line;
+}
+function taxInvoicePackLine(row, qt, client, amounts){
+  const clientId=row&&row.clientId!=null?String(row.clientId).trim():'';
+  const date=settleExcelYmd((row&&row.date)||(qt&&qt.date)||'');
+  const clientName=taxInvoicePick([row&&row._clientName, client&&client.name, qt&&qt.toName]);
+  const supplierBiz=qt?resolveQuoteSupplier(qt):getWaveBiz(WAVE_BIZ_DEFAULT_KEY);
+  return {
+    clientId:clientId,
+    date:date,
+    clientName:clientName,
+    settleId:row&&row.id!=null?String(row.id):'',
+    name:amounts.name,
+    qty:amounts.qty,
+    unitPrice:amounts.unitPrice,
+    supply:amounts.supply,
+    fee:amounts.fee,
+    vat:amounts.vat,
+    total:amounts.total,
+    supplierText:taxInvoiceSupplierText(supplierBiz),
+    receiverText:taxInvoiceReceiverText(qt, client)
+  };
+}
+function taxInvoiceLumpLine(row, qt, client, meta){
+  if(!(qt&&qt.taxYn)&&!(row&&row.taxYn)) return null;
+  const supply=taxInvoiceHasNum(row&&row.supply)?taxInvoiceNum(row.supply):(taxInvoiceHasNum(qt&&qt.supply)?taxInvoiceNum(qt.supply):0);
+  const fee=taxInvoiceHasNum(row&&row.fee)?taxInvoiceNum(row.fee):(taxInvoiceHasNum(qt&&qt.fee)?taxInvoiceNum(qt.fee):0);
+  const vat=taxInvoiceHasNum(row&&row.vat)?taxInvoiceNum(row.vat):(taxInvoiceHasNum(qt&&qt.vat)?taxInvoiceNum(qt.vat):0);
+  if(fee===0&&vat===0) return null;
+  meta.lump++;
+  let total;
+  if(taxInvoiceHasNum(row&&row.total)){ total=taxInvoiceNum(row.total); meta.total.field++; }
+  else if(taxInvoiceHasNum(qt&&qt.total)){ total=taxInvoiceNum(qt.total); meta.total.field++; }
+  else { total=supply+fee+vat; meta.total.computed++; }
+  const name=taxInvoicePick([row&&row.itemSummary]);
+  if(!name) meta.missingName++;
+  meta.missingQty++;
+  meta.missingUnit++;
+  const line=taxInvoicePackLine(row, qt, client, {name:name, qty:0, unitPrice:0, supply:supply, fee:fee, vat:vat, total:total});
+  line.reasons=taxInvoiceReviewReasons(line, {qtyEmpty:true, memoFee:false, defaultRate:false});
+  return line;
+}
+function taxInvoiceLinesFromRow(row, qt, client, meta){
+  const items=qt&&Array.isArray(qt.items)?orderedQuoteItems(qt.items).filter(Boolean):[];
+  if(!items.length){
+    const lump=taxInvoiceLumpLine(row, qt, client, meta);
+    return lump?[lump]:[];
+  }
+  const lines=[];
+  items.forEach((it,idx)=>{
+    const line=taxInvoiceLineOf(row, qt, it, client, meta);
+    if(!line) return;
+    if(line.solo) line.soloKey=String(row&&row.id!=null?row.id:'')+':'+idx;
+    lines.push(line);
+  });
+  return lines;
+}
+function taxInvoiceJoinText(lines, key){
+  const out=[];
+  const seen=new Set();
+  lines.forEach(line=>{
+    const text=String(line[key]||'').trim();
+    if(!text||seen.has(text)) return;
+    seen.add(text);
+    out.push(text);
+  });
+  return out.join('\n');
+}
+function taxInvoiceBreakdown(lines){
+  if(!lines||lines.length<2) return '';
+  return lines.map(line=>(line.name||'')+' '+taxInvoiceComma(line.supply)).join(' / ')+' ('+lines.length+'건)';
+}
+function taxInvoiceNote(lines, merged){
+  const note=merged?taxInvoiceBreakdown(lines):'';
+  const review=(lines||[]).some(line=>line.reasons&&line.reasons.length);
+  if(!review) return note;
+  return note?note+' ⚠확인필요':'⚠확인필요';
+}
+function buildTaxInvoiceExport(rows, quotes, clients){
+  const quoteById=new Map();
+  (quotes||[]).forEach(qt=>{ if(qt&&qt.id) quoteById.set(qt.id, qt); });
+  const clientById=new Map();
+  (clients||[]).forEach(c=>{ if(c&&c.id) clientById.set(c.id, c); });
+  const meta={
+    supply:{field:0,calc:0}, fee:{field:0,memo:0,calc:0}, vat:{field:0,calc:0},
+    total:{field:0,computed:0}, missingName:0, missingQty:0, missingUnit:0,
+    missingClientId:0, missingSettleId:0, lump:0, receiverFilled:0, receiverEmpty:0
+  };
+  const lines=[];
+  const excluded=[];
+  const excludedSeen=new Set();
+  const excludeReason='체크 전부 꺼짐 - 부가세 계산 불일치(qtDocLine 예외)';
+  (rows||[]).forEach(row=>{
+    if(!row) return;
+    const qt=row.qtId?quoteById.get(row.qtId)||null:null;
+    const client=row.clientId?clientById.get(row.clientId)||null:null;
+    if(taxInvoiceChecksAllOff(qt)){
+      const qid=String(qt.id);
+      if(!excludedSeen.has(qid)){
+        excludedSeen.add(qid);
+        const editor=taxInvoiceEditorTotal(qt);
+        const saved=calcQtTotal(qt);
+        excluded.push({
+          clientName:taxInvoicePick([row._clientName, client&&client.name, qt.toName]),
+          date:settleExcelYmd((row&&row.date)||(qt&&qt.date)||''),
+          quoteId:qid,
+          editor:editor,
+          saved:saved,
+          diff:saved-editor
+        });
+      }
+      return;
+    }
+    taxInvoiceLinesFromRow(row, qt, client, meta).forEach(line=>lines.push(line));
+  });
+  if(!lines.length&&!excluded.length) return {ok:false, reason:'empty'};
+  const groups=new Map();
+  lines.forEach(line=>{
+    if(!line.clientId) meta.missingClientId++;
+    if(!line.settleId) meta.missingSettleId++;
+    if(line.receiverText) meta.receiverFilled++;
+    else meta.receiverEmpty++;
+    const dateKey=line.date||('__nodate__:'+line.settleId);
+    const baseKey=line.clientId?(line.clientId+'\u0001'+dateKey):('__noid__:'+line.settleId+'\u0001'+dateKey);
+    const key=line.solo?baseKey+'\u0001solo:'+(line.soloKey||line.settleId):baseKey;
+    let g=groups.get(key);
+    if(!g){
+      g={key:key, clientId:line.clientId, date:line.date, clientName:line.clientName, items:[]};
+      groups.set(key, g);
+    }
+    if(!g.clientName&&line.clientName) g.clientName=line.clientName;
+    g.items.push(line);
+  });
+  const conflicts=[];
+  groups.forEach(g=>{
+    const conflict=taxInvoiceGroupConflict(g.items);
+    if(conflict) conflicts.push(Object.assign({key:g.key, clientName:g.clientName}, conflict));
+  });
+  if(conflicts.length) return {ok:false, reason:'mismatch', detail:{kind:'identity', groups:conflicts}};
+  const ordered=[...groups.values()].sort((a,b)=>{
+    if(a.date!==b.date) return a.date<b.date?-1:1;
+    return String(a.clientName).localeCompare(String(b.clientName),'ko');
+  });
+  const head1=['No','공급자 사업자정보','견적일자','거래처명','공급받는자 사업자정보','품명','수량','단가','공급가액','수수료','부가세','합계','합산내역'];
+  const head2=['시트1 No','견적일자','거래처명','원래 품명','수량','단가','공급가액','수수료','부가세','합계','정산데이터ID','확인필요'];
+  const sheet1=[head1];
+  const sheet2=[head2];
+  const yellow=[];
+  const red=[];
+  let mergedRows=0;
+  let reviewCount=0;
+  const grand={supply:0,fee:0,vat:0,total:0};
+  ordered.forEach((g,idx)=>{
+    const no=idx+1;
+    const sum=taxInvoiceSum(g.items);
+    grand.supply+=sum.supply;
+    grand.fee+=sum.fee;
+    grand.vat+=sum.vat;
+    grand.total+=sum.total;
+    const merged=g.items.length>=2;
+    if(merged){ mergedRows++; yellow.push(sheet1.length); }
+    const sample=g.items[0];
+    sheet1.push([
+      no,
+      taxInvoiceJoinText(g.items,'supplierText'),
+      g.date,
+      g.clientName,
+      taxInvoiceJoinText(g.items,'receiverText'),
+      merged?'종합 마케팅':sample.name,
+      merged?1:sample.qty,
+      merged?sum.supply:sample.unitPrice,
+      sum.supply,
+      sum.fee,
+      sum.vat,
+      sum.total,
+      taxInvoiceNote(g.items, merged)
+    ]);
+    g.items.forEach(line=>{
+      const reasons=(line.reasons||[]).join('\n');
+      if(reasons){ reviewCount++; red.push(sheet2.length); }
+      sheet2.push([
+        no, line.date, line.clientName, line.name, line.qty, line.unitPrice,
+        line.supply, line.fee, line.vat, line.total, line.settleId, reasons
+      ]);
+    });
+  });
+  sheet1.push(['합계','','','','','','','', grand.supply, grand.fee, grand.vat, grand.total, '']);
+  sheet2.push(['합계','','','','','', grand.supply, grand.fee, grand.vat, grand.total, '', '']);
+  const check=taxInvoiceSheetCheck(sheet1, sheet2);
+  if(!check.ok) return {ok:false, reason:'mismatch', detail:{kind:'amount', sheet1:check.sheet1, sheet2:check.sheet2, groups:check.groups}};
+  excluded.sort((a,b)=>{
+    if(a.date!==b.date) return a.date<b.date?-1:1;
+    return String(a.clientName).localeCompare(String(b.clientName),'ko');
+  });
+  const sheet3=excluded.length
+    ?[['거래처명','견적일자','견적ID','작성화면 금액(calcRow)','저장 합계(qtDocLine)','차이','제외사유']]
+    :[['제외 건 없음']];
+  excluded.forEach(ex=>{
+    sheet3.push([ex.clientName, ex.date, ex.quoteId, ex.editor, ex.saved, ex.diff, excludeReason]);
+  });
+  return {ok:true, sheet1:sheet1, sheet2:sheet2, sheet3:sheet3, yellow:yellow, red:red, meta:meta, grand:grand, counts:{total:ordered.length, merged:mergedRows, review:reviewCount, excluded:excluded.length}};
+}
+function taxInvoiceWriteSheet(wb, name, aoa, numCols, yellowRows, redRows, opts){
+  const ws=wb.addWorksheet(name);
+  ws.views=[{state:'frozen', ySplit:1}];
+  const yellow=new Set(yellowRows||[]);
+  const red=new Set(redRows||[]);
+  const nums=new Set(numCols);
+  const markHead=!(opts&&opts.head===false);
+  const markTotal=!(opts&&opts.total===false);
+  aoa.forEach((row,r)=>{
+    const excelRow=ws.addRow(row.map(v=>v==null?'':v));
+    const isHead=markHead&&r===0;
+    const isTotal=markTotal&&r===aoa.length-1&&r!==0;
+    row.forEach((val,c)=>{
+      const cell=excelRow.getCell(c+1);
+      if(isHead||isTotal) cell.font={bold:true};
+      if(isHead) cell.fill={type:'pattern', pattern:'solid', fgColor:{argb:'FFEDEAE3'}};
+      if(red.has(r)) cell.fill={type:'pattern', pattern:'solid', fgColor:{argb:'FFF4CCCC'}};
+      else if(yellow.has(r)) cell.fill={type:'pattern', pattern:'solid', fgColor:{argb:'FFFFF2CC'}};
+      if(nums.has(c)&&typeof val==='number') cell.numFmt='#,##0';
+      if(typeof val==='string'&&val.indexOf('\n')>=0) cell.alignment={wrapText:true, vertical:'top'};
+    });
+  });
+  settleExcelColWidths(aoa).forEach((col,i)=>{
+    ws.getColumn(i+1).width=col.wch===9?9.01:col.wch;
+  });
+  return ws;
+}
+async function exportTaxInvoiceExcel(){
+  try{
+    if(document.body.classList.contains('client-view-link')) return;
+    const app=document.getElementById('app');
+    if(!app||app.classList.contains('hidden')) return;
+    if(!CUR_ADMIN){ alert('로그인이 필요합니다'); return; }
+    if(typeof ExcelJS==='undefined'){ toast('엑셀 라이브러리 로딩 중...','error'); return; }
+    if(!_svLoaded.st||!_svLoaded.qt){
+      alert('정산 데이터를 불러오는 중입니다. 잠시 후 다시 시도하세요');
+      return;
+    }
+    const filter=readSettleAllFilter();
+    const locked=Object.assign({}, filter, {taxIssued:'n'});
+    const rows=settleAllSourceRows().filter(s=>rowPassesSettleAllFilter(s, locked));
+    const data=ld();
+    const built=buildTaxInvoiceExport(rows, data.quotes||[], data.clients||[]);
+    if(!built.ok&&built.reason==='empty'){
+      alert('수수료 또는 부가세가 있는 정산 건이 없습니다');
+      return;
+    }
+    if(!built.ok){
+      console.error('합산 금액 불일치 - 다운로드 중단', built.detail);
+      alert('합산 금액 불일치 - 다운로드 중단');
+      return;
+    }
+    const wb=new ExcelJS.Workbook();
+    taxInvoiceWriteSheet(wb, '세금계산서발급용', built.sheet1, [6,7,8,9,10,11], built.yellow, []);
+    taxInvoiceWriteSheet(wb, '상세내역', built.sheet2, [4,5,6,7,8,9], [], built.red);
+    const sheet3=built.sheet3||[['제외 건 없음']];
+    const sheet3HasRows=sheet3.length>1;
+    taxInvoiceWriteSheet(wb, '제외내역', sheet3, sheet3HasRows?[3,4,5]:[], [], [], sheet3HasRows?{total:false}:{head:false, total:false});
+    const day=String(getKSTDate()||'').replace(/-/g,'');
+    settleExcelDownload(await wb.xlsx.writeBuffer(), '세금계산서발급용_'+day+'.xlsx');
+    const counts=built.counts||{total:0, merged:0, review:0, excluded:0};
+    alert('총 '+counts.total+'행 / 합산 '+counts.merged+'행 / 확인필요 '+counts.review+'건 / 제외 '+(counts.excluded||0)+'건');
   }catch(e){
     console.error(e);
     toast('엑셀 다운로드 실패: '+(e&&e.message?e.message:e),'error');
