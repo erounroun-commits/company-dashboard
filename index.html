@@ -10378,8 +10378,8 @@ async function exportSettleExcel(){
   }
 }
 
-// 세금계산서 발급용 엑셀. 시트1 1행은 거래처+작성월이고, 그 안에 견적일자 블록을 최대 4개 둔다.
-const TAX_INV_S1={no:0,client:1,bizNo:2,bizName:3,month:4,block:5,span:8};
+// 세금계산서 발급용 엑셀. 시트1 1행은 거래처+사업자번호+같은 달이고, 그 안에 견적일자 블록을 최대 4개 둔다.
+const TAX_INV_S1={no:0,client:1,bizNo:2,bizName:3,block:4,span:8};
 const TAX_INV_S2={no:0,slot:1,date:2,client:3,item:4,qty:5,unit:6,supply:7,fee:8,vat:9,total:10,id:11,reason:12};
 function taxInvoiceBlockCol(n, field){
   const map={day:0,item:1,spec:2,qty:3,unit:4,supply:5,vat:6,memo:7};
@@ -10525,7 +10525,6 @@ function taxInvoiceSheetCheck(sheet1, sheet2, invoices){
           no:no,
           slot:slot,
           client:sheet1[i][TAX_INV_S1.client],
-          month:sheet1[i][TAX_INV_S1.month],
           sheet1:{supply:Number(supply)||0, vat:Number(vat)||0, qty:qty, unit:unit},
           sheet2:{supply:detail.supply, fee:detail.fee, vat:detail.vat, supplyPlusFee:expectSupply},
           settleIds:detail.settleIds
@@ -10546,11 +10545,16 @@ function taxInvoiceSheetCheck(sheet1, sheet2, invoices){
     if(blocks.length>4) identity.push({kind:'blocks', clientName:inv.clientName, month:inv.month, count:blocks.length});
     const ids=new Set();
     const months=new Set();
+    const bizNos=new Set();
     blocks.forEach(block=>{
       months.add(block.month);
-      (block.items||[]).forEach(line=>ids.add(String(line.clientId)));
+      (block.items||[]).forEach(line=>{
+        ids.add(String(line.clientId));
+        bizNos.add(String(line.bizNo||''));
+      });
     });
     if(ids.size!==1) identity.push({kind:'client', clientName:inv.clientName, month:inv.month, clientIds:[...ids]});
+    if(bizNos.size!==1) identity.push({kind:'bizNo', clientName:inv.clientName, month:inv.month, bizNos:[...bizNos]});
     if(months.size!==1) identity.push({kind:'month', clientName:inv.clientName, month:inv.month, months:[...months]});
   });
   const sheet1Sum={supply:s1Supply, vat:s1Vat};
@@ -10812,12 +10816,13 @@ function buildTaxInvoiceExport(rows, quotes, clients){
     if(line.receiverText) meta.receiverFilled++;
     else meta.receiverEmpty++;
     const dateKey=line.date||('__nodate__:'+line.settleId);
-    const baseKey=line.clientId?(line.clientId+'\u0001'+dateKey):('__noid__:'+line.settleId+'\u0001'+dateKey);
+    const bizKey=line.bizNo||'';
+    const baseKey=line.clientId?(line.clientId+'\u0001'+bizKey+'\u0001'+dateKey):('__noid__:'+line.settleId+'\u0001'+bizKey+'\u0001'+dateKey);
     const key=line.solo?baseKey+'\u0001solo:'+(line.soloKey||line.settleId):baseKey;
     let g=blocks.get(key);
     if(!g){
       const month=/^\d{4}-\d{2}-\d{2}$/.test(line.date)?line.date.slice(0,7):('__nodate__:'+line.settleId);
-      g={key:key, clientId:line.clientId, date:line.date, month:month, clientName:line.clientName, solo:!!line.solo, items:[]};
+      g={key:key, clientId:line.clientId, bizNo:bizKey, date:line.date, month:month, clientName:line.clientName, solo:!!line.solo, items:[]};
       blocks.set(key, g);
     }
     if(!g.clientName&&line.clientName) g.clientName=line.clientName;
@@ -10832,10 +10837,10 @@ function buildTaxInvoiceExport(rows, quotes, clients){
   const byInvoice=new Map();
   blocks.forEach(block=>{
     const clientKey=block.clientId?block.clientId:('__noid__:'+(block.items[0]&&block.items[0].settleId||block.key));
-    const invKey=clientKey+'\u0001'+block.month;
+    const invKey=clientKey+'\u0001'+(block.bizNo||'')+'\u0001'+block.month;
     let inv=byInvoice.get(invKey);
     if(!inv){
-      inv={key:invKey, clientId:block.clientId, month:block.month, clientName:block.clientName, blocks:[]};
+      inv={key:invKey, clientId:block.clientId, bizNo:block.bizNo||'', month:block.month, clientName:block.clientName, blocks:[]};
       byInvoice.set(invKey, inv);
     }
     if(!inv.clientName&&block.clientName) inv.clientName=block.clientName;
@@ -10851,6 +10856,7 @@ function buildTaxInvoiceExport(rows, quotes, clients){
     for(let i=0;i<inv.blocks.length;i+=4){
       invoiceRows.push({
         clientId:inv.clientId,
+        bizNo:inv.bizNo||'',
         month:inv.month,
         clientName:inv.clientName,
         blocks:inv.blocks.slice(i, i+4)
@@ -10862,17 +10868,19 @@ function buildTaxInvoiceExport(rows, quotes, clients){
     const name=String(a.clientName).localeCompare(String(b.clientName),'ko');
     if(name) return name;
     if(String(a.clientId)!==String(b.clientId)) return String(a.clientId)<String(b.clientId)?-1:1;
+    if(String(a.bizNo)!==String(b.bizNo)) return String(a.bizNo)<String(b.bizNo)?-1:1;
     const ad=a.blocks[0]?a.blocks[0].date:'';
     const bd=b.blocks[0]?b.blocks[0].date:'';
     return ad<bd?-1:(ad>bd?1:0);
   });
-  const head1=['NO','거래처명','사업자번호','상호','작성월'];
+  const head1=['NO','거래처명','사업자번호','상호'];
   for(let n=1;n<=4;n++) head1.push('일자'+n,'품목'+n,'규격'+n,'수량'+n,'단가'+n,'공급가액'+n,'세액'+n,'품목비고'+n);
   const head2=['시트1 No','일자칸','견적일자','거래처명','원래 품명','수량','단가','공급가액','수수료','부가세','합계','정산데이터ID','확인필요'];
   const sheet1=[head1];
   const sheet2=[head2];
   const red=[];
   const fills={};
+  const textCells={};
   let reviewCount=0;
   let blockCount=0;
   const grand={supply:0,fee:0,vat:0,total:0};
@@ -10892,10 +10900,12 @@ function buildTaxInvoiceExport(rows, quotes, clients){
     const allItems=inv.blocks.reduce((acc,block)=>acc.concat(block.items),[]);
     const bizNo=oneField(allItems,'bizNo');
     const bizName=oneField(allItems,'bizName');
-    const monthLabel=/^\d{4}-\d{2}$/.test(inv.month)?inv.month:'';
-    const row=[no, inv.clientName, bizNo, bizName, monthLabel];
+    const leadingZero=!!bizNo&&bizNo.charAt(0)==='0';
+    const bizCell=bizNo?(leadingZero?bizNo:(Number.isSafeInteger(Number(bizNo))?Number(bizNo):bizNo)):'';
+    const row=[no, inv.clientName, bizCell, bizName];
     const sheetRow=sheet1.length;
     if(!bizNo) fills[sheetRow+','+TAX_INV_S1.bizNo]='FFF4CCCC';
+    if(leadingZero) textCells[sheetRow+','+TAX_INV_S1.bizNo]=true;
     if(!bizName) fills[sheetRow+','+TAX_INV_S1.bizName]='FFF4CCCC';
     for(let n=0;n<4;n++){
       const block=inv.blocks[n];
@@ -10910,19 +10920,21 @@ function buildTaxInvoiceExport(rows, quotes, clients){
       grand.vat+=sum.vat;
       grand.total+=sum.total;
       const supplyFee=sum.supply+sum.fee;
-      const day=/^\d{4}-\d{2}-\d{2}$/.test(block.date)?block.date.slice(8,10):'';
-      row.push(day, '종합마케팅', '', 1, supplyFee, supplyFee, sum.vat, '');
-      const review=block.items.some(line=>line.reasons&&line.reasons.length);
+      const ymd=/^\d{4}-\d{2}-\d{2}$/.test(block.date)?Number(block.date.replace(/-/g,'')):'';
+      row.push(ymd, '종합마케팅', '', 1, supplyFee, supplyFee, sum.vat, '');
+      const review=leadingZero||block.items.some(line=>line.reasons&&line.reasons.length);
       if(review){
         const base=taxInvoiceBlockCol(n,'day');
         for(let c=0;c<8;c++) fills[sheetRow+','+(base+c)]='FFF4CCCC';
       }
       block.items.forEach(line=>{
-        const reasons=(line.reasons||[]).join('\n');
-        if(reasons){ reviewCount++; red.push(sheet2.length); }
+        const reasons=(line.reasons||[]).slice();
+        if(leadingZero) reasons.push('사업자번호 앞자리 0');
+        const reasonText=reasons.join('\n');
+        if(reasonText){ reviewCount++; red.push(sheet2.length); }
         sheet2.push([
           no, '일자'+(n+1), line.date, line.clientName, line.name, line.qty, line.unitPrice,
-          line.supply, line.fee, line.vat, line.total, line.settleId, reasons
+          line.supply, line.fee, line.vat, line.total, line.settleId, reasonText
         ]);
       });
     }
@@ -10942,12 +10954,10 @@ function buildTaxInvoiceExport(rows, quotes, clients){
     sheet3.push([ex.clientName, ex.date, ex.quoteId, ex.editor, ex.saved, ex.diff, excludeReason]);
   });
   const numCols=[];
-  const textCols=[TAX_INV_S1.bizNo];
   for(let n=0;n<4;n++){
-    textCols.push(taxInvoiceBlockCol(n,'day'));
     numCols.push(taxInvoiceBlockCol(n,'qty'), taxInvoiceBlockCol(n,'unit'), taxInvoiceBlockCol(n,'supply'), taxInvoiceBlockCol(n,'vat'));
   }
-  return {ok:true, sheet1:sheet1, sheet2:sheet2, sheet3:sheet3, fills:fills, numCols:numCols, textCols:textCols, red:red, meta:meta, grand:grand, counts:{invoices:invoiceRows.length, blocks:blockCount, review:reviewCount, excluded:excluded.length}};
+  return {ok:true, sheet1:sheet1, sheet2:sheet2, sheet3:sheet3, fills:fills, textCells:textCells, numCols:numCols, textCols:[], red:red, meta:meta, grand:grand, counts:{invoices:invoiceRows.length, blocks:blockCount, review:reviewCount, excluded:excluded.length}};
 }
 function taxInvoiceWriteSheet(wb, name, aoa, numCols, yellowRows, redRows, opts){
   const ws=wb.addWorksheet(name);
@@ -10956,6 +10966,7 @@ function taxInvoiceWriteSheet(wb, name, aoa, numCols, yellowRows, redRows, opts)
   const red=new Set(redRows||[]);
   const nums=new Set(numCols);
   const textCols=new Set((opts&&opts.textCols)||[]);
+  const textCells=(opts&&opts.textCells)||null;
   const fills=(opts&&opts.fills)||null;
   const plainNums=!!(opts&&opts.plainNums);
   const markHead=!(opts&&opts.head===false);
@@ -10972,7 +10983,7 @@ function taxInvoiceWriteSheet(wb, name, aoa, numCols, yellowRows, redRows, opts)
       if(painted) cell.fill={type:'pattern', pattern:'solid', fgColor:{argb:painted}};
       else if(red.has(r)) cell.fill={type:'pattern', pattern:'solid', fgColor:{argb:'FFF4CCCC'}};
       else if(yellow.has(r)) cell.fill={type:'pattern', pattern:'solid', fgColor:{argb:'FFFFF2CC'}};
-      if(!isHead&&textCols.has(c)){
+      if(!isHead&&(textCols.has(c)||(textCells&&textCells[r+','+c]))){
         cell.numFmt='@';
         if(val!=null&&val!=='') cell.value=String(val);
       }else if(nums.has(c)&&typeof val==='number'&&!plainNums) cell.numFmt='#,##0';
@@ -11010,7 +11021,7 @@ async function exportTaxInvoiceExcel(){
       return;
     }
     const wb=new ExcelJS.Workbook();
-    taxInvoiceWriteSheet(wb, '세금계산서발급용', built.sheet1, built.numCols||[], [], [], {total:false, fills:built.fills||{}, textCols:built.textCols||[], plainNums:true});
+    taxInvoiceWriteSheet(wb, '세금계산서발급용', built.sheet1, built.numCols||[], [], [], {total:false, fills:built.fills||{}, textCols:built.textCols||[], textCells:built.textCells||{}, plainNums:true});
     taxInvoiceWriteSheet(wb, '상세내역', built.sheet2, [5,6,7,8,9,10], [], built.red);
     const sheet3=built.sheet3||[['제외 건 없음']];
     const sheet3HasRows=sheet3.length>1;
