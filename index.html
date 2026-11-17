@@ -1149,6 +1149,7 @@ body.client-view-link.client-view-ready #client-view-loading{display:none;}
           </select>
           <button type="button" class="btn btn-green btn-sm" onclick="exportSettleExcel()">📥 엑셀 다운로드</button>
           <button type="button" class="btn btn-sm btn-blue" onclick="exportTaxInvoiceExcel()">세금계산서 발급용 엑셀 다운로드</button>
+          <button type="button" class="btn btn-sm btn-gray" onclick="openTaxInvoiceIssue()">세금계산서 일괄 발행 처리</button>
         </div>
         <div class="tw" id="settle-all-table"></div>
       </div>
@@ -10881,6 +10882,7 @@ function buildTaxInvoiceExport(rows, quotes, clients){
   const red=[];
   const fills={};
   const textCells={};
+  const batchRows=[];
   let reviewCount=0;
   let blockCount=0;
   const grand={supply:0,fee:0,vat:0,total:0};
@@ -10904,9 +10906,13 @@ function buildTaxInvoiceExport(rows, quotes, clients){
     const bizCell=bizNo?(leadingZero?bizNo:(Number.isSafeInteger(Number(bizNo))?Number(bizNo):bizNo)):'';
     const row=[no, inv.clientName, bizCell, bizName];
     const sheetRow=sheet1.length;
+    let rowReview=leadingZero||!bizNo||!bizName;
     if(!bizNo) fills[sheetRow+','+TAX_INV_S1.bizNo]='FFF4CCCC';
     if(leadingZero) textCells[sheetRow+','+TAX_INV_S1.bizNo]=true;
     if(!bizName) fills[sheetRow+','+TAX_INV_S1.bizName]='FFF4CCCC';
+    const days=[];
+    const settleMap=new Map();
+    let rowSupply=0, rowVat=0;
     for(let n=0;n<4;n++){
       const block=inv.blocks[n];
       if(!block){
@@ -10920,14 +10926,27 @@ function buildTaxInvoiceExport(rows, quotes, clients){
       grand.vat+=sum.vat;
       grand.total+=sum.total;
       const supplyFee=sum.supply+sum.fee;
-      const ymd=/^\d{4}-\d{2}-\d{2}$/.test(block.date)?Number(block.date.replace(/-/g,'')):'';
-      row.push(ymd, '종합마케팅', '', 1, supplyFee, supplyFee, sum.vat, '');
+      rowSupply+=supplyFee;
+      rowVat+=sum.vat;
+      const day=/^\d{4}-\d{2}-\d{2}$/.test(block.date)?block.date.slice(8,10):'';
+      if(day){
+        days.push(day);
+        textCells[sheetRow+','+taxInvoiceBlockCol(n,'day')]=true;
+      }
+      row.push(day, '종합마케팅', '', 1, supplyFee, supplyFee, sum.vat, '');
       const review=leadingZero||block.items.some(line=>line.reasons&&line.reasons.length);
+      if(review) rowReview=true;
       if(review){
         const base=taxInvoiceBlockCol(n,'day');
         for(let c=0;c<8;c++) fills[sheetRow+','+(base+c)]='FFF4CCCC';
       }
       block.items.forEach(line=>{
+        const sid=line.settleId||'';
+        if(sid){
+          let acc=settleMap.get(sid);
+          if(!acc){ acc={id:sid, supply:0, fee:0, vat:0, total:0}; settleMap.set(sid, acc); }
+          acc.supply+=line.supply; acc.fee+=line.fee; acc.vat+=line.vat; acc.total+=line.total;
+        }
         const reasons=(line.reasons||[]).slice();
         if(leadingZero) reasons.push('사업자번호 앞자리 0');
         const reasonText=reasons.join('\n');
@@ -10939,6 +10958,18 @@ function buildTaxInvoiceExport(rows, quotes, clients){
       });
     }
     sheet1.push(row);
+    batchRows.push({
+      no:no,
+      clientName:inv.clientName||'',
+      bizNo:bizNo||'',
+      bizName:bizName||'',
+      days:days,
+      supplySum:rowSupply,
+      vatSum:rowVat,
+      review:!!rowReview,
+      settleIds:[...settleMap.keys()],
+      settles:[...settleMap.values()]
+    });
   });
   sheet2.push(['합계','','','','','','', grand.supply, grand.fee, grand.vat, grand.total, '', '']);
   const check=taxInvoiceSheetCheck(sheet1, sheet2, invoiceRows);
@@ -10957,7 +10988,9 @@ function buildTaxInvoiceExport(rows, quotes, clients){
   for(let n=0;n<4;n++){
     numCols.push(taxInvoiceBlockCol(n,'qty'), taxInvoiceBlockCol(n,'unit'), taxInvoiceBlockCol(n,'supply'), taxInvoiceBlockCol(n,'vat'));
   }
-  return {ok:true, sheet1:sheet1, sheet2:sheet2, sheet3:sheet3, fills:fills, textCells:textCells, numCols:numCols, textCols:[], red:red, meta:meta, grand:grand, counts:{invoices:invoiceRows.length, blocks:blockCount, review:reviewCount, excluded:excluded.length}};
+  const dayCols=[];
+  for(let n=0;n<4;n++) dayCols.push(taxInvoiceBlockCol(n,'day'));
+  return {ok:true, sheet1:sheet1, sheet2:sheet2, sheet3:sheet3, fills:fills, textCells:textCells, dayCols:dayCols, numCols:numCols, textCols:[], batchRows:batchRows, red:red, meta:meta, grand:grand, counts:{invoices:invoiceRows.length, blocks:blockCount, review:reviewCount, excluded:excluded.length}};
 }
 function taxInvoiceWriteSheet(wb, name, aoa, numCols, yellowRows, redRows, opts){
   const ws=wb.addWorksheet(name);
@@ -10993,7 +11026,43 @@ function taxInvoiceWriteSheet(wb, name, aoa, numCols, yellowRows, redRows, opts)
   settleExcelColWidths(aoa).forEach((col,i)=>{
     ws.getColumn(i+1).width=col.wch===9?9.01:col.wch;
   });
+  if(opts&&opts.ignoreTextNumberCols&&opts.ignoreTextNumberCols.length){
+    const cols=new Set(opts.ignoreTextNumberCols);
+    const refs=[];
+    aoa.forEach((row,r)=>{
+      if(r===0) return;
+      row.forEach((val,c)=>{
+        if(!cols.has(c)||val==null||val==='') return;
+        refs.push(taxInvoiceColLetter(c)+(r+1));
+      });
+    });
+    taxInvoiceIgnoreTextNumber(ws, refs);
+  }
   return ws;
+}
+function taxInvoiceColLetter(index){
+  let n=index+1, s='';
+  while(n>0){
+    const m=(n-1)%26;
+    s=String.fromCharCode(65+m)+s;
+    n=Math.floor((n-1)/26);
+  }
+  return s;
+}
+function taxInvoiceIgnoreTextNumber(ws, refs){
+  if(!ws||!refs||!refs.length) return false;
+  if(typeof ws.addIgnoredError==='function'){
+    refs.forEach(ref=>ws.addIgnoredError(ref, 'numberStoredAsText'));
+    return true;
+  }
+  const props=ws.properties;
+  if(props&&Object.prototype.hasOwnProperty.call(props, 'ignoredErrors')){
+    const list=Array.isArray(props.ignoredErrors)?props.ignoredErrors.slice():[];
+    refs.forEach(ref=>list.push({sqref:ref, numberStoredAsText:true}));
+    props.ignoredErrors=list;
+    return true;
+  }
+  return false;
 }
 async function exportTaxInvoiceExcel(){
   try{
@@ -11021,19 +11090,301 @@ async function exportTaxInvoiceExcel(){
       return;
     }
     const wb=new ExcelJS.Workbook();
-    taxInvoiceWriteSheet(wb, '세금계산서발급용', built.sheet1, built.numCols||[], [], [], {total:false, fills:built.fills||{}, textCols:built.textCols||[], textCells:built.textCells||{}, plainNums:true});
+    taxInvoiceWriteSheet(wb, '세금계산서발급용', built.sheet1, built.numCols||[], [], [], {total:false, fills:built.fills||{}, textCols:built.textCols||[], textCells:built.textCells||{}, ignoreTextNumberCols:built.dayCols||[], plainNums:true});
     taxInvoiceWriteSheet(wb, '상세내역', built.sheet2, [5,6,7,8,9,10], [], built.red);
     const sheet3=built.sheet3||[['제외 건 없음']];
     const sheet3HasRows=sheet3.length>1;
     taxInvoiceWriteSheet(wb, '제외내역', sheet3, sheet3HasRows?[3,4,5]:[], [], [], sheet3HasRows?{total:false}:{head:false, total:false});
+    const batch=await taxInvoiceSaveBatch(built.batchRows||[]);
     const day=String(getKSTDate()||'').replace(/-/g,'');
-    settleExcelDownload(await wb.xlsx.writeBuffer(), '세금계산서발급용_'+day+'.xlsx');
+    settleExcelDownload(await wb.xlsx.writeBuffer(), '세금계산서발급용_'+day+'_'+batch.suffix+'.xlsx');
     const counts=built.counts||{invoices:0, blocks:0, review:0, excluded:0};
     alert('세금계산서 '+(counts.invoices||0)+'장(행) / 일자 블록 '+(counts.blocks||0)+'개 / 확인필요 '+(counts.review||0)+'건 / 제외 '+(counts.excluded||0)+'건');
   }catch(e){
     console.error(e);
     toast('엑셀 다운로드 실패: '+(e&&e.message?e.message:e),'error');
   }
+}
+
+const TAX_INVOICE_BATCH_COL='taxInvoiceBatches';
+let TAX_ISSUE_BATCHES=[];
+let TAX_ISSUE_BATCH=null;
+let TAX_ISSUE_CHECKED=new Set();
+function taxInvoiceActor(){
+  return (CUR_ADMIN&&(CUR_ADMIN.username||CUR_ADMIN.loginId||CUR_ADMIN.id))||'';
+}
+function taxInvoiceNewBatchCode(){
+  const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s='';
+  for(let i=0;i<8;i++) s+=alphabet[Math.floor(Math.random()*alphabet.length)];
+  return s;
+}
+async function taxInvoiceSaveBatch(rows){
+  if(typeof db==='undefined') throw new Error('Firestore가 아직 준비되지 않았습니다.');
+  const code=taxInvoiceNewBatchCode();
+  const batch={
+    id:code,
+    createdAt:new Date().toISOString(),
+    createdBy:taxInvoiceActor(),
+    suffix:code.slice(-4),
+    rows:rows||[]
+  };
+  await db.collection(TAX_INVOICE_BATCH_COL).doc(code).set(cleanForFirestore(batch));
+  return batch;
+}
+function taxInvoiceStoredSettleAmount(batch, id){
+  const sum={supply:0, fee:0, vat:0, total:0};
+  ((batch&&batch.rows)||[]).forEach(row=>{
+    (row.settles||[]).forEach(s=>{
+      if(!s||s.id!==id) return;
+      sum.supply+=Number(s.supply)||0;
+      sum.fee+=Number(s.fee)||0;
+      sum.vat+=Number(s.vat)||0;
+      sum.total+=Number(s.total)||0;
+    });
+  });
+  return sum;
+}
+function taxInvoiceAmountSame(a, b){
+  return !!a&&!!b&&a.supply===b.supply&&a.fee===b.fee&&a.vat===b.vat&&a.total===b.total;
+}
+function taxInvoiceCurrentSettleAmounts(settleId){
+  const resolved=resolveSettleForStatus(settleId, null);
+  if(!resolved.st) return null;
+  const d=ld();
+  const client=(d.clients||[]).find(c=>c&&c.id===resolved.st.clientId)||null;
+  const meta={
+    supply:{field:0,calc:0}, fee:{field:0,memo:0,calc:0}, vat:{field:0,calc:0},
+    total:{field:0,computed:0}, missingName:0, missingQty:0, missingUnit:0,
+    missingClientId:0, missingSettleId:0, lump:0, receiverFilled:0, receiverEmpty:0
+  };
+  if(taxInvoiceChecksAllOff(resolved.qt)) return {supply:0, fee:0, vat:0, total:0};
+  return taxInvoiceSum(taxInvoiceLinesFromRow(resolved.st, resolved.qt, client, meta));
+}
+function taxInvoiceSettleIssuedBy(batch, id){
+  const st=stLd().find(s=>s&&s.id===id);
+  if(!st||!st.taxIssued) return '';
+  return st.taxIssuedBatchId===batch.id?'batch':'other';
+}
+function taxInvoiceRowDone(batch, row){
+  const ids=row&&row.settleIds||[];
+  if(!ids.length) return false;
+  return ids.every(id=>taxInvoiceSettleIssuedBy(batch, id)==='batch');
+}
+async function loadTaxInvoiceBatches(){
+  if(typeof db==='undefined') return [];
+  let snap;
+  try{
+    snap=await db.collection(TAX_INVOICE_BATCH_COL).orderBy('createdAt','desc').limit(30).get();
+  }catch(e){
+    snap=await db.collection(TAX_INVOICE_BATCH_COL).limit(30).get();
+  }
+  const rows=snap.docs.map(d=>Object.assign({id:d.id}, d.data()||{}));
+  rows.sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||'')));
+  return rows;
+}
+function taxInvoiceIssueSelectedRows(){
+  const batch=TAX_ISSUE_BATCH;
+  if(!batch) return [];
+  return (batch.rows||[]).filter(row=>TAX_ISSUE_CHECKED.has(row.no)&&!taxInvoiceRowDone(batch, row));
+}
+function taxInvoiceIssuePaintSum(){
+  const el=document.getElementById('tax-issue-sum');
+  if(!el) return;
+  const rows=taxInvoiceIssueSelectedRows();
+  let supply=0, vat=0;
+  rows.forEach(row=>{ supply+=Number(row.supplySum)||0; vat+=Number(row.vatSum)||0; });
+  el.textContent='선택 '+rows.length+'장 / 공급가액 합 '+fmtN(supply)+'원 / 세액 합 '+fmtN(vat)+'원';
+}
+function taxInvoiceIssueToggle(no, checked){
+  if(checked) TAX_ISSUE_CHECKED.add(no);
+  else TAX_ISSUE_CHECKED.delete(no);
+  taxInvoiceIssuePaintSum();
+}
+function taxInvoiceIssueAll(on){
+  const batch=TAX_ISSUE_BATCH;
+  if(!batch) return;
+  (batch.rows||[]).forEach(row=>{
+    if(taxInvoiceRowDone(batch, row)) return;
+    if(on) TAX_ISSUE_CHECKED.add(row.no);
+    else TAX_ISSUE_CHECKED.delete(row.no);
+  });
+  taxInvoiceIssueRenderTable();
+}
+function taxInvoiceIssueRange(on){
+  const batch=TAX_ISSUE_BATCH;
+  if(!batch) return;
+  const from=Number(document.getElementById('tax-issue-from')?.value);
+  const to=Number(document.getElementById('tax-issue-to')?.value);
+  if(!Number.isFinite(from)||!Number.isFinite(to)){ toast('NO 범위를 입력하세요','error'); return; }
+  const lo=Math.min(from, to), hi=Math.max(from, to);
+  (batch.rows||[]).forEach(row=>{
+    if(row.no<lo||row.no>hi||taxInvoiceRowDone(batch, row)) return;
+    if(on) TAX_ISSUE_CHECKED.add(row.no);
+    else TAX_ISSUE_CHECKED.delete(row.no);
+  });
+  taxInvoiceIssueRenderTable();
+}
+function taxInvoiceIssuePick(id){
+  TAX_ISSUE_BATCH=TAX_ISSUE_BATCHES.find(b=>b.id===id)||TAX_ISSUE_BATCHES[0]||null;
+  TAX_ISSUE_CHECKED=new Set();
+  const batch=TAX_ISSUE_BATCH;
+  if(batch){
+    (batch.rows||[]).forEach(row=>{
+      if(row.review||taxInvoiceRowDone(batch, row)) return;
+      TAX_ISSUE_CHECKED.add(row.no);
+    });
+  }
+  taxInvoiceIssueRenderTable();
+}
+function taxInvoiceIssueRenderTable(){
+  const body=document.getElementById('tax-issue-table');
+  const batch=TAX_ISSUE_BATCH;
+  if(!body) return;
+  if(!batch){
+    body.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3)">저장된 발행 배치가 없습니다. 세금계산서 발급용 엑셀을 먼저 다운로드하세요.</div>';
+    taxInvoiceIssuePaintSum();
+    return;
+  }
+  const rows=batch.rows||[];
+  const head='<tr><th></th><th>NO</th><th>거래처명</th><th>사업자번호</th><th>상호</th><th>일자</th><th style="text-align:right">공급가액 합</th><th style="text-align:right">세액 합</th><th>확인필요 여부</th></tr>';
+  const bodyRows=rows.map(row=>{
+    const done=taxInvoiceRowDone(batch, row);
+    const check=done
+      ?'<span style="font-size:11px;font-weight:800;color:#166534">처리완료</span>'
+      :'<input type="checkbox" class="tax-issue-check" '+(TAX_ISSUE_CHECKED.has(row.no)?'checked':'')+' onchange="taxInvoiceIssueToggle('+row.no+', this.checked)">';
+    const bg=row.review?'background:#F4CCCC':'';
+    return '<tr style="'+bg+'"><td style="text-align:center">'+check+'</td><td>'+row.no+'</td><td>'+escHtml(row.clientName||'')+'</td><td>'+escHtml(row.bizNo||'')+'</td><td>'+escHtml(row.bizName||'')+'</td><td>'+escHtml((row.days||[]).join(', '))+'</td><td style="text-align:right">'+fmtN(row.supplySum||0)+'</td><td style="text-align:right">'+fmtN(row.vatSum||0)+'</td><td>'+(row.review?'확인필요':'')+'</td></tr>';
+  }).join('');
+  body.innerHTML='<table class="qt" style="width:100%;font-size:12px"><thead>'+head+'</thead><tbody>'+(bodyRows||'<tr><td colspan="9" style="text-align:center;color:var(--text3);padding:20px">이 배치에는 발행할 행이 없습니다.</td></tr>')+'</tbody></table>';
+  taxInvoiceIssuePaintSum();
+}
+async function openTaxInvoiceIssue(){
+  if(!CUR_ADMIN){ alert('로그인이 필요합니다'); return; }
+  if(!_svLoaded.st||!_svLoaded.qt){ alert('정산 데이터를 불러오는 중입니다. 잠시 후 다시 시도하세요'); return; }
+  try{
+    TAX_ISSUE_BATCHES=await loadTaxInvoiceBatches();
+  }catch(e){
+    console.error(e);
+    toast('배치를 불러오지 못했습니다: '+(e&&e.message?e.message:e),'error');
+    return;
+  }
+  const sel=document.getElementById('tax-issue-select');
+  if(sel){
+    sel.innerHTML=TAX_ISSUE_BATCHES.map(b=>{
+      const when=String(b.createdAt||'').replace('T',' ').slice(0,16);
+      const label=when+' · '+(b.createdBy||'')+' · '+(b.suffix||b.id)+' · '+((b.rows||[]).length)+'장';
+      return '<option value="'+escHtml(b.id)+'">'+escHtml(label)+'</option>';
+    }).join('');
+  }
+  openMd('tax-issue');
+  taxInvoiceIssuePick(TAX_ISSUE_BATCHES[0]?TAX_ISSUE_BATCHES[0].id:'');
+}
+async function runTaxInvoiceBatch(){
+  const batch=TAX_ISSUE_BATCH;
+  if(!batch){ toast('배치를 선택하세요','error'); return; }
+  const selected=taxInvoiceIssueSelectedRows();
+  if(!selected.length){ toast('발행할 행을 선택하세요','error'); return; }
+  const ids=[];
+  const seen=new Set();
+  selected.forEach(row=>{(row.settleIds||[]).forEach(id=>{ if(id&&!seen.has(id)){ seen.add(id); ids.push(id); } });});
+  const ready=[];
+  const changed=[];
+  const missing=[];
+  let already=0;
+  ids.forEach(id=>{
+    const how=taxInvoiceSettleIssuedBy(batch, id);
+    if(how){ already++; return; }
+    const resolved=resolveSettleForStatus(id, null);
+    if(!resolved.st){ missing.push(id); return; }
+    const saved=taxInvoiceStoredSettleAmount(batch, id);
+    const current=taxInvoiceCurrentSettleAmounts(id);
+    if(!taxInvoiceAmountSame(saved, current)){
+      const rows=selected.filter(row=>(row.settleIds||[]).indexOf(id)>=0);
+      changed.push({id, saved, current, rows});
+      return;
+    }
+    ready.push(resolved);
+  });
+  if(!ready.length){
+    taxInvoiceIssueResult(0, already, changed, missing);
+    return;
+  }
+  let supply=0, vat=0;
+  selected.forEach(row=>{ supply+=Number(row.supplySum)||0; vat+=Number(row.vatSum)||0; });
+  let ask=selected.length+'장(정산 '+ready.length+'건)을 발행여부 Y로 변경합니다. 공급가액 합 '+fmtN(supply)+'원 / 세액 합 '+fmtN(vat)+'원';
+  if(changed.length) ask+='\n\n금액이 바뀐 정산 '+changed.length+'건은 제외됩니다.';
+  if(!confirm(ask)) return;
+  const actor=taxInvoiceActor();
+  const at=new Date().toISOString();
+  const ops=[];
+  ready.forEach(resolved=>{
+    resolved.st.taxIssued=true;
+    resolved.st.taxIssuedAt=at;
+    resolved.st.taxIssuedBy=actor;
+    resolved.st.taxIssuedBatchId=batch.id;
+    ops.push(...settleStatusOps(resolved.st, resolved.qt));
+  });
+  try{
+    await commitSvOps(ops);
+  }catch(e){
+    console.error(e);
+    toast('발행 처리 실패: '+(e&&e.message?e.message:e),'error');
+    return;
+  }
+  ready.forEach(resolved=>{
+    const no=resolved.st&&resolved.st.id;
+    if(no!=null) TAX_ISSUE_CHECKED.delete((selected.find(row=>(row.settleIds||[]).indexOf(no)>=0)||{}).no);
+  });
+  selected.forEach(row=>{ if(taxInvoiceRowDone(batch, row)) TAX_ISSUE_CHECKED.delete(row.no); });
+  try{ renderSettleAll(); }catch(e){}
+  taxInvoiceIssueRenderTable();
+  taxInvoiceIssueResult(ready.length, already, changed, missing);
+}
+function taxInvoiceIssueResult(done, already, changed, missing){
+  const lines=['처리 '+done+'건 / 이미 발행 '+already+'건'];
+  if(changed.length){
+    lines.push('', '금액이 바뀌어 처리하지 않은 정산 '+changed.length+'건');
+    changed.forEach(c=>{
+      const where=(c.rows||[]).map(r=>'NO '+(r.no||'')+' '+(r.clientName||'')).join(', ');
+      const now=c.current||{supply:0, fee:0, vat:0};
+      lines.push(where+' / '+c.id+' / 저장 '+fmtN(c.saved.supply)+'+'+fmtN(c.saved.fee)+' / 현재 '+fmtN(now.supply)+'+'+fmtN(now.fee));
+    });
+  }
+  if(missing.length) lines.push('', '정산을 찾지 못한 '+missing.length+'건');
+  alert(lines.join('\n'));
+}
+async function cancelTaxInvoiceBatch(){
+  const batch=TAX_ISSUE_BATCH;
+  if(!batch){ toast('배치를 선택하세요','error'); return; }
+  const targets=stLd().filter(s=>s&&s.taxIssued&&s.taxIssuedBatchId===batch.id);
+  if(!targets.length){ alert('이 배치로 발행된 정산이 없습니다'); return; }
+  if(!confirm('이 배치로 발행한 '+targets.length+'건을 미발행으로 되돌립니다.')) return;
+  const actor=taxInvoiceActor();
+  const at=new Date().toISOString();
+  const ops=[];
+  targets.forEach(st=>{
+    const resolved=resolveSettleForStatus(st.id, null);
+    if(!resolved.st||!resolved.st.taxIssued||resolved.st.taxIssuedBatchId!==batch.id) return;
+    resolved.st.taxIssued=false;
+    resolved.st.taxIssuedCanceledAt=at;
+    resolved.st.taxIssuedCanceledBy=actor;
+    ops.push(...settleStatusOps(resolved.st, resolved.qt));
+  });
+  try{
+    await commitSvOps(ops);
+  }catch(e){
+    console.error(e);
+    toast('취소 실패: '+(e&&e.message?e.message:e),'error');
+    return;
+  }
+  try{ renderSettleAll(); }catch(e){}
+  (batch.rows||[]).forEach(row=>{
+    if(row.review||taxInvoiceRowDone(batch, row)) return;
+    TAX_ISSUE_CHECKED.add(row.no);
+  });
+  taxInvoiceIssueRenderTable();
+  alert(targets.length+'건을 미발행으로 되돌렸습니다');
 }
 
 function sCard(label,color,val,sub){
@@ -25019,6 +25370,35 @@ installPerfProbes();
       <button class="btn btn-xs btn-gray" onclick="closeMd('qt-view')">닫기</button>
     </div>
     <div id="qt-view-body" style="margin-top:10px"></div>
+  </div>
+</div>
+
+<div class="mo hidden" id="modal-tax-issue">
+  <div class="md md-lg" style="max-width:1100px;width:92vw">
+    <div class="mt" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <span>세금계산서 일괄 발행 처리</span>
+      <button type="button" class="btn btn-xs btn-gray" onclick="closeMd('tax-issue')">닫기</button>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+      <label style="font-size:12px;font-weight:700">배치</label>
+      <select id="tax-issue-select" class="fs" style="min-width:280px;font-size:12px" onchange="taxInvoiceIssuePick(this.value)"></select>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:12px">
+      <button type="button" class="btn btn-xs btn-gray" onclick="taxInvoiceIssueAll(true)">전체 선택</button>
+      <button type="button" class="btn btn-xs btn-gray" onclick="taxInvoiceIssueAll(false)">전체 해제</button>
+      <span>NO</span>
+      <input id="tax-issue-from" class="fi" type="number" min="1" style="width:72px;padding:4px 6px">
+      <span>~</span>
+      <input id="tax-issue-to" class="fi" type="number" min="1" style="width:72px;padding:4px 6px">
+      <button type="button" class="btn btn-xs btn-blue" onclick="taxInvoiceIssueRange(true)">선택</button>
+      <button type="button" class="btn btn-xs btn-gray" onclick="taxInvoiceIssueRange(false)">범위 제외</button>
+    </div>
+    <div id="tax-issue-table" style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px"></div>
+    <div id="tax-issue-sum" style="margin-top:10px;font-size:13px;font-weight:800">선택 0장 / 공급가액 합 0원 / 세액 합 0원</div>
+    <div class="mf">
+      <button type="button" class="btn btn-gray" onclick="cancelTaxInvoiceBatch()">발행 처리 취소</button>
+      <button type="button" class="btn btn-blue" onclick="runTaxInvoiceBatch()">발행 처리</button>
+    </div>
   </div>
 </div>
 
