@@ -11095,10 +11095,22 @@ async function exportTaxInvoiceExcel(){
     const sheet3=built.sheet3||[['제외 건 없음']];
     const sheet3HasRows=sheet3.length>1;
     taxInvoiceWriteSheet(wb, '제외내역', sheet3, sheet3HasRows?[3,4,5]:[], [], [], sheet3HasRows?{total:false}:{head:false, total:false});
-    const batch=await taxInvoiceSaveBatch(built.batchRows||[]);
+    let batch=null;
+    let batchErr=null;
+    try{
+      batch=await taxInvoiceSaveBatch(built.batchRows||[]);
+    }catch(e){
+      batchErr=e;
+      console.error('발행 배치 저장 실패', e);
+    }
     const day=String(getKSTDate()||'').replace(/-/g,'');
-    settleExcelDownload(await wb.xlsx.writeBuffer(), '세금계산서발급용_'+day+'_'+batch.suffix+'.xlsx');
+    const suffix=batch&&batch.suffix?('_'+batch.suffix):'';
+    settleExcelDownload(await wb.xlsx.writeBuffer(), '세금계산서발급용_'+day+suffix+'.xlsx');
     const counts=built.counts||{invoices:0, blocks:0, review:0, excluded:0};
+    if(batchErr){
+      const reason=batchErr&&batchErr.message?batchErr.message:String(batchErr);
+      alert('엑셀은 받았지만 발행 배치 저장 실패 - 이 파일로는 일괄 발행 처리를 할 수 없습니다 (사유: '+reason+')');
+    }
     alert('세금계산서 '+(counts.invoices||0)+'장(행) / 일자 블록 '+(counts.blocks||0)+'개 / 확인필요 '+(counts.review||0)+'건 / 제외 '+(counts.excluded||0)+'건');
   }catch(e){
     console.error(e);
