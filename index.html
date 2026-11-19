@@ -395,6 +395,8 @@ tr:last-child td{border-bottom:none;}
 body.client-view-link #login-screen{
   display:none;
 }
+body.client-view-link #alldata-excel-btn{display:none !important;}
+#alldata-excel-btn:disabled{opacity:.65;cursor:wait;}
 /* 거래처 링크 로딩 중 표시 (화면 나오기 전까지) */
 #client-view-loading{display:none;position:fixed;inset:0;background:linear-gradient(135deg,#fdf8f0,#e8e2d8);z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:12px;}
 body.client-view-link #client-view-loading{display:flex;}
@@ -17180,11 +17182,15 @@ function renderDetAllData(){
   const headers=ALLDATA_HEADERS;
   const rowsHtml=filteredRecs.map(r=>allDataRowHtml(r, projMap)).join('');
   const totalTxt=keyword?`총 ${filteredRecs.length}건 (검색 결과)`:`총 ${sortedRecs.length}건`;
+  const excelBtn=allDataExcelAllowed()
+    ? '<button type="button" class="btn btn-green btn-sm" id="alldata-excel-btn" onclick="downloadDetAllDataExcel()">📥 엑셀 다운로드</button>'
+    : '';
   el.innerHTML=
     '<div class="card" style="margin-bottom:12px">'+
       '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
         '<div style="font-size:12px;font-weight:700;color:var(--text2)">📚 전체 데이터 보기</div>'+
         '<input id="alldata-filter" class="fi" style="max-width:260px;font-size:11px;padding:4px 8px" placeholder="수취인명 검색..." value="'+escHtml(keyword)+'" oninput="filterDetAllData()" oncompositionstart="window._ALLDATA_FILTER_COMPOSING=true" oncompositionend="window._ALLDATA_FILTER_COMPOSING=false;filterDetAllData()">'+
+        excelBtn+
         '<span id="alldata-total" style="font-size:11px;color:var(--text3)">'+totalTxt+'</span>'+
       '</div>'+
     '</div>'+
@@ -20507,6 +20513,182 @@ function filterDetAllData(){
   if(totalSpan){
     const total=rows.length;
     totalSpan.textContent=kw?`총 ${visibleCount}건 (검색 결과)`:`총 ${total}건`;
+  }
+}
+
+function allDataExcelAllowed(){
+  if(document.body.classList.contains('client-view-link')) return false;
+  const clientScreen=document.getElementById('client-screen');
+  if(clientScreen && !clientScreen.classList.contains('hidden')) return false;
+  const app=document.getElementById('app');
+  if(app && app.classList.contains('hidden')) return false;
+  return !!CUR_ADMIN;
+}
+function allDataExcelBlank(v){
+  if(v==null) return '';
+  const s=String(v).replace(/<[^>]*>/g,'').replace(/&nbsp;/gi,' ').trim();
+  if(!s || s==='undefined' || s==='null') return '';
+  return s;
+}
+function allDataExcelNo(v){
+  if(typeof v==='number' && Number.isFinite(v) && Number.isSafeInteger(v)) return v;
+  const s=allDataExcelBlank(v);
+  if(!s) return '';
+  if(/^\d+$/.test(s) && (s==='0' || s[0]!=='0')){
+    const n=Number(s);
+    if(Number.isSafeInteger(n)) return n;
+  }
+  return s;
+}
+function allDataExcelAmount(v){
+  if(v==null || v==='') return '';
+  if(typeof v==='number') return Number.isFinite(v) ? v : '';
+  const raw=allDataExcelBlank(v);
+  if(!raw) return '';
+  const s=raw.replace(/,/g,'').replace(/원/g,'').trim();
+  if(/^-?\d+(\.\d+)?$/.test(s)){
+    const n=Number(s);
+    if(Number.isFinite(n)) return n;
+  }
+  return raw;
+}
+function allDataExcelIdString(v){
+  if(v==null || v==='') return '';
+  if(typeof v==='number') return Number.isFinite(v) ? String(v) : '';
+  return allDataExcelBlank(v);
+}
+function allDataExcelDate(v){
+  if(v==null || v==='') return '';
+  const ymd=purchaseDateToYYYYMMDD(v);
+  if(ymd && /^\d{4}-\d{2}-\d{2}$/.test(ymd)) return ymd;
+  return allDataExcelBlank(ymd||v);
+}
+function allDataExcelValues(r, projMap){
+  const p=projMap[r.projectId];
+  let purchase='';
+  if(r.purchaseDate!=null && r.purchaseDate!=='') purchase=allDataExcelDate(r.purchaseDate);
+  return [
+    allDataExcelBlank(p?p.name:''),
+    allDataExcelNo(r.no),
+    allDataExcelBlank(r.day),
+    purchase,
+    allDataExcelBlank(r.product),
+    allDataExcelBlank(r.option),
+    allDataExcelBlank(r.reviewType),
+    allDataExcelBlank(r.nickname),
+    allDataExcelBlank(r.receiver),
+    allDataExcelBlank(r.email),
+    allDataExcelBlank(r.address),
+    allDataExcelIdString(r.phone),
+    allDataExcelAmount(r.amount),
+    allDataExcelIdString(r.tracking),
+    allDataExcelIdString(r.accountNo),
+    allDataExcelBlank(r.reviewUrl)
+  ];
+}
+function allDataSortedBundle(){
+  const d=ld();
+  const projs=(d.projects||[]).filter(p=>p.clientId===CUR_CLIENT);
+  if(!projs.length) return {sorted:[], projMap:{}};
+  const sortedProjs=sortProjectsForAllData(projs);
+  const indexed=allDataProjectIndex(sortedProjs);
+  const allRecs=(d.records||[]).filter(r=>indexed.projMap[r.projectId]);
+  return {sorted:sortRecordsForAllData(allRecs, indexed.projOrderIndex), projMap:indexed.projMap};
+}
+function allDataCollectForExport(){
+  const built=allDataSortedBundle();
+  const tbody=document.getElementById('alldata-tbody');
+  const trs=tbody?tbody.querySelectorAll('tr'):null;
+  if(trs && trs.length===built.sorted.length){
+    const rows=[];
+    for(let i=0;i<trs.length;i++){
+      if(trs[i].style.display!=='none') rows.push(built.sorted[i]);
+    }
+    return {rows:rows, projMap:built.projMap};
+  }
+  const inp=document.getElementById('alldata-filter');
+  const kw=(inp?inp.value:'').trim().toLowerCase();
+  const rows=kw?built.sorted.filter(r=>allDataExcelBlank(r.receiver).toLowerCase().includes(kw)):built.sorted.slice();
+  return {rows:rows, projMap:built.projMap};
+}
+function allDataExcelStamp(){
+  const d=new Date(Date.now()+9*3600*1000);
+  const p=n=>String(n).padStart(2,'0');
+  return d.getUTCFullYear()+p(d.getUTCMonth()+1)+p(d.getUTCDate())+'_'+p(d.getUTCHours())+p(d.getUTCMinutes());
+}
+async function downloadDetAllDataExcel(){
+  if(!allDataExcelAllowed()) return;
+  const btn=document.getElementById('alldata-excel-btn');
+  if(btn && btn.disabled) return;
+  let built;
+  try{ built=allDataCollectForExport(); }
+  catch(e){
+    console.error(e);
+    toast('엑셀 다운로드 실패','error');
+    return;
+  }
+  if(!built.rows.length){
+    alert('내보낼 데이터가 없습니다');
+    return;
+  }
+  if(typeof ExcelJS==='undefined'){ toast('엑셀 라이브러리 로딩 중...','error'); return; }
+  if(btn){ btn.disabled=true; btn.textContent='생성 중...'; }
+  await new Promise(function(resolve){ setTimeout(resolve, 0); });
+  try{
+    const headers=ALLDATA_HEADERS;
+    const textCols=new Set([12,14,15]);
+    const amountCol=13;
+    const wb=new ExcelJS.Workbook();
+    const ws=wb.addWorksheet('거래처_전체데이터');
+    ws.views=[{state:'frozen', ySplit:1}];
+    const headerRow=ws.addRow(headers);
+    headerRow.eachCell(function(cell){
+      cell.font={bold:true, name:'Malgun Gothic', size:11, color:{argb:'FF1C1917'}};
+      cell.fill={type:'pattern', pattern:'solid', fgColor:{argb:'FFEDEAE3'}};
+      cell.alignment={vertical:'middle', horizontal:'left'};
+    });
+    const width=headers.map(function(h){ return settleExcelDisplayWidth(h); });
+    const rows=built.rows;
+    const projMap=built.projMap;
+    for(let i=0;i<rows.length;i++){
+      const vals=allDataExcelValues(rows[i], projMap);
+      const excelRow=ws.addRow(vals.map(function(v){ return v===''?null:v; }));
+      for(let c=0;c<vals.length;c++){
+        const val=vals[c];
+        const w=settleExcelDisplayWidth(val);
+        if(w>width[c]) width[c]=w;
+        if(val==='') continue;
+        const cell=excelRow.getCell(c+1);
+        if(textCols.has(c+1) || (c+1===2 && typeof val==='string')){
+          cell.value=String(val);
+          cell.numFmt='@';
+        }else if(c+1===amountCol && typeof val==='number'){
+          cell.numFmt=Number.isInteger(val)?'#,##0':'#,##0.##';
+          cell.alignment={horizontal:'right'};
+        }
+      }
+      if((i+1)%300===0) await new Promise(function(resolve){ setTimeout(resolve, 0); });
+    }
+    width.forEach(function(w,i){
+      const wch=Math.min(40, Math.max(10, (w||10)+2));
+      ws.getColumn(i+1).width=wch;
+    });
+    ws.autoFilter={
+      from:{row:1, column:1},
+      to:{row:rows.length+1, column:headers.length}
+    };
+    const fileName='거래처_전체데이터_'+allDataExcelStamp()+'.xlsx';
+    await new Promise(function(resolve){ setTimeout(resolve, 0); });
+    settleExcelDownload(await wb.xlsx.writeBuffer(), fileName);
+    toast('엑셀 다운로드 완료');
+  }catch(e){
+    console.error(e);
+    toast('엑셀 다운로드 실패: '+(e&&e.message?e.message:e),'error');
+  }finally{
+    if(btn && btn.isConnected){
+      btn.disabled=false;
+      btn.textContent='📥 엑셀 다운로드';
+    }
   }
 }
 
