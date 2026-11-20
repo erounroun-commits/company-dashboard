@@ -169,6 +169,9 @@ tr:last-child td{border-bottom:none;}
 .mt{font-size:16px;font-weight:700;margin-bottom:20px;}
 .mf{display:flex;gap:10px;justify-content:flex-end;margin-top:20px;}
 #modal-paystatus .md{display:flex;flex-direction:column;overflow:hidden;height:90vh;max-height:90vh;}
+#modal-pay-paste{z-index:1100;}
+#modal-pay-paste .md{width:min(1100px,96vw);max-height:92vh;display:flex;flex-direction:column;}
+#pay-paste-table{flex:1;min-height:120px;max-height:42vh;overflow:auto;}
 #modal-paystatus .mt{flex:none;margin-bottom:10px;}
 #paystatus-detail{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;overflow:hidden;overflow-wrap:anywhere;}
 #paystatus-head{flex:none;background:var(--card);}
@@ -15393,7 +15396,7 @@ function payRecordsSection(c, snap){
   const filterBtn=routeOn?'<button type="button" class="btn btn-xs btn-gray" onclick="payClearRecRoute()">필터 해제</button>':'';
   const kmong=payKmongSummaryHtml();
   return '<div class="pay-rec-top">'+(kmong||'')+payRecordsStatusLineHtml(c, snap)+'</div>'
-    +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px"><div>'+filterBtn+'</div><button type="button" class="btn btn-sm btn-blue" onclick="payOpenRecAdd()">+ 결제 추가</button></div>'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px"><div>'+filterBtn+'</div><div style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" class="btn btn-sm btn-gray" onclick="openPayPaste()">대량 붙여넣기</button><button type="button" class="btn btn-sm btn-blue" onclick="payOpenRecAdd()">+ 결제 추가</button></div></div>'
     +form+list+payTrashToggle();
 }
 function payKmongPayRows(){
@@ -15469,10 +15472,11 @@ function payProjectSection(c){
       +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">'+btn('prepaid',prepaidLabel)+btn('separate','별도 결제')+'</div></div>';
   }).join('');
 }
-async function payCommitRecords(c, list, doc, okMsg){
-  const merged=payApplyRecordTotals(payClient(c.id)||c, list);
+function payRecordCommitOps(c, list, docs){
+  const latest=payClient(c.id)||c;
+  const merged=payApplyRecordTotals(latest, list);
   const opts={payRecords:list};
-  if(Array.isArray(PAY_ST_RECS)) opts.records=PAY_ST_RECS;
+  if(c.id===PAY_ST_ID&&Array.isArray(PAY_ST_RECS)) opts.records=PAY_ST_RECS;
   else if(RECORDS_CLIENT_ID===c.id&&_recordsChunksReady&&Array.isArray(RECORDS_CACHE)) opts.records=RECORDS_CACHE;
   const built=prepaidSummaryFromMemory(c.id, opts);
   if(built){
@@ -15480,15 +15484,585 @@ async function payCommitRecords(c, list, doc, okMsg){
     if(prepaidSummaryChanged(merged.prepaidSummary, summary)) merged.prepaidSummary=summary;
   }
   const group='payrec_'+c.id;
-  await commitSvOps([
-    {key:'pay', id:doc.id, data:doc, group},
-    {key:'cl', id:c.id, data:merged, group},
-  ]);
+  const ops=(docs||[]).filter(doc=>doc&&doc.id).map(doc=>({key:'pay', id:doc.id, data:doc, group}));
+  ops.push({key:'cl', id:c.id, data:merged, group});
+  return ops;
+}
+async function payCommitRecords(c, list, doc, okMsg){
+  await commitSvOps(payRecordCommitOps(c, list, [doc]));
   PAY_ST_PAY=payRecsFor(c.id);
   PAY_REC_EDIT='';
-  PAY_REC_FORM=payBlankRecForm(payClient(c.id)||merged);
+  PAY_REC_FORM=payBlankRecForm(payClient(c.id)||c);
   payRefreshScreens();
   toast(okMsg||'결제 기록을 저장했습니다');
+}
+
+// ── 결제기록 대량 붙여넣기 (입금내역 붙여넣기와 같은 탭 구분·헤더 건너뛰기) ──
+const PAY_PASTE_FIELDS=[
+  {key:'date', label:'날짜', def:0},
+  {key:'client', label:'거래처', def:1},
+  {key:'amount', label:'금액', def:2},
+  {key:'qty', label:'건수', def:3},
+  {key:'unit', label:'단가', def:4},
+  {key:'kind', label:'구분', def:5},
+  {key:'route', label:'결제경로', def:6},
+  {key:'memo', label:'메모', def:7},
+];
+let PAY_PASTE_MAP=null;
+let PAY_PASTE_MAP_TOUCHED=false;
+let PAY_PASTE_SKIP_TOUCHED=false;
+let PAY_PASTE_ROWS=[];
+let PAY_PASTE_BY_CLIENT={};
+let PAY_PASTE_BUSY=false;
+function payPasteDefaultMap(){
+  const map={};
+  PAY_PASTE_FIELDS.forEach(f=>{ map[f.key]=f.def; });
+  return map;
+}
+function payPasteCompact(s){
+  return String(s||'').trim().toLowerCase().replace(/\s+/g,'');
+}
+function payPasteHeaderField(cell){
+  const n=payPasteCompact(cell);
+  if(!n||n==='no'||n==='번호'||n==='순번') return '';
+  if(n.includes('거래처')||n.includes('업체명')||n==='업체'||n.includes('고객명')) return 'client';
+  if(n.includes('단가')) return 'unit';
+  if(n.includes('건수')||n==='수량') return 'qty';
+  if(n.includes('결제경로')||n==='경로'||n==='결제수단') return 'route';
+  if(n.includes('구분')||n==='종류') return 'kind';
+  if(n.includes('메모')||n.includes('비고')||n.includes('거래내용')) return 'memo';
+  if((n.includes('입금')&&!n.includes('입금자'))||n.includes('금액')) return 'amount';
+  if(n.includes('결제일')||n.includes('거래일시')||n.includes('거래일자')||n.includes('해당일자')||n.includes('날짜')||n==='일자'||n==='date') return 'date';
+  return '';
+}
+function payPasteRowIsHeader(cells){
+  const set=new Set((cells||[]).map(payPasteHeaderField).filter(Boolean));
+  return ['date','client','amount'].filter(k=>set.has(k)).length>=2;
+}
+function payPasteMapFromHeader(cells){
+  const map={};
+  PAY_PASTE_FIELDS.forEach(f=>{ map[f.key]=-1; });
+  const used={};
+  (cells||[]).forEach((cell, idx)=>{
+    const key=payPasteHeaderField(cell);
+    if(!key||used[key]) return;
+    used[key]=true;
+    map[key]=idx;
+  });
+  return map;
+}
+function payPasteValidYmd(y, mo, d){
+  if(y<2000||y>2100||mo<1||mo>12||d<1||d>31) return false;
+  const dt=new Date(y, mo-1, d);
+  return dt.getFullYear()===y&&dt.getMonth()===mo-1&&dt.getDate()===d;
+}
+function payPasteFmtYmd(y, mo, d){
+  return y+'-'+String(mo).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+}
+function payPasteParseDate(s){
+  const clean=String(s==null?'':s).trim();
+  if(!clean) return '';
+  const squashed=clean.replace(/\s+/g,'');
+  let m=squashed.match(/^(\d{2})[.\-\/](\d{1,2})[.\-\/](\d{1,2})$/);
+  if(m){
+    const y=2000+Number(m[1]), mo=Number(m[2]), d=Number(m[3]);
+    return payPasteValidYmd(y,mo,d)?payPasteFmtYmd(y,mo,d):'';
+  }
+  m=squashed.match(/^(\d{4})년(\d{1,2})월(\d{1,2})일?$/);
+  if(m){
+    const y=Number(m[1]), mo=Number(m[2]), d=Number(m[3]);
+    return payPasteValidYmd(y,mo,d)?payPasteFmtYmd(y,mo,d):'';
+  }
+  if(/^\d{5}$/.test(squashed)){
+    const serial=Number(squashed);
+    if(serial>20000&&serial<80000){
+      const dt=new Date(Date.UTC(1899,11,30)+serial*86400000);
+      const y=dt.getUTCFullYear(), mo=dt.getUTCMonth()+1, d=dt.getUTCDate();
+      return payPasteValidYmd(y,mo,d)?payPasteFmtYmd(y,mo,d):'';
+    }
+    return '';
+  }
+  if(!/(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/.test(squashed)&&!/^(\d{1,2})[\/\-.](\d{1,2})$/.test(squashed)&&!/^\d{8}$/.test(squashed)) return '';
+  const parsed=parseDateStr(squashed);
+  m=String(parsed||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!m||!payPasteValidYmd(Number(m[1]), Number(m[2]), Number(m[3]))) return '';
+  return m[1]+'-'+m[2]+'-'+m[3];
+}
+function payPasteParseAmount(s){
+  const raw=String(s==null?'':s).trim();
+  if(!raw) return null;
+  const t=raw.replace(/,/g,'').replace(/원/g,'').replace(/\s/g,'').replace(/₩/g,'').replace(/[^0-9.\-]/g,'');
+  if(!/^-?\d+(\.\d+)?$/.test(t)) return null;
+  const n=Number(t);
+  return Number.isFinite(n)?Math.round(n):null;
+}
+function payPasteParseQty(s){
+  const raw=String(s==null?'':s).trim();
+  if(!raw) return {qty:null, bad:false};
+  const t=raw.replace(/,/g,'').replace(/건/g,'').replace(/\s/g,'');
+  if(!/^\d+(\.\d+)?$/.test(t)) return {qty:null, bad:true};
+  const n=Number(t);
+  if(!Number.isFinite(n)||n<=0) return {qty:null, bad:true};
+  return {qty:n, bad:false};
+}
+function payPasteParseKind(raw){
+  const n=payPasteCompact(raw);
+  if(!n) return {kind:'', bad:false, empty:true};
+  if(n==='prepaid'||n.includes('선결제')||n==='충전') return {kind:'prepaid', bad:false, empty:false};
+  if(n==='peritem'||n.includes('건별')) return {kind:'perItem', bad:false, empty:false};
+  return {kind:'', bad:true, empty:false};
+}
+function payPasteParseRoute(raw){
+  const n=String(raw||'').trim();
+  if(!n) return {route:'', bad:false, empty:true};
+  if(n==='크몽'||n==='계좌이체'||n==='카드결제'||n==='기타') return {route:n, bad:false, empty:false};
+  return {route:'', bad:true, empty:false};
+}
+function payPasteDefaultKind(c){
+  return (c&&payShownMode(c).mode==='prepaid')?'prepaid':'perItem';
+}
+function payPasteDefaultRoute(c){
+  const shown=c?payShownRoute(c):{route:'', routeMemo:''};
+  return {route:shown.route||'계좌이체', routeMemo:shown.route==='기타'?payTrim(shown.routeMemo):''};
+}
+function payPasteResolveClient(name){
+  const q=String(name||'').trim();
+  if(!q) return {clientId:'', clientName:'', multi:0};
+  const hits=(CLIENTS_CACHE||[]).filter(c=>c&&String(c.name||'').trim()===q);
+  if(hits.length===1) return {clientId:hits[0].id, clientName:q, multi:1};
+  return {clientId:'', clientName:q, multi:hits.length};
+}
+function payPasteLines(text){
+  return String(text||'').replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n');
+}
+function payPasteFirstCells(lines){
+  for(let i=0;i<lines.length;i++){
+    if(!String(lines[i]).trim()) continue;
+    return String(lines[i]).split('\t');
+  }
+  return null;
+}
+function payPasteCell(cells, map, key){
+  const idx=map?map[key]:-1;
+  if(idx==null||idx<0||idx>=cells.length) return '';
+  return String(cells[idx]==null?'':cells[idx]).trim();
+}
+function payPasteRowFromCells(cells, map, lineNo){
+  const dateRaw=payPasteCell(cells, map, 'date');
+  const clientRaw=payPasteCell(cells, map, 'client');
+  const amountRaw=payPasteCell(cells, map, 'amount');
+  const qtyRaw=payPasteCell(cells, map, 'qty');
+  const unitRaw=payPasteCell(cells, map, 'unit');
+  const kindRaw=payPasteCell(cells, map, 'kind');
+  const routeRaw=payPasteCell(cells, map, 'route');
+  const memo=payPasteCell(cells, map, 'memo');
+  const client=payPasteResolveClient(clientRaw);
+  const c=client.clientId?payClient(client.clientId):null;
+  const kindParsed=payPasteParseKind(kindRaw);
+  const routeParsed=payPasteParseRoute(routeRaw);
+  const qtyParsed=payPasteParseQty(qtyRaw);
+  const amountParsed=amountRaw===''?null:payPasteParseAmount(amountRaw);
+  const unitParsed=unitRaw===''?null:payPasteParseAmount(unitRaw);
+  const kindExplicit=!kindParsed.empty;
+  const routeExplicit=!routeParsed.empty;
+  const unitExplicit=unitRaw!=='';
+  let qty=qtyParsed.bad?null:(qtyParsed.qty==null?1:qtyParsed.qty);
+  let amount=amountParsed;
+  let unitPrice=unitParsed;
+  if((amount==null)&&qty>0&&unitPrice!=null) amount=Math.round(qty*unitPrice);
+  if(!unitExplicit&&qty>0&&amount>0) unitPrice=Math.round(amount/qty);
+  const kind=kindExplicit?kindParsed.kind:payPasteDefaultKind(c);
+  const routeDef=payPasteDefaultRoute(c);
+  const route=routeExplicit?routeParsed.route:routeDef.route;
+  return {
+    lineNo, dateRaw, date:payPasteParseDate(dateRaw),
+    clientName:client.clientName, clientId:client.clientId, clientMulti:client.multi,
+    amountRaw, amount, qty, qtyBad:qtyParsed.bad,
+    unitPrice, unitExplicit, unitBad:unitRaw!==''&&unitParsed==null,
+    kind, kindExplicit, kindBad:kindParsed.bad,
+    route, routeExplicit, routeBad:routeParsed.bad, routeMemo:routeExplicit?'':routeDef.routeMemo,
+    memo, include:false, includeTouched:false,
+    errors:[], dup:false, dupWhy:'', status:'error',
+  };
+}
+function payPasteBuildRows(lines, map, skip){
+  const rows=[];
+  let skipped=false;
+  lines.forEach((line, idx)=>{
+    if(!String(line).trim()) return;
+    if(skip&&!skipped){ skipped=true; return; }
+    const cells=String(line).split('\t');
+    if(cells.every(c=>!String(c||'').trim())) return;
+    rows.push(payPasteRowFromCells(cells, map, idx+1));
+  });
+  return rows;
+}
+function payPasteExistingHas(clientId, date, amount){
+  const list=Object.prototype.hasOwnProperty.call(PAY_PASTE_BY_CLIENT, clientId)
+    ? PAY_PASTE_BY_CLIENT[clientId]
+    : (PAY_RECORDS_CACHE||[]).filter(r=>r&&r.clientId===clientId);
+  return (list||[]).some(r=>r&&!r.deleted&&String(r.date||'').slice(0,10)===date&&Math.round(Number(r.amount)||0)===amount);
+}
+function payPasteClassify(){
+  const seen=new Set();
+  PAY_PASTE_ROWS.forEach(row=>{
+    const errors=[];
+    if(!row.date) errors.push('날짜 인식 불가');
+    if(row.amount==null||!Number.isFinite(row.amount)) errors.push('금액 없음');
+    else if(!(row.amount>0)) errors.push('금액이 0 이하');
+    if(!row.clientId) errors.push(row.clientMulti>1?('거래처 미매칭 (같은 이름 '+row.clientMulti+'곳)'):'거래처 미매칭');
+    if(row.qtyBad) errors.push('건수 인식 불가');
+    if(row.unitBad) errors.push('단가 인식 불가');
+    if(row.kindBad) errors.push('구분 인식 불가');
+    if(row.routeBad) errors.push('결제경로 인식 불가');
+    row.errors=errors;
+    let dup=false;
+    let dupWhy='';
+    if(!errors.length){
+      const key=row.clientId+'|'+row.date+'|'+row.amount;
+      if(payPasteExistingHas(row.clientId, row.date, row.amount)){
+        dup=true;
+        dupWhy='기존 결제기록과 거래처·날짜·금액이 같습니다';
+      }else if(seen.has(key)){
+        dup=true;
+        dupWhy='붙여넣은 내용 안에 같은 거래처·날짜·금액이 있습니다';
+      }
+      seen.add(key);
+    }
+    row.dup=dup;
+    row.dupWhy=dupWhy;
+    row.status=errors.length?'error':(dup?'dup':'ok');
+    if(!row.includeTouched) row.include=row.status==='ok';
+  });
+}
+function payPasteCounts(){
+  let ok=0, dup=0, err=0, sum=0, picked=0;
+  PAY_PASTE_ROWS.forEach(r=>{
+    if(r.status==='ok') ok++;
+    else if(r.status==='dup') dup++;
+    else err++;
+    if(r.include&&r.status!=='error'){
+      picked++;
+      sum+=Number(r.amount)||0;
+    }
+  });
+  return {total:PAY_PASTE_ROWS.length, ok, dup, err, sum, picked};
+}
+function payPasteReadMap(){
+  const map=payPasteDefaultMap();
+  let any=false;
+  PAY_PASTE_FIELDS.forEach(f=>{
+    const el=document.getElementById('pay-paste-map-'+f.key);
+    if(!el) return;
+    any=true;
+    const n=parseInt(el.value,10);
+    map[f.key]=Number.isFinite(n)?n:-1;
+  });
+  return any?map:(PAY_PASTE_MAP||map);
+}
+function payPasteRenderMap(){
+  const host=document.getElementById('pay-paste-map');
+  if(!host) return;
+  const map=PAY_PASTE_MAP||payPasteDefaultMap();
+  host.innerHTML=PAY_PASTE_FIELDS.map(f=>{
+    let opts='<option value="-1"'+(map[f.key]===-1?' selected':'')+'>사용 안 함</option>';
+    for(let i=0;i<12;i++) opts+='<option value="'+i+'"'+(map[f.key]===i?' selected':'')+'>'+(i+1)+'열</option>';
+    return '<label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:4px;min-width:88px">'+f.label
+      +'<select id="pay-paste-map-'+f.key+'" class="fs" style="font-size:12px" onchange="payPasteMapTouched()">'+opts+'</select></label>';
+  }).join('');
+}
+function payPasteClients(){
+  return (CLIENTS_CACHE||[]).filter(c=>c&&c.id).slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ko'));
+}
+function payPasteStatusBadge(row){
+  if(row.status==='ok') return '<span class="badge bg">정상</span>';
+  if(row.status==='dup') return '<span class="badge by">중복 의심</span>';
+  return '<span class="badge br">오류</span>';
+}
+function payPasteSelect(i, value, pairs, fn){
+  const known=pairs.some(p=>String(p[0])===String(value));
+  return '<select class="fs" style="font-size:11px;width:96px;min-width:96px" onchange="'+fn+'('+i+',this.value)">'
+    +(known?'':'<option value="" selected>선택</option>')
+    +pairs.map(p=>'<option value="'+escHtml(p[0])+'"'+(String(p[0])===String(value)?' selected':'')+'>'+escHtml(p[1])+'</option>').join('')
+    +'</select>';
+}
+function payPasteRenderPreview(){
+  const sumEl=document.getElementById('pay-paste-summary');
+  const table=document.getElementById('pay-paste-table');
+  const btn=document.getElementById('pay-paste-save');
+  const counts=payPasteCounts();
+  if(btn){
+    btn.disabled=PAY_PASTE_BUSY||!counts.picked;
+    btn.textContent=PAY_PASTE_BUSY?'저장 중…':(counts.picked+'건 등록');
+  }
+  if(sumEl){
+    sumEl.innerHTML=PAY_PASTE_ROWS.length
+      ? '<div style="display:flex;flex-wrap:wrap;gap:8px 14px;font-size:12px;padding:8px 10px;background:var(--bg2);border-radius:8px">'
+        +'<span>총 <b>'+fmtN(counts.total)+'</b>건</span>'
+        +'<span>정상 <b>'+fmtN(counts.ok)+'</b>건</span>'
+        +'<span>중복 의심 <b>'+fmtN(counts.dup)+'</b>건</span>'
+        +'<span>오류 <b>'+fmtN(counts.err)+'</b>건</span>'
+        +'<span>합계 금액 <b>'+fmtN(counts.sum)+'</b>원</span>'
+        +(PAY_PASTE_BUSY?'<span style="color:var(--text3)">기존 결제기록 확인 중…</span>':'')
+        +'</div>'
+      : '';
+  }
+  if(!table) return;
+  const top=table.scrollTop;
+  if(!PAY_PASTE_ROWS.length){
+    table.innerHTML='<div style="font-size:12px;color:var(--text3);padding:12px 0">붙여넣은 뒤 미리보기를 누르면 여기에 표시됩니다.</div>';
+    return;
+  }
+  const clients=payPasteClients();
+  const body=PAY_PASTE_ROWS.map((r,i)=>{
+    const reason=r.status==='error'?r.errors.join(', '):(r.dup?r.dupWhy:'');
+    const clientOpts='<option value="">선택</option>'+clients.map(c=>'<option value="'+escHtml(c.id)+'"'+(c.id===r.clientId?' selected':'')+'>'+escHtml(c.name||'(이름 없음)')+'</option>').join('');
+    const disabled=r.status==='error'?' disabled':'';
+    return '<tr>'
+      +'<td><input type="checkbox"'+(r.include&&r.status!=='error'?' checked':'')+disabled+' onchange="payPasteToggle('+i+',this.checked)"></td>'
+      +'<td style="white-space:normal;min-width:148px">'+payPasteStatusBadge(r)+(reason?'<div style="margin-top:4px;font-size:11px;color:'+(r.status==='error'?'#b91c1c':(r.status==='dup'?'#92400e':'var(--text3)'))+'">'+escHtml(reason)+'</div>':'')+'</td>'
+      +'<td><input class="fi" style="font-size:11px;min-width:108px" value="'+escHtml(r.date||r.dateRaw||'')+'" onchange="payPasteEditDate('+i+',this.value)"></td>'
+      +'<td><select class="fs" style="font-size:11px;width:140px;min-width:140px" onchange="payPasteSetClient('+i+',this.value)">'+clientOpts+'</select></td>'
+      +'<td><input class="fi" style="font-size:11px;width:110px" value="'+escHtml(r.amount==null?(r.amountRaw||''):String(r.amount))+'" onchange="payPasteEditAmount('+i+',this.value)"></td>'
+      +'<td><input class="fi" style="font-size:11px;width:64px" value="'+escHtml(r.qty==null?'':String(r.qty))+'" onchange="payPasteEditQty('+i+',this.value)"></td>'
+      +'<td>'+payPasteSelect(i, r.kind, [['prepaid','선결제'],['perItem','건별']], 'payPasteEditKind')+'</td>'
+      +'<td>'+payPasteSelect(i, r.route, [['계좌이체','계좌이체'],['카드결제','카드결제'],['크몽','크몽'],['기타','기타']], 'payPasteEditRoute')+'</td>'
+      +'<td><input class="fi" style="font-size:11px;min-width:90px" value="'+escHtml(r.memo||'')+'" onchange="payPasteEditMemo('+i+',this.value)"></td>'
+      +'</tr>';
+  }).join('');
+  table.innerHTML='<table style="font-size:12px"><thead><tr>'
+    +'<th></th><th>상태</th><th>날짜</th><th>거래처</th><th>금액</th><th>건수</th><th>구분</th><th>경로</th><th>메모</th>'
+    +'</tr></thead><tbody>'+body+'</tbody></table>';
+  table.scrollTop=top;
+}
+function payPasteMapTouched(){
+  PAY_PASTE_MAP_TOUCHED=true;
+  PAY_PASTE_MAP=payPasteReadMap();
+  const text=(document.getElementById('pay-paste-text')||{}).value||'';
+  if(String(text).trim()) payPastePreview();
+}
+function payPasteSkipTouched(){
+  PAY_PASTE_SKIP_TOUCHED=true;
+  const text=(document.getElementById('pay-paste-text')||{}).value||'';
+  if(String(text).trim()) payPastePreview();
+}
+function openPayPaste(){
+  if(!PAY_PASTE_MAP) PAY_PASTE_MAP=payPasteDefaultMap();
+  payPasteRenderMap();
+  payPasteRenderPreview();
+  openMd('pay-paste');
+  const ta=document.getElementById('pay-paste-text');
+  if(ta) ta.focus();
+}
+async function payPasteLoadExisting(ids){
+  const need=(ids||[]).filter(id=>id&&!Object.prototype.hasOwnProperty.call(PAY_PASTE_BY_CLIENT, id));
+  if(!need.length||typeof db==='undefined') return;
+  const rows=await payQueryWhereIn('payRecords','clientId', need, false);
+  const by={};
+  need.forEach(id=>{ by[id]=[]; });
+  rows.forEach(r=>{
+    if(!r||!r.clientId||!by[r.clientId]) return;
+    by[r.clientId].push(r);
+  });
+  need.forEach(id=>{
+    PAY_PASTE_BY_CLIENT[id]=by[id];
+    _svSetCache('pay', _svMergeRows(_svGetCache('pay'), by[id]));
+    const sync=_svSync.pay||(_svSync.pay=new Map());
+    by[id].forEach(item=>{
+      const json=_svItemJson(item);
+      if(json!=null) sync.set(item.id, json);
+    });
+  });
+}
+async function payPastePreview(){
+  if(PAY_PASTE_BUSY) return;
+  const text=(document.getElementById('pay-paste-text')||{}).value||'';
+  const lines=payPasteLines(text);
+  const first=payPasteFirstCells(lines);
+  const looks=!!(first&&payPasteRowIsHeader(first));
+  if(!PAY_PASTE_MAP_TOUCHED&&looks){
+    PAY_PASTE_MAP=payPasteMapFromHeader(first);
+    payPasteRenderMap();
+  }
+  const skipEl=document.getElementById('pay-paste-skip');
+  if(skipEl&&!PAY_PASTE_SKIP_TOUCHED) skipEl.checked=looks;
+  const skip=!!(skipEl&&skipEl.checked);
+  PAY_PASTE_MAP=payPasteReadMap();
+  PAY_PASTE_ROWS=payPasteBuildRows(lines, PAY_PASTE_MAP, skip);
+  payPasteClassify();
+  const result=document.getElementById('pay-paste-result');
+  if(result) result.textContent='';
+  if(!PAY_PASTE_ROWS.length){
+    payPasteRenderPreview();
+    toast('붙여넣은 내용에서 등록할 행을 찾지 못했습니다','error');
+    return;
+  }
+  payPasteRenderPreview();
+  const ids=[...new Set(PAY_PASTE_ROWS.map(r=>r.clientId).filter(Boolean))];
+  const missing=ids.filter(id=>!Object.prototype.hasOwnProperty.call(PAY_PASTE_BY_CLIENT, id));
+  if(!missing.length||typeof db==='undefined') return;
+  PAY_PASTE_BUSY=true;
+  payPasteRenderPreview();
+  try{
+    await payPasteLoadExisting(missing);
+    payPasteClassify();
+  }catch(e){
+    console.error(e);
+    toast('기존 결제기록을 확인하지 못했습니다. 이미 불러온 기록만으로 중복을 표시합니다','error');
+  }finally{
+    PAY_PASTE_BUSY=false;
+    payPasteRenderPreview();
+  }
+}
+function payPasteRerender(){
+  payPasteClassify();
+  payPasteRenderPreview();
+}
+function payPasteEditDate(i, value){
+  const row=PAY_PASTE_ROWS[i];
+  if(!row) return;
+  row.dateRaw=value;
+  row.date=payPasteParseDate(value);
+  payPasteRerender();
+}
+function payPasteEditAmount(i, value){
+  const row=PAY_PASTE_ROWS[i];
+  if(!row) return;
+  row.amountRaw=value;
+  row.amount=String(value).trim()===''?null:payPasteParseAmount(value);
+  if(!row.unitExplicit&&row.qty>0&&row.amount>0) row.unitPrice=Math.round(row.amount/row.qty);
+  payPasteRerender();
+}
+function payPasteEditQty(i, value){
+  const row=PAY_PASTE_ROWS[i];
+  if(!row) return;
+  const parsed=payPasteParseQty(value);
+  row.qtyBad=parsed.bad;
+  row.qty=parsed.bad?null:(parsed.qty==null?1:parsed.qty);
+  if(!row.unitExplicit&&row.qty>0&&row.amount>0) row.unitPrice=Math.round(row.amount/row.qty);
+  payPasteRerender();
+}
+function payPasteEditKind(i, value){
+  const row=PAY_PASTE_ROWS[i];
+  if(!row) return;
+  row.kind=value==='prepaid'?'prepaid':'perItem';
+  row.kindExplicit=true;
+  row.kindBad=false;
+  payPasteRerender();
+}
+function payPasteEditRoute(i, value){
+  const row=PAY_PASTE_ROWS[i];
+  if(!row) return;
+  row.route=value||'계좌이체';
+  row.routeExplicit=true;
+  row.routeBad=false;
+  if(row.route!=='기타') row.routeMemo='';
+  payPasteRerender();
+}
+function payPasteEditMemo(i, value){
+  const row=PAY_PASTE_ROWS[i];
+  if(!row) return;
+  row.memo=value==null?'':String(value);
+}
+function payPasteToggle(i, checked){
+  const row=PAY_PASTE_ROWS[i];
+  if(!row||row.status==='error') return;
+  row.include=!!checked;
+  row.includeTouched=true;
+  payPasteRenderPreview();
+}
+async function payPasteSetClient(i, clientId){
+  const row=PAY_PASTE_ROWS[i];
+  if(!row) return;
+  row.clientId=clientId||'';
+  const c=row.clientId?payClient(row.clientId):null;
+  if(c&&c.name) row.clientName=c.name;
+  if(!row.kindExplicit){
+    row.kind=payPasteDefaultKind(c);
+    row.kindBad=false;
+  }
+  if(!row.routeExplicit){
+    const route=payPasteDefaultRoute(c);
+    row.route=route.route;
+    row.routeMemo=route.routeMemo;
+    row.routeBad=false;
+  }
+  if(row.clientId&&!Object.prototype.hasOwnProperty.call(PAY_PASTE_BY_CLIENT, row.clientId)&&typeof db!=='undefined'){
+    PAY_PASTE_BUSY=true;
+    payPasteRenderPreview();
+    try{ await payPasteLoadExisting([row.clientId]); }
+    catch(e){ console.error(e); toast('선택한 거래처의 결제기록을 확인하지 못했습니다','error'); }
+    finally{ PAY_PASTE_BUSY=false; }
+  }
+  payPasteRerender();
+}
+function payPasteDoc(row, iso){
+  const qty=Number(row.qty);
+  const amount=Number(row.amount)||0;
+  const unit=Number(row.unitPrice);
+  return Object.assign({
+    id:gid(),
+    clientId:row.clientId,
+    kind:row.kind==='prepaid'?'prepaid':'perItem',
+    route:row.route||'계좌이체',
+    routeMemo:row.route==='기타'?payTrim(row.routeMemo):'',
+    date:row.date,
+    qty:Number.isFinite(qty)&&qty>0?qty:1,
+    unitPrice:Number.isFinite(unit)?unit:0,
+    amount,
+    memo:payTrim(row.memo),
+  }, payAuditStamp(iso));
+}
+async function payPasteSave(){
+  if(PAY_PASTE_BUSY||PAY_ST_BUSY) return;
+  payPasteClassify();
+  const picked=PAY_PASTE_ROWS.filter(r=>r&&r.include&&r.status!=='error'&&r.clientId&&r.date&&r.amount>0);
+  if(!picked.length){ toast('등록할 행이 없습니다','error'); payPasteRenderPreview(); return; }
+  const by={};
+  picked.forEach(r=>{ (by[r.clientId]||(by[r.clientId]=[])).push(r); });
+  const iso=new Date().toISOString();
+  const ops=[];
+  const savedDocs={};
+  let saved=0;
+  Object.keys(by).forEach(cid=>{
+    const c=payClient(cid);
+    if(!c) return;
+    const existing=Object.prototype.hasOwnProperty.call(PAY_PASTE_BY_CLIENT, cid)
+      ? (PAY_PASTE_BY_CLIENT[cid]||[]).slice()
+      : payRecsFor(cid).slice();
+    const docs=by[cid].map(r=>payPasteDoc(r, iso));
+    savedDocs[cid]=docs;
+    saved+=docs.length;
+    ops.push(...payRecordCommitOps(c, existing.concat(docs), docs));
+  });
+  const skipped=PAY_PASTE_ROWS.length-saved;
+  if(!ops.length){ toast('등록할 거래처를 찾지 못했습니다','error'); return; }
+  PAY_PASTE_BUSY=true;
+  PAY_ST_BUSY=true;
+  payPasteRenderPreview();
+  try{
+    await commitSvOps(ops);
+    Object.keys(savedDocs).forEach(cid=>{
+      const prev=Object.prototype.hasOwnProperty.call(PAY_PASTE_BY_CLIENT, cid)?(PAY_PASTE_BY_CLIENT[cid]||[]):payRecsFor(cid);
+      PAY_PASTE_BY_CLIENT[cid]=prev.concat(savedDocs[cid]);
+    });
+    if(PAY_ST_ID&&savedDocs[PAY_ST_ID]) PAY_ST_PAY=payRecsFor(PAY_ST_ID);
+    try{ payReadDetailForm(); payReadHistEdit(); payReadRecForm(); }catch(e){}
+    payRefreshScreens();
+    const msg=saved+'건 등록, '+skipped+'건 제외';
+    const result=document.getElementById('pay-paste-result');
+    if(result) result.textContent=msg;
+    PAY_PASTE_ROWS=[];
+    toast(msg);
+    payPasteRenderPreview();
+  }catch(e){
+    console.error(e);
+    toast('등록에 실패했습니다','error');
+  }finally{
+    PAY_PASTE_BUSY=false;
+    PAY_ST_BUSY=false;
+    payPasteRenderPreview();
+  }
 }
 async function savePayRecord(){
   if(PAY_ST_BUSY) return;
@@ -25520,6 +26094,34 @@ installPerfProbes();
     <div class="mf">
       <button class="btn btn-gray" onclick="closeMd('qt-link-check')">닫기</button>
       <button class="btn btn-blue" id="qt-link-check-run" onclick="runQuoteLinkRepair()">복구 실행</button>
+    </div>
+  </div>
+</div>
+
+<div class="mo hidden" id="modal-pay-paste">
+  <div class="md">
+    <div class="mt" style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px">
+      <span>결제기록 대량 붙여넣기</span>
+      <button type="button" class="btn btn-xs btn-gray" onclick="closeMd('pay-paste')">닫기</button>
+    </div>
+    <div style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:10px">
+      엑셀이나 구글시트에서 복사한 내용을 붙여넣으세요. 열은 탭으로 구분되고, 첫 줄이 날짜·거래처·금액 같은 헤더면 건너뜁니다.
+      헤더가 없으면 <b>날짜, 거래처, 금액, 건수, 단가, 구분, 결제경로, 메모</b> 순서입니다. 입금내역 표(거래일시·입금·업체명)는 헤더가 있으면 그 이름으로 맞춥니다.
+    </div>
+    <textarea id="pay-paste-text" class="fta" style="min-height:140px;font-family:ui-monospace,Consolas,monospace;font-size:12px;white-space:pre;overflow:auto" placeholder="날짜	거래처	금액	건수	구분	결제경로&#10;2026-11-20	파도스토리	1,200,000원	10	선결제 충전	계좌이체"></textarea>
+    <label style="display:flex;align-items:center;gap:6px;margin:8px 0;font-size:12px;color:var(--text2)">
+      <input type="checkbox" id="pay-paste-skip" onchange="payPasteSkipTouched()"> 첫 줄을 헤더로 건너뛰기
+    </label>
+    <div id="pay-paste-map" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <button type="button" class="btn btn-sm btn-gray" onclick="payPastePreview()">미리보기</button>
+      <div id="pay-paste-result" style="font-size:12px;font-weight:700;color:var(--text2)"></div>
+    </div>
+    <div id="pay-paste-summary" style="margin-top:10px"></div>
+    <div id="pay-paste-table"></div>
+    <div class="mf">
+      <button type="button" class="btn btn-gray" onclick="closeMd('pay-paste')">취소</button>
+      <button type="button" class="btn btn-blue" id="pay-paste-save" onclick="payPasteSave()">0건 등록</button>
     </div>
   </div>
 </div>
